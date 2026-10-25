@@ -1,0 +1,85 @@
+Integrate the STM32H563 SoC and the "fcu" machine into the QEMU build.
+
+diff -ruN a/hw/arm/Kconfig b/hw/arm/Kconfig
+--- a/hw/arm/Kconfig	2026-10-24 09:50:17.695509500 +0200
++++ b/hw/arm/Kconfig	2026-10-24 09:50:18.474754300 +0200
+@@ -404,6 +404,23 @@
+     select STM32L4X5_SOC
+     imply DM163
+ 
++config FCU
++    bool
++    default y
++    depends on TCG && ARM
++    select STM32H5_SOC
++    select LED
++
++config STM32H5_SOC
++    bool
++    select ARM_V7M
++    select UNIMP
++    select STM32H5_RCC
++    select STM32H5_SYSCTL
++    select ARMV8M_DWT
++    select STM32L4X5_GPIO
++    select STM32L4X5_USART
++
+ config STM32L4X5_SOC
+     bool
+     select ARM_V7M
+diff -ruN a/hw/arm/meson.build b/hw/arm/meson.build
+--- a/hw/arm/meson.build	2026-10-24 09:50:17.871488000 +0200
++++ b/hw/arm/meson.build	2026-10-24 09:50:18.474754300 +0200
+@@ -105,6 +105,8 @@
+ arm_common_ss.add(when: 'CONFIG_NETDUINO2', if_true: files('netduino2.c'))
+ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_peripherals.c'))
+ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2838_peripherals.c'))
++arm_common_ss.add(when: 'CONFIG_FCU', if_true: files('factory_control_unit.c'))
++arm_common_ss.add(when: 'CONFIG_STM32H5_SOC', if_true: files('stm32h5_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_STRONGARM', if_true: files('strongarm.c'))
+ arm_common_ss.add(when: 'CONFIG_SX1', if_true: files('omap_sx1.c'))
+ arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
+diff -ruN a/hw/gpio/meson.build b/hw/gpio/meson.build
+--- a/hw/gpio/meson.build	2026-10-24 09:50:18.378008100 +0200
++++ b/hw/gpio/meson.build	2026-10-24 09:50:18.475864700 +0200
+@@ -14,7 +14,7 @@
+     'bcm2835_gpio.c',
+     'bcm2838_gpio.c'
+ ))
+-system_ss.add(when: 'CONFIG_STM32L4X5_SOC', if_true: files('stm32l4x5_gpio.c'))
++system_ss.add(when: 'CONFIG_STM32L4X5_GPIO', if_true: files('stm32l4x5_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_sgpio.c'))
+ system_ss.add(when: 'CONFIG_SIFIVE_GPIO', if_true: files('sifive_gpio.c'))
+diff -ruN a/hw/misc/Kconfig b/hw/misc/Kconfig
+--- a/hw/misc/Kconfig	2026-10-24 09:50:18.070090100 +0200
++++ b/hw/misc/Kconfig	2026-10-24 09:50:18.475864700 +0200
+@@ -122,6 +122,15 @@
+ config STM32L4X5_RCC
+     bool
+ 
++config STM32H5_RCC
++    bool
++
++config STM32H5_SYSCTL
++    bool
++
++config ARMV8M_DWT
++    bool
++
+ config MIPS_ITU
+     bool
+     depends on TCG
+diff -ruN a/hw/misc/meson.build b/hw/misc/meson.build
+--- a/hw/misc/meson.build	2026-10-24 09:50:18.239762500 +0200
++++ b/hw/misc/meson.build	2026-10-24 09:50:18.475864700 +0200
+@@ -118,6 +118,9 @@
+ system_ss.add(when: 'CONFIG_STM32L4X5_EXTI', if_true: files('stm32l4x5_exti.c'))
+ system_ss.add(when: 'CONFIG_STM32L4X5_SYSCFG', if_true: files('stm32l4x5_syscfg.c'))
+ system_ss.add(when: 'CONFIG_STM32L4X5_RCC', if_true: files('stm32l4x5_rcc.c'))
++system_ss.add(when: 'CONFIG_STM32H5_RCC', if_true: files('stm32h5_rcc.c'))
++system_ss.add(when: 'CONFIG_STM32H5_SYSCTL', if_true: files('stm32h5_sysctl.c'))
++system_ss.add(when: 'CONFIG_ARMV8M_DWT', if_true: files('armv8m_dwt.c'))
+ system_ss.add(when: 'CONFIG_MPS2_FPGAIO', if_true: files('mps2-fpgaio.c'))
+ system_ss.add(when: 'CONFIG_MPS2_SCC', if_true: files('mps2-scc.c'))
+ 

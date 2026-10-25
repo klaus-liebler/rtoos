@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+//
+// Factory Control Unit (factory_in_a_box/pcb_factory_control_unit) for Renode.
+//   Console  USART3 (PD8/PD9 -> ST-LINK VCP)
+//   LED      LED_INFO on PH1, active low
+//   Ethernet LAN8742A at MDIO address 0 (register values as Renode's nucleo_h753zi,
+//            which carries the same PHY): link up, 100BASE-TX full duplex
+using "stm32h563.repl"
+
+led_info: Miscellaneous.LED @ gpioPortH 1
+    invert: true
+
+gpioPortH:
+    1 -> led_info@0
+
+phy: Network.EthernetPhysicalLayer @ ethernet 0
+    BasicControl: 0x3100
+    BasicStatus: 0x782D
+    Id1: 0x0007
+    Id2: 0xC130
+    AutoNegotiationAdvertisement: 0x01E1
+    AutoNegotiationLinkPartnerBasePageAbility: 0x0001
+    AutoNegotiationExpansion: 0x0064
+    AutoNegotiationNextPageTransmit: 0x2001
+    // PHYSCSR (reg 31): autonegotiation done, HCDSPEED = 110 (100BASE-TX full duplex)
+    VendorSpecific15: 0x1058

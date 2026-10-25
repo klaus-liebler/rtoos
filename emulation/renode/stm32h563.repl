@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: MIT
+//
+// STM32H563xI (Cortex-M33, 2 MB flash, 640 KB SRAM) for Renode.
+// Addresses and IRQ numbers: ST SVD STM32H563 v1.8 / RM0481.
+//
+// Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
+// (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
+// GPIOA..I, USART1..3, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// as the STM32H7), RNG, UID/package data area.
+// Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
+// SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
+// cache drivers run unchanged.
+//
+// Clock: the firmware runs SYSCLK = HCLK = PCLKx = 250 MHz from PLL1 (boards/fcu).
+// All frequencies below are that clock; the CPU executes 250 MIPS (CPI 1), so
+// cycle counts from DWT_CYCCNT are consistent with SysTick but not cycle-accurate.
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m33"
+    nvic: nvic
+    numberOfMPURegions: 8
+    PerformanceInMips: 250
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    // SysTick with CLKSOURCE = processor clock: SYSCLK = 250 MHz
+    systickFrequency: 250000000
+    IRQ -> cpu@0
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 250000000
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x200000
+
+// SRAM1 (256 KB) + SRAM2 (64 KB) + SRAM3 (320 KB), contiguous
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0xA0000
+
+// Read-only system data (UID at 0x08FFF800, package, flash size); zero-filled
+uid: Memory.MappedMemory @ sysbus 0x08FFF000
+    size: 0x1000
+
+usart1: UART.STM32F7_USART @ sysbus 0x40013800
+    frequency: 250000000
+    IRQ -> nvic@58
+
+usart2: UART.STM32F7_USART @ sysbus 0x40004400
+    frequency: 250000000
+    IRQ -> nvic@59
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 250000000
+    IRQ -> nvic@60
+
+gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
+    modeResetValue: 0xABFFFFFF
+    outputSpeedResetValue: 0x0C000000
+    pullUpPullDownResetValue: 0x64000000
+    numberOfAFs: 16
+
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x42020400, +0x400>
+    modeResetValue: 0xFFFFFEBF
+    outputSpeedResetValue: 0x000000C0
+    pullUpPullDownResetValue: 0x00000100
+    numberOfAFs: 16
+
+gpioPortC: GPIOPort.STM32_GPIOPort @ sysbus <0x42020800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortD: GPIOPort.STM32_GPIOPort @ sysbus <0x42020C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortE: GPIOPort.STM32_GPIOPort @ sysbus <0x42021000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortF: GPIOPort.STM32_GPIOPort @ sysbus <0x42021400, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortG: GPIOPort.STM32_GPIOPort @ sysbus <0x42021800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortH: GPIOPort.STM32_GPIOPort @ sysbus <0x42021C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+// Note: with MACCR.SARC = 000 the model logs "Attempted to use external MAC address"
+// for every TX frame and leaves the frame unchanged - which is what the STM32
+// does (the source-address control inputs are tied inactive). Harmless.
+ethernet: Network.SynopsysDWCEthernetQualityOfService @ {
+        sysbus 0x40028000;
+        sysbus new Bus.BusMultiRegistration { address: 0x40028C00; size: 0x200; region: "mtl" };
+        sysbus new Bus.BusMultiRegistration { address: 0x40029000; size: 0x200; region: "dma" }
+    }
+    systemClockFrequency: 250000000
+    dmaBusWidth: BusWidth.Bits32
+    -> nvic@106
+
+rng: Miscellaneous.STM32_RNG @ sysbus 0x420C0800
+    series: STM32Series.L5
+    -> nvic@114
+
+// RCC: plain register file with the hardware's reset values. Ready flags follow
+// their enable bits immediately (HSIRDY, CSIRDY, HSI48RDY, HSERDY, PLLxRDY),
+// HSIDIVF is always set (divider change applied), CFGR1.SWS mirrors CFGR1.SW.
+rcc: Python.PythonPeripheral @ sysbus 0x44020C00
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00000023, 0x010: 0x00400000, 0x018: 0x00200000,
+            0x034: 0x01010280, 0x03C: 0x01010280, 0x044: 0x01010280,
+            0x088: 0xD0000100, 0x08C: 0xC0000000,
+            0x0B0: 0xF13AD103, 0x0B4: 0xC01F1DFF, 0x0BC: 0x00111880, 0x0C4: 0xDFFEC9FF,
+            0x0C8: 0x4080022B, 0x0CC: 0x017F7800, 0x0D0: 0x0030F9E2, 0x0F4: 0x0C000000}
+elif request.IsWrite:
+    value = request.Value & 0xFFFFFFFF
+    if request.Offset == 0x000:
+        for on in (0, 8, 12, 16, 24, 26, 28):
+            if value & (1 << on):
+                value = value | (1 << (on + 1))
+            else:
+                value = value & ~(1 << (on + 1))
+        value = value | (1 << 5)
+    elif request.Offset == 0x01C:
+        value = (value & ~(7 << 3)) | ((value & 7) << 3)
+    regs[request.Offset] = value
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// PWR: VOSCR + VOSSR (SVD reset 0x08). A new voltage scale is ready at once:
+// VOSRDY = ACTVOSRDY = 1, ACTVOS mirrors VOS.
+pwr: Python.PythonPeripheral @ sysbus 0x44020800
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x014: 0x00000008}
+elif request.IsWrite:
+    value = request.Value & 0xFFFFFFFF
+    regs[request.Offset] = value
+    if request.Offset == 0x010:
+        regs[0x014] = (1 << 3) | (1 << 13) | (((value >> 4) & 3) << 14)
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// FLASH: register file (ACR reset 0x13: LATENCY 3, WRHIGHFREQ 1); a new latency is
+// active at once. All other registers read 0 (not busy, no errors).
+flashController: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00000013}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value & 0xFFFFFFFF
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+sysbus:
+    init:
+        Tag <0x40030400 0x400> "ICACHE"
+        Tag <0x40031400 0x400> "DCACHE1"
+        Tag <0x44000400 0x400> "SBS"
+        Tag <0x44022000 0x400> "EXTI"
+        Tag <0x44024000 0x400> "DBGMCU"

@@ -1,0 +1,11 @@
+:name: Factory Control Unit (STM32H563) on the host network
+:description: fcu.resc plus Ethernet: the FCU is connected through a switch to the TAP adapter "rtoos-tap" (192.168.77.1/24 on the host, see setup-tap.ps1).
+
+$tap?="rtoos-tap"
+
+include $ORIGIN/fcu.resc
+
+emulation CreateSwitch "switch"
+connector Connect sysbus.ethernet switch
+emulation CreateTap $tap "tap"
+connector Connect host.tap switch

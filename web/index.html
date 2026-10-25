@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FCU · rtoos</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b6e4f'/%3E%3Cpath d='M4 11V5h5M4 8h4' stroke='white' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f5f6f4; --panel: #ffffff; --ink: #1d2320; --muted: #5d6762; --line: #dfe3e0;
+    --accent: #0b6e4f; --accent-ink: #ffffff; --warn: #b54708; --ok: #0b6e4f; --bad: #b42318;
+    --chart: #0b6e4f; --grid: #e9ecea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111513; --panel: #1a201d; --ink: #e7ece9; --muted: #9aa5a0; --line: #2c3430;
+            --accent: #3fb98a; --accent-ink: #0b1310; --chart: #3fb98a; --grid: #232a27; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .pill { margin-left: auto; font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.on { color: var(--ok); border-color: currentColor; }
+  .pill.off { color: var(--bad); border-color: currentColor; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px; display: grid; gap: 16px;
+         grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .led { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); background: transparent; transition: background .15s; }
+  .led.lit { background: #34c759; border-color: #2a9d48; box-shadow: 0 0 10px #34c75988; }
+  svg.chart { width: 100%; height: 160px; display: block; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .result { font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="3" fill="var(--accent)"/><path d="M4 11V5h5M4 8h4" stroke="var(--accent-ink)" stroke-width="1.6" fill="none"/></svg>
+  <h1>Factory Control Unit</h1>
+  <span id="conn" class="pill">verbinde …</span>
+</header>
+<main>
+  <section>
+    <h2>Gerät</h2>
+    <dl>
+      <dt>Laufzeit</dt><dd id="uptime">–</dd>
+      <dt>Uhrzeit (SNTP)</dt><dd id="clock">–</dd>
+      <dt>WebSocket-Clients</dt><dd id="clients">–</dd>
+      <dt>Frames rx / tx</dt><dd id="frames">–</dd>
+    </dl>
+  </section>
+  <section>
+    <h2>LED_INFO</h2>
+    <div class="row">
+      <div id="led" class="led" role="img" aria-label="LED"></div>
+      <button id="led-on" disabled>Ein</button>
+      <button id="led-off" class="secondary" disabled>Aus</button>
+    </div>
+    <p class="muted">Schaltet die LED auf PH1 über eine binäre WebSocket-Nachricht.</p>
+  </section>
+  <section>
+    <h2>Echo-Test</h2>
+    <div class="row">
+      <button id="echo" disabled>100 × Echo</button>
+      <span id="echo-result" class="result muted">Zufallsnutzlast 1–511 Byte</span>
+    </div>
+    <p class="muted">Prüft jede Antwort Byte für Byte und misst die Umlaufzeit.</p>
+  </section>
+  <section>
+    <h2>Leistung (Gerät, DWT-Zykluszähler)</h2>
+    <dl>
+      <dt>Takt</dt><dd id="clk">–</dd>
+      <dt>TLS-Handshake (CPU)</dt><dd id="hs">–</dd>
+      <dt>Verschlüsseln</dt><dd id="enc">–</dd>
+      <dt>Entschlüsseln</dt><dd id="dec">–</dd>
+      <dt>Echo im Gerät</dt><dd id="echo-dev">–</dd>
+    </dl>
+    <p class="muted">Echo im Gerät: vom Beginn des TLS-Lesens bis zur verschlüsselten Antwort an TCP. Im Emulator zählen die Werte Befehle statt Takte.</p>
+  </section>
+  <section class="wide">
+    <h2>Messwert (live, 10 Hz)</h2>
+    <svg id="chart" class="chart" viewBox="0 0 600 160" preserveAspectRatio="none" aria-label="Messwertverlauf">
+      <g stroke="var(--grid)" stroke-width="1">
+        <line x1="0" y1="40" x2="600" y2="40"/><line x1="0" y1="80" x2="600" y2="80"/><line x1="0" y1="120" x2="600" y2="120"/>
+      </g>
+      <polyline id="trace" fill="none" stroke="var(--chart)" stroke-width="2" vector-effect="non-scaling-stroke" points=""/>
+    </svg>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const MSG_STATUS = 0x01, MSG_SET_LED = 0x10, MSG_ECHO = 0x20, MSG_ECHO_REPLY = 0x21;
+const samples = [];
+let ws = null, pendingEcho = null, retryMs = 100;
+
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return `${h}:${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function setConnected(on) {
+  $("conn").textContent = on ? "verbunden" : "getrennt";
+  $("conn").className = "pill " + (on ? "on" : "off");
+  for (const id of ["led-on", "led-off", "echo"]) $(id).disabled = !on;
+}
+
+function drawChart() {
+  const pts = samples.map((v, i) => `${(i * 600 / 119).toFixed(1)},${(80 - v / 32767 * 72).toFixed(1)}`);
+  $("trace").setAttribute("points", pts.join(" "));
+}
+
+function onStatus(v) {
+  $("uptime").textContent = fmtUptime(v.getUint32(1, true));
+  samples.push(v.getInt16(5, true));
+  if (samples.length > 120) samples.shift();
+  drawChart();
+  $("led").classList.toggle("lit", v.getUint8(7) !== 0);
+  $("clients").textContent = v.getUint8(8);
+  $("frames").textContent = `${v.getUint32(9, true)} / ${v.getUint32(13, true)}`;
+  const unixMs = Number(v.getBigUint64(17, true));
+  $("clock").textContent = unixMs ? new Date(unixMs).toLocaleString() : "nicht synchronisiert";
+  if (v.byteLength >= 39) {
+    const mhz = v.getUint16(37, true);
+    const hs = v.getUint32(25, true), echo = v.getUint32(33, true);
+    $("clk").textContent = `${mhz} MHz`;
+    $("hs").textContent = hs ? `${(hs / mhz / 1000).toFixed(1)} ms` : "–";
+    // Per record: fixed cost + cost per byte (least-squares fit in the device).
+    const cost = (perByteX16, fixed) => v.byteLength >= 47
+      ? `${(fixed / mhz).toFixed(1)} µs + ${(perByteX16 / 16).toFixed(1)} Takte/Byte`
+      : `${(perByteX16 / 16).toFixed(1)} Takte/Byte`;
+    $("enc").textContent = cost(v.getUint16(29, true), v.byteLength >= 47 ? v.getUint32(39, true) : 0);
+    $("dec").textContent = cost(v.getUint16(31, true), v.byteLength >= 47 ? v.getUint32(43, true) : 0);
+    $("echo-dev").textContent = echo ? `${(echo / mhz).toFixed(0)} µs` : "–";
+  }
+}
+
+function connect() {
+  ws = new WebSocket(`wss://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { retryMs = 100; setConnected(true); };
+  // Reconnect quickly, then back off (100 ms, 200 ms, ... 2 s).
+  ws.onclose = () => { setConnected(false); setTimeout(connect, retryMs); retryMs = Math.min(retryMs * 2, 2000); };
+  ws.onmessage = (e) => {
+    const v = new DataView(e.data);
+    if (v.byteLength === 0) return;
+    if (v.getUint8(0) === MSG_STATUS && v.byteLength >= 25) onStatus(v);
+    else if (v.getUint8(0) === MSG_ECHO_REPLY && pendingEcho) pendingEcho(new Uint8Array(e.data, 1));
+  };
+}
+
+function setLed(on) { ws.send(new Uint8Array([MSG_SET_LED, on ? 1 : 0])); }
+
+function echoOnce(payload) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const timer = setTimeout(() => { pendingEcho = null; reject(new Error("timeout")); }, 3000);
+    pendingEcho = (reply) => {
+      clearTimeout(timer); pendingEcho = null;
+      const same = reply.length === payload.length && reply.every((b, i) => b === payload[i]);
+      same ? resolve(performance.now() - t0) : reject(new Error("mismatch"));
+    };
+    const msg = new Uint8Array(payload.length + 1);
+    msg[0] = MSG_ECHO; msg.set(payload, 1);
+    ws.send(msg);
+  });
+}
+
+async function echoTest() {
+  $("echo").disabled = true;
+  const out = $("echo-result");
+  const times = [];
+  try {
+    for (let i = 0; i < 100; i++) {
+      const payload = crypto.getRandomValues(new Uint8Array(1 + Math.floor(Math.random() * 511)));
+      times.push(await echoOnce(payload));
+      out.textContent = `${i + 1}/100 …`;
+    }
+    times.sort((a, b) => a - b);
+    out.className = "result ok";
+    out.textContent = `100/100 korrekt · Median ${times[50].toFixed(1)} ms · max ${times[99].toFixed(1)} ms`;
+  } catch (e) {
+    out.className = "result bad";
+    out.textContent = `Fehler: ${e.message} nach ${times.length} Nachrichten`;
+  }
+  $("echo").disabled = false;
+}
+
+$("led-on").onclick = () => setLed(true);
+$("led-off").onclick = () => setLed(false);
+$("echo").onclick = echoTest;
+connect();
+</script>
+</body>
+</html>

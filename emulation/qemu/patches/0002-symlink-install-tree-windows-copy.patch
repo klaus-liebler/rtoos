@@ -1,0 +1,35 @@
+symlink-install-tree: copy instead of symlink on Windows without symlink privilege.
+
+diff -ruN a/scripts/symlink-install-tree.py b/scripts/symlink-install-tree.py
+--- a/scripts/symlink-install-tree.py	2026-10-24 10:07:03.292532400 +0200
++++ b/scripts/symlink-install-tree.py	2026-10-24 10:07:16.754897800 +0200
+@@ -5,6 +5,7 @@
+ import json
+ import os
+ import shlex
++import shutil
+ import subprocess
+ import sys
+ 
+@@ -27,10 +28,15 @@
+         raise e
+     try:
+         os.symlink(source, bundle_dest)
+-    except BaseException as e:
+-        if not isinstance(e, OSError) or e.errno != errno.EEXIST:
+-            if os.name == 'nt':
+-                print('Please enable Developer Mode to support soft link '
+-                      'without Administrator permission')
++    except FileExistsError:
++        pass
++    except OSError:
++        if os.name != 'nt':
+             print(f'error making symbolic link {dest}', file=sys.stderr)
+-            raise e
++            raise
++        # Windows without Developer Mode has no symlink privilege. The bundle
++        # only serves running QEMU from the build tree; copy what exists.
++        if os.path.isdir(source):
++            shutil.copytree(source, bundle_dest, dirs_exist_ok=True)
++        elif os.path.exists(source):
++            shutil.copy2(source, bundle_dest)

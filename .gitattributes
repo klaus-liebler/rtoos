@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.der binary
+*.br binary
+*.bin binary
+task.md -text

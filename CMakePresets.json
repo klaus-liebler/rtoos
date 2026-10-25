@@ -1,0 +1,67 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "gcc16",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "RTOS_GCC_ROOT": "C:/opt/msys64/ucrt64",
+        "RTOS_CA_CERT": "C:/Users/klaus/OneDrive - HSOS/certificates/rtoosCA.pem.crt",
+        "RTOS_CA_KEY": "C:/Users/klaus/OneDrive - HSOS/certificates/rtoosCA.pem.key"
+      },
+      "environment": {
+        "PATH": "C:/opt/msys64/ucrt64/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "host",
+      "inherits": "gcc16",
+      "displayName": "Host unit tests (GCC 16)",
+      "binaryDir": "${sourceDir}/build/host",
+      "toolchainFile": "${sourceDir}/cmake/gcc-host.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "arm",
+      "inherits": "gcc16",
+      "displayName": "STM32H563 firmware (arm-none-eabi GCC 16)",
+      "binaryDir": "${sourceDir}/build/arm",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
+        "RTOS_CONTRACT_SEMANTIC": "quick_enforce",
+        "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
+        "RTOS_RENODE": "C:/opt/renode/renode.exe"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host"
+    },
+    {
+      "name": "arm",
+      "configurePreset": "arm"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm",
+      "configurePreset": "arm",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
