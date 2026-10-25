@@ -475,6 +475,41 @@ def main() -> int:
             c.close()
         if ws:
             ws.close()
+
+        # Buffer budget under load: 5 parallel 100 KB downloads (5 x 4 segments in
+        # flight) while a WebSocket echoes - nothing may stall (receive reserve).
+        ws, _ = ws_open(ca, "https://fcu.local")
+        results_dl: list[bool] = []
+
+        def download() -> None:
+            try:
+                c = tls_connect(ca)
+                status_dl, _, body_dl = http_request(c, "/blob")
+                results_dl.append(status_dl == 200 and body_dl == blob)
+                c.close()
+            except OSError:
+                results_dl.append(False)
+
+        t0 = time.monotonic()
+        threads = [threading.Thread(target=download) for _ in range(5)]
+        for th in threads:
+            th.start()
+        echo_ok = ws is not None
+        if ws:
+            reader = WsReader(ws)
+            for i in range(20):
+                payload = os.urandom(100 + i)
+                ws_send(ws, b"\x20" + payload)
+                echo_ok = echo_ok and reader.message(0x21, 10)[1:] == payload
+        for th in threads:
+            th.join(60)
+        dt = time.monotonic() - t0
+        check("5 parallel 100 KB downloads + WebSocket echo (buffer budget)",
+              results_dl.count(True) == 5 and echo_ok,
+              f"{sum(results_dl)}/5 downloads byte-exact, echo {'ok' if echo_ok else 'FAILED'}, "
+              f"{500 / dt:.0f} KiB/s total")
+        if ws:
+            ws.close()
         renewed = console.wait_for("dhcp: renewed 192.168.77.2", LEASE_S)
         check("DHCP renewal at T1 (unicast REQUEST)", renewed and "REQUEST (renew)" in dhcp_log, f"server saw {dhcp_log}")
     finally:

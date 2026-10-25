@@ -90,7 +90,8 @@ std::span<const std::byte> as_span(const unsigned char (&a)[N]) {
 
 // ---- network stack ---------------------------------------------------------------------
 using Pool = net::PacketPool<32>;
-using Ethernet = h5::Ethernet<Pool>;
+constexpr std::size_t eth_rx_descriptors = 8;
+using Ethernet = h5::Ethernet<Pool, eth_rx_descriptors>;
 struct NetConfig : net::DefaultStackConfig {
     static constexpr std::size_t udp_sockets = 6;  // DHCP, mDNS, SNTP, 2 DNS queries, spare
     // Browsers open several connections per page (spare sockets, keep-alive, the
@@ -98,6 +99,10 @@ struct NetConfig : net::DefaultStackConfig {
     static constexpr std::size_t tcp_connections = 8;
 };
 using Stack = net::Stack<Ethernet, Pool, NetConfig>;
+// Buffer budget (stack.hpp): the receive ring keeps its buffers, the reserve is for
+// receiving only, and every connection must still get at least one segment out.
+static_assert(Pool::capacity() >= eth_rx_descriptors + NetConfig::rx_reserve + NetConfig::tcp_connections,
+              "packet pool too small for RX ring + receive reserve + one segment per connection");
 constexpr std::size_t max_https_sessions = 6;
 using Server = net::HttpsServer<Stack, max_https_sessions>;
 

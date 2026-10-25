@@ -214,6 +214,26 @@ protected:
     }
 };
 
+TEST_F(NetTest, SendersLeaveTheReceiveReserve) {
+    std::vector<PacketRef> held;
+    while (PacketRef p = stack.allocate()) {
+        held.push_back(std::move(p));
+    }
+    EXPECT_EQ(pool.available(), TestStack::rx_reserve);
+    EXPECT_GT(stack.stats().tx_no_buffer, 0u);
+
+    // Receiving still works (the driver refills its ring from the reserve). The echo
+    // reply reuses the request buffer, so it goes out even now.
+    std::vector<std::byte> echo(8);
+    echo[0] = std::byte{8};
+    store_be16(echo.data() + 2, checksum(echo));
+    deliver(ipv4(ip_proto_icmp, echo));
+    EXPECT_EQ(sent().size(), 1u);
+
+    held.clear();  // transmit buffers acknowledged / done
+    EXPECT_TRUE(stack.allocate());
+}
+
 TEST_F(TcpTest, HandshakeAdvertisesMss) {
     deliver(tcp(peer_port, port, peer_seq, 0, tcp_flag::syn, {}, 8192, 1460));
     const auto f = sent();

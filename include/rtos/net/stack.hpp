@@ -16,6 +16,13 @@
 // dhcp.hpp). Unconfigured (address 0.0.0.0) the stack sends with source 0.0.0.0,
 // receives broadcasts, and answers neither ARP nor ICMP.
 //
+// Buffer budget: the packet pool is shared by the driver's receive ring and every
+// sender. Senders (allocate(): UDP, TCP data and control, ARP) never take the last
+// Cfg::rx_reserve buffers, so received frames - among them the ACKs that release
+// transmit buffers - always find a fresh DMA buffer. Without the reserve, transmit
+// segments in flight on all connections could empty the pool, every received ACK
+// would be dropped, and the connections would stall until they time out.
+//
 // Not implemented: IP fragmentation/reassembly (fragments are dropped; TCP MSS and
 // the 512-byte WebSocket messages never need it), IP options, IPv6.
 #pragma once
@@ -53,6 +60,8 @@ struct DefaultStackConfig {
     static constexpr std::size_t tcp_rx_segments = 4;
     static constexpr std::uint16_t tcp_mss = 1460;
     static constexpr std::uint32_t tcp_time_wait_ms = 2000;
+    /// Pool buffers only the receive path may take (see "Buffer budget").
+    static constexpr std::size_t rx_reserve = 8;
     /// FIN_WAIT_2 without the peer's FIN: give up (RST) after this time.
     static constexpr std::uint32_t tcp_fin_wait2_ms = 15'000;
 };
@@ -77,6 +86,7 @@ struct StackStats {
     std::uint32_t rx_dropped = 0;
     std::uint32_t tx_dropped = 0;
     std::uint32_t arp_requests = 0;
+    std::uint32_t tx_no_buffer = 0;  ///< sends deferred: pool down to the receive reserve
 };
 
 template <NetDriver Driver, PacketAllocator Pool, class Cfg = DefaultStackConfig>
@@ -171,8 +181,11 @@ public:
 
     // ---- buffers ------------------------------------------------------------------
 
-    /// Buffer for an outgoing payload (headroom for all headers reserved).
-    [[nodiscard]] PacketRef allocate() noexcept { return pool_.allocate(headroom); }
+    static constexpr std::size_t rx_reserve = Cfg::rx_reserve;
+
+    /// Buffer for an outgoing payload (headroom for all headers reserved). Empty if
+    /// the pool is down to the receive reserve: callers retry later.
+    [[nodiscard]] PacketRef allocate() noexcept { return allocate_tx(headroom); }
 
     // ---- UDP ----------------------------------------------------------------------
 
@@ -272,6 +285,14 @@ private:
         std::uint16_t port = 0;
         const UdpHandler* handler = nullptr;
     };
+
+    PacketRef allocate_tx(std::size_t front) noexcept {
+        if (pool_.available() <= rx_reserve) {
+            ++stats_.tx_no_buffer;
+            return {};
+        }
+        return pool_.allocate(front);
+    }
 
     // ---- input --------------------------------------------------------------------
 
@@ -490,7 +511,7 @@ private:
         e.requested_ms = now_ms_;
         ++e.attempts;
         ++stats_.arp_requests;
-        PacketRef p = pool_.allocate(ethernet_header_size);
+        PacketRef p = allocate_tx(ethernet_header_size);
         if (!p) {
             return;
         }
