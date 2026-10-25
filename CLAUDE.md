@@ -21,7 +21,9 @@ A workaround is allowed only when it
 - GCC 16 (x64 and arm-none-eabi): `C:\opt\msys64\ucrt64\bin`
 - QEMU with the `fcu` machine: `C:\opt\qemu-stm32h5` (built by `emulation/qemu/build-qemu.sh`)
 - Renode: `C:\opt\renode`
-- Build only through `CMakePresets.json` (`cmake --preset host|arm`, `cmake --build --preset host|arm`, `ctest --preset host|arm`); the presets put the toolchain on the PATH (`cmake --build build/host` fails silently: missing GCC DLLs).
+- Build only through `CMakePresets.json` (`cmake --preset host|arm|board`, `cmake --build --preset ...`, `ctest --preset host|arm`); the presets put the toolchain on the PATH (`cmake --build build/host` fails silently: missing GCC DLLs).
+- `arm` = firmware for the emulators (emulation network settings, emulator tests), `board` = firmware for the real FCU. Emulation-only values belong in the `arm` preset's cache variables (e.g. `RTOS_NET_*`), never as constants in firmware code.
+- Version control: git, branch `main`. Commit finished, tested steps; end messages with the Co-Authored-By line.
 - Text files use LF (`.gitattributes`); keep the user's `task.md` as is.
 
 ## Emulation (QEMU machine `fcu`, Renode `emulation/renode/fcu.repl`)

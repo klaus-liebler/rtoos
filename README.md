@@ -30,9 +30,18 @@ tools/make_certs.py           Server-Zertifikat, signiert von RTOS_CA_CERT/KEY o
 ## Build und Tests
 
 ```
-cmake --preset host && cmake --build --preset host && ctest --preset host
-cmake --preset arm  && cmake --build --preset arm  && ctest --preset arm
+cmake --preset host  && cmake --build --preset host  && ctest --preset host
+cmake --preset arm   && cmake --build --preset arm   && ctest --preset arm
+cmake --preset board && cmake --build --preset board
 ```
+
+| Preset | Zweck |
+|---|---|
+| `host` | Unit-Tests auf dem PC |
+| `arm` | Firmware für QEMU und Renode, mit Emulator-Tests: SNTP-Port 12300 (Port 123 hält der Windows-Zeitdienst), statische Ersatzadresse 192.168.77.2/24 über 192.168.77.1 |
+| `board` | Firmware für die echte Platine im echten Netz: SNTP-Port 123, keine statische Ersatzadresse (DHCP versucht es weiter) |
+
+Die Netzwerk-Einstellungen sind CMake-Cache-Variablen: `RTOS_NET_SNTP_HOST`, `RTOS_NET_SNTP_PORT` und `RTOS_NET_STATIC_FALLBACK` (Format `192.168.77.2/24,192.168.77.1`). Daraus erzeugt CMake den Header `fcu_net_config.hpp` mit `constexpr`-Werten; ungültige Werte brechen das Configure ab.
 
 `ctest --preset arm` lässt den Selbsttest in QEMU und in Renode laufen, außerdem den Netzwerktest `net_renode`. Der Netzwerktest wird übersprungen, wenn der TAP-Adapter fehlt.
 
@@ -82,11 +91,11 @@ Die Firmware stellt eine Web-App aus dem Flash bereit: `web/index.html` mit inli
 
 | Port | Dienst |
 |---|---|
-| 68/UDP | DHCP-Client ([dhcp.hpp](include/rtos/net/dhcp.hpp)): Adresse, Router, DNS- und NTP-Server; Erneuerung bei T1/T2. Ohne DHCP-Server nach 10 s statisch 192.168.77.2/24 |
+| 68/UDP | DHCP-Client ([dhcp.hpp](include/rtos/net/dhcp.hpp)): Adresse, Router, DNS- und NTP-Server; Erneuerung bei T1/T2. Ohne DHCP-Server nach 10 s die statische Ersatzadresse, sofern konfiguriert (nur Preset `arm`) |
 | zufällig/UDP | DNS-Resolver ([dns_resolver.hpp](include/rtos/net/dns_resolver.hpp)): A-Records mit CNAME, Cache mit TTL, zufällige ID und Quellport pro Anfrage (RFC 5452) |
 | 443/TCP | HTTPS (TLS 1.3, X25519/P-256, ChaCha20-Poly1305/AES-GCM): `/` (Web-App, `br`), `/blob` (100 KB Durchsatztest), `/ws` (WebSocket) |
 | 5353/UDP | mDNS `fcu.local` (neu angekündigt, sobald eine Adresse da ist) |
-| SNTP-Client | Server aus DHCP-Option 42, sonst per DNS `pool.ntp.org`; Port 12300 (im Test vom Host bereitgestellt, auf echten Netzen 123) |
+| SNTP-Client | Server aus DHCP-Option 42, sonst per DNS `pool.ntp.org`; Port 123 (Preset `arm`: 12300, vom Testskript bereitgestellt) |
 
 WebSocket-Protokoll (binär, erstes Byte = Typ):
 

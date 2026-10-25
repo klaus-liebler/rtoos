@@ -2,13 +2,14 @@
 //
 // Network firmware for the Factory Control Unit.
 //
-//   IPv4   DHCP (host name "fcu"); without a DHCP server after 10 s: static
-//          192.168.77.2/24, gateway 192.168.77.1 (host side of the Renode TAP network)
+//   IPv4   DHCP (host name "fcu"); optionally a static fallback address when no
+//          DHCP server answers within 10 s
 //   DNS    servers from the DHCP lease (option 6)
 //   mDNS   fcu.local
-//   SNTP   server from DHCP option 42, else the DNS name sntp_host; port sntp_port
-//          (12300 for the emulation test harness - Windows' own time service holds
-//          port 123 on the host; on a real network use 123)
+//   SNTP   server from DHCP option 42, else the DNS name sntp_host
+//   Build configuration (fcu_net_config.hpp, generated from CMake cache variables):
+//          preset "board" = real network (port 123, no fallback), preset "arm" =
+//          emulation (SNTP port 12300, fallback 192.168.77.2/24 via 192.168.77.1)
 //   HTTPS  https://fcu.local/        web app (brotli, compiled in with #embed)
 //          https://fcu.local/blob    100 KB test blob (throughput)
 //          wss://fcu.local/ws        binary WebSocket, messages <= 512 bytes:
@@ -33,6 +34,7 @@
 #include <string_view>
 
 #include "board/fcu.hpp"
+#include "fcu_net_config.hpp"
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/dns_resolver.hpp"
 #include "rtos/net/https_server.hpp"
@@ -106,13 +108,9 @@ static_assert(Pool::capacity() >= eth_rx_descriptors + NetConfig::rx_reserve + N
 constexpr std::size_t max_https_sessions = 6;
 using Server = net::HttpsServer<Stack, max_https_sessions>;
 
-/// Used when no DHCP server answers within dhcp_fallback_ms.
-constexpr net::Ipv4Config fallback_config{net::Ipv4Address::from(192, 168, 77, 2),
-                                          net::Ipv4Address::from(255, 255, 255, 0),
-                                          net::Ipv4Address::from(192, 168, 77, 1)};
+using fcu_net_config::sntp_host;
+using fcu_net_config::sntp_port;
 constexpr rtos::Tick dhcp_fallback_ms = 10'000;
-constexpr std::string_view sntp_host = "pool.ntp.org";
-constexpr std::uint16_t sntp_port = 12'300;
 
 RTOS_DMA_BUFFER Pool packet_pool;
 RTOS_DMA_BUFFER Ethernet ethernet{packet_pool, board::mac_address(), board::phy_address};
@@ -430,7 +428,9 @@ void net_main(void*) {
                 if (link && !addressing_started) {
                     addressing_started = true;
                     dhcp.start();
-                    fallback_at = now + dhcp_fallback_ms;
+                    if constexpr (fcu_net_config::static_fallback) {
+                        fallback_at = now + dhcp_fallback_ms;
+                    }
                 }
             }
         }
@@ -438,12 +438,12 @@ void net_main(void*) {
             fallback_at = 0;
             if (!dhcp.bound()) {
                 dhcp.stop();
-                stack.set_config(fallback_config);
+                stack.set_config(fcu_net_config::fallback);
                 board::print("dhcp: no server, static ");
-                print_ip(fallback_config.address);
+                print_ip(fcu_net_config::fallback.address);
                 board::print("\n");
                 mdns.announce();
-                sntp.set_server(fallback_config.gateway, sntp_port);
+                sntp.set_server(fcu_net_config::fallback.gateway, sntp_port);
             }
         }
         stack.poll(now);

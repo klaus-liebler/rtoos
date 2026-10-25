@@ -25,17 +25,32 @@
       }
     },
     {
-      "name": "arm",
+      "name": "arm-base",
+      "hidden": true,
       "inherits": "gcc16",
-      "displayName": "STM32H563 firmware (arm-none-eabi GCC 16)",
-      "binaryDir": "${sourceDir}/build/arm",
       "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "RTOS_CONTRACT_SEMANTIC": "quick_enforce",
-        "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
-        "RTOS_RENODE": "C:/opt/renode/renode.exe"
+        "RTOS_CONTRACT_SEMANTIC": "quick_enforce"
       }
+    },
+    {
+      "name": "arm",
+      "inherits": "arm-base",
+      "displayName": "STM32H563 firmware for the emulators (QEMU, Renode) + emulator tests",
+      "binaryDir": "${sourceDir}/build/arm",
+      "cacheVariables": {
+        "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
+        "RTOS_RENODE": "C:/opt/renode/renode.exe",
+        "RTOS_NET_SNTP_PORT": "12300",
+        "RTOS_NET_STATIC_FALLBACK": "192.168.77.2/24,192.168.77.1"
+      }
+    },
+    {
+      "name": "board",
+      "inherits": "arm-base",
+      "displayName": "STM32H563 firmware for the real Factory Control Unit (real network)",
+      "binaryDir": "${sourceDir}/build/board"
     }
   ],
   "buildPresets": [
@@ -46,6 +61,10 @@
     {
       "name": "arm",
       "configurePreset": "arm"
+    },
+    {
+      "name": "board",
+      "configurePreset": "board"
     }
   ],
   "testPresets": [
