@@ -19,7 +19,11 @@ add_executable(rtos_tests
     http_ws_test.cpp
     fuzz_test.cpp
     https_fairness_test.cpp
-    modbus_test.cpp)
+    modbus_test.cpp
+    usb_device_test.cpp
+    usb_cdc_test.cpp
+    usb_ncm_test.cpp
+    usb_fuzz_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_certs GTest::gtest_main)
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # UBSan in trap mode needs no runtime library; static linking makes the test

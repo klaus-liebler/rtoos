@@ -291,10 +291,36 @@ UDP-Dienste binden sich mit `stack.udp_bind(port, handler)` und sind ebenfalls e
 
 ### Weiteres Interface (USB CDC-NCM)
 
-1. **Treiber:** USB CDC-NCM transportiert Ethernet-Frames. Der Treiber erfüllt das Concept `NetDriver` ([driver.hpp](include/rtos/net/driver.hpp)): `mac()`, `link_up()`, `transmit(frame)`, `receive()`. Er nimmt seine Puffer aus demselben Paketpool; das Budget prüft `static_assert` in `fcu_net`.
+1. **Treiber:** [`usb::CdcNcm`](include/rtos/usb/cdc_ncm.hpp) ist zugleich USB-Klasse und `NetDriver` ([driver.hpp](include/rtos/net/driver.hpp)). Er nimmt seine Puffer aus demselben Paketpool wie Ethernet.
 2. **Anhängen:** `const auto usb = stack.attach(ncm, {192.168.7.1/24, kein Gateway});` (Platz für 2 Interfaces ist vorgesehen, `Cfg::interfaces`).
 3. **Adressen für den PC:** `rtos::net::DhcpServer<Stack> dhcpd{stack, usb, {.first = 192.168.7.10, .count = 2}}; dhcpd.start(); runtime.add(dhcpd);` Der Server vergibt keinen Router, der PC leitet also seinen Internetverkehr nicht über das Gerät.
 4. **Automatisch:** mDNS antwortet auf dem neuen Interface mit dessen Adresse, HTTPS ist dort ebenfalls erreichbar, und Antworten gehen über das Interface der eigenen Adresse (strong host).
+
+## USB-Gerätestack
+
+Ein eigener, schlanker Stack statt USBX ([include/rtos/usb](include/rtos/usb)). Er läuft als Dienst im Netz-Thread, und keine Klasse hat einen eigenen Thread:
+
+| Teil | Datei | Inhalt |
+|---|---|---|
+| Port | [usb.hpp](include/rtos/usb/usb.hpp) | Concept `DeviceController`: Endpunkte öffnen, Transfers, Stall, Adresse; der USB-Interrupt legt Ereignisse in einen lock-freien Ring ([spsc_ring.hpp](include/rtos/sync/spsc_ring.hpp)) und weckt den Netz-Thread |
+| Kern | [device.hpp](include/rtos/usb/device.hpp) | `usb::Device`: Enumeration, alle Standard-Requests aus USB 2.0 Kap. 9 (Richtung und Datenstufe geprüft), Control-Transfer-Stufen mit ZLP-Regel, SET_ADDRESS nach der Status-Stufe, Verteilen an die Klassen |
+| Deskriptoren | [descriptors.hpp](include/rtos/usb/descriptors.hpp) | zur Compile-Zeit gebaut (`constexpr`), Gesamtlänge und Interface-Zahl berechnet |
+| CDC-ACM | [cdc_acm.hpp](include/rtos/usb/cdc_acm.hpp) | virtuelle serielle Schnittstelle: Line-Coding, DTR/RTS, Ringpuffer mit Flusskontrolle, ZLP nach vollem letzten Paket |
+| CDC-NCM | [cdc_ncm.hpp](include/rtos/usb/cdc_ncm.hpp) | Ethernet zum PC und `NetDriver`: NTB16 mit geprüftem Empfang (auch verkettete NDPs, keine Schleifen), gebündeltes Senden mit 4-Byte-Ausrichtung (Divisor 4 für Windows' usbncm.sys seit KB5124008), Benachrichtigungen |
+| Modbus RTU | [rtu_service.hpp](include/rtos/modbus/rtu_service.hpp) | Modbus RTU über einen beliebigen Byte-Kanal, z. B. CDC-ACM, mit Frame-Ende durch Stille |
+
+Die Tests arbeiten nach dem Prinzip der USBX-Regressionstests: Ein simulierter Host ([usb_fixture.hpp](tests/usb_fixture.hpp)) treibt den echten Stack über einen Mock-Controller.
+- **Kern:** Enumeration, Standard-Requests, ZLP- und Overrun-Fälle aus TinyUSBs `test_usbd.c`.
+- **CDC-ACM:** Line-Coding, DTR-Reset bei Bus-Reset, Flusskontrolle.
+- **CDC-NCM:**
+  - eine Tabelle fehlerhafter NTBs;
+  - die NTB-Größe des Hosts;
+  - Durchlauf mit dem IP-Stack: ARP, Ping, DHCP-Lease über USB.
+- **Fuzzer:** SETUP-Pakete gegen ein NCM+ACM-Verbundgerät und mutierte NTBs.
+
+Gefundene und behobene Fehler: Standard-Requests mit falscher Richtung oder unerlaubter Datenstufe; IN-Requests mit `wLength 0`; NDP-Schleifen, die Datagramme mehrfach auslieferten.
+
+Der Registertreiber für den STM32H5-Controller `USB_DRD_FS` fehlt noch. QEMU und Renode modellieren ihn nicht, er wird auf der Platine verifiziert.
 5. **Test:** [dhcp_server_test.cpp](tests/dhcp_server_test.cpp) verbindet zwei Stacks über eine In-Memory-Leitung (`PipeEnd`), so wie der USB-Link es täte.
 
 ## Kernel-Dienste und Ausführungskontexte
