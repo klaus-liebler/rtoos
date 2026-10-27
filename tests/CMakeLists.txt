@@ -14,6 +14,7 @@ add_executable(rtos_tests
     net_services_test.cpp
     dhcp_dns_test.cpp
     tcp_server_test.cpp
+    dhcp_server_test.cpp
     tls_test.cpp
     http_ws_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_certs GTest::gtest_main)

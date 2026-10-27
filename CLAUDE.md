@@ -36,6 +36,10 @@ A workaround is allowed only when it
 - Timing: both emulators run 250 MIPS (CPI 1) at the firmware's 250 MHz SYSCLK. Renode uses `PerformanceInMips`; QEMU uses `-icount shift=2,sleep=off` (set by `emulation/run.py`; without it Windows host timers make SysTick lose periods). `DWT_CYCCNT` values from emulators are instruction counts, not hardware cycles; never quote them as hardware performance.
 - QEMU model changes: edit `emulation/qemu/{hw,include}` and the build patch `patches/0001-*.patch`, then rebuild (`build-qemu.sh`, or incrementally in `build/qemu/src/build` with `make && make install`).
 
+## Network architecture
+- Everything network runs in one thread: `NetRuntime` (stack poll, services, flush). New servers are services added to the runtime; TCP servers implement a `TcpSession` for `TcpServer` instead of their own connection handling.
+- Several interfaces: drivers satisfy `NetDriver` and are `attach`ed to the stack; services take an `InterfaceId` where it matters (DHCP, sending broadcasts) and react to `NetEventHandler` events instead of polling.
+
 ## Embedded rules
 - No heap at run time, no exceptions, no RTTI on the target. Contract semantic on the target: `quick_enforce`.
 - Hardware access only through ports that satisfy a concept (`rtos::CpuPort`); the kernel stays testable on the host.

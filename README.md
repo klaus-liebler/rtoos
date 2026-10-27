@@ -91,10 +91,11 @@ Die Firmware stellt eine Web-App aus dem Flash bereit: `web/index.html` mit inli
 
 | Port | Dienst |
 |---|---|
-| 68/UDP | DHCP-Client ([dhcp.hpp](include/rtos/net/dhcp.hpp)): Adresse, Router, DNS- und NTP-Server; Erneuerung bei T1/T2. Ohne DHCP-Server nach 10 s die statische Ersatzadresse, sofern konfiguriert (nur Preset `arm`) |
+| 68/UDP | DHCP-Client ([dhcp.hpp](include/rtos/net/dhcp.hpp)), pro Interface: Adresse, Router, DNS- und NTP-Server; Erneuerung bei T1/T2. Die Adresse wird erst nach ARP-Prüfung benutzt (RFC 5227), bei Konflikt folgt DHCPDECLINE. Nach einem Link-Wechsel prüft INIT-REBOOT die Lease. Ohne DHCP-Server nach 10 s die statische Ersatzadresse, sofern konfiguriert (nur Preset `arm`) |
+| 67/UDP | DHCP-Server ([dhcp_server.hpp](include/rtos/net/dhcp_server.hpp)) für ein Interface wie USB CDC-NCM; in `fcu_net` noch nicht aktiv |
 | zufällig/UDP | DNS-Resolver ([dns_resolver.hpp](include/rtos/net/dns_resolver.hpp)): A-Records mit CNAME, Cache mit TTL, zufällige ID und Quellport pro Anfrage (RFC 5452) |
 | 443/TCP | HTTPS (TLS 1.3, X25519/P-256, ChaCha20-Poly1305/AES-GCM): `/` (Web-App, `br`), `/blob` (100 KB Durchsatztest), `/ws` (WebSocket) |
-| 5353/UDP | mDNS `fcu.local` (neu angekündigt, sobald eine Adresse da ist) |
+| 5353/UDP | mDNS `fcu.local` auf allen Interfaces: Probing vor der Benutzung, Umbenennung zu `fcu-2` usw. bei Namenskonflikt (RFC 6762) |
 | SNTP-Client | Server aus DHCP-Option 42, sonst per DNS `pool.ntp.org`; Port 123 (Preset `arm`: 12300, vom Testskript bereitgestellt) |
 
 WebSocket-Protokoll (binär, erstes Byte = Typ):
@@ -118,6 +119,8 @@ Eigenschaften:
   - Ohne vollständigen Request schließt eine Session nach 10 s, ein unvollendeter Handshake bricht nach 10 s ab.
   - Nach close_notify und FIN ist die Session sofort frei; TCP gibt FIN_WAIT_2 nach 15 s auf.
   - Ein neuer WebSocket-Client bekommt den Status sofort, nicht erst im nächsten 100-ms-Takt.
+  - Ein WebSocket-Client, der 20 s nichts gesendet hat, bekommt einen Ping; kommt binnen 10 s nichts zurück, wird er geschlossen (Preset `arm`: 4 s und 3 s).
+- **Adresskonflikte (RFC 5227):** Jede neue Adresse wird vor der Benutzung mit ARP geprüft und danach angekündigt, das gilt auch für die statische Ersatzadresse. Benutzt eine andere Station unsere Adresse, verteidigt das Gerät sie einmal; wiederholt sich der Konflikt binnen 10 s, gibt es die Adresse auf.
 - **Sofort senden:** Der Stack hat keinen Nagle-Algorithmus, jeder Record geht sofort mit PSH raus. WebSocket-Header und Nutzlast liegen immer in einem Record.
 - **Krypto:** ChaCha20-Poly1305 wird bevorzugt, der H563 hat keinen AES-Beschleuniger. Für AES-GCM gibt es Tabellen (`GCM_TABLE_4BIT`). Thumb-2-Assembler wird für SP-ECC, ChaCha20, Poly1305 und SHA-2 genutzt.
 - **Messwerte:** Die Firmware misst mit `DWT_CYCCNT` und zeigt die Werte in der Web-App und auf der Konsole. Die Zahlen aus den Emulatoren sind Befehlszahlen, nicht echte Takte.
@@ -157,7 +160,7 @@ ctest --preset arm -R net_renode -V
 
 Der Test prüft der Reihe nach:
 
-- DHCP-Lease (DISCOVER/OFFER/REQUEST/ACK) und ihre Erneuerung bei T1
+- DHCP-Lease (DISCOVER/OFFER/REQUEST/ACK, danach ARP-Prüfung) und ihre Erneuerung bei T1
 - DNS-Lookup des SNTP-Servers mit zufälligem Quellport
 - Ping, mDNS und SNTP
 - TLS-Handshake mit Prüfung von Zertifikat und Hostname gegen `certs/ca.crt`
@@ -165,6 +168,9 @@ Der Test prüft der Reihe nach:
 - `/blob` mit Durchsatz über eine Keep-alive-Verbindung
 - WebSocket-Upgrade, Status, 100 Echos (1–511 Byte), LED-Befehl
 - Abweisung fremder Origins (403)
+- WebSocket trotz 7 ruhender keep-alive-Verbindungen (Verdrängung)
+- stummer WebSocket-Client wird nach Ping-Intervall + Pong-Timeout geschlossen
+- 5 parallele 100-KB-Downloads plus Echo (Puffer-Budget)
 
 ### Mit dem Browser testen
 
@@ -177,6 +183,49 @@ Hinweise:
 
 - **curl unter Windows:** Wegen des Schannel-Backends ist `--ssl-no-revoke` nötig, weil die CA keine Sperrliste veröffentlicht.
 - **Strenge Prüfung:** `net_test.py` prüft mit `VERIFY_X509_STRICT` nach RFC 5280.
+
+## Netzwerk-Architektur: Dienste und Interfaces
+
+```
+ Netz-Thread (eine Schleife, keine Locks)
+   NetRuntime::run_once(now)
+     Stack::poll       Frames aller Interfaces, Link-Wechsel, ARP, Adressprüfung, TCP-Timer
+     Dienste           AppTasks, DHCP, DNS, mDNS, SNTP, HTTPS ...  (service / next_deadline)
+     Stack::flush      FINs, ACKs, Fenster, die die Dienste ausgelöst haben
+   -> Schlafen bis zur frühesten Frist oder bis ein Treiber-IRQ weckt
+
+ Stack ── Interface 0: Ethernet (STM32H5 ETH)      eigene Adresse, ARP, Multicast, Link
+       └─ Interface 1: z. B. USB CDC-NCM (später)  eigene Adresse, ARP, Multicast, Link
+       gemeinsam: TCP, UDP, Paketpool, Routing (direktes Netz, sonst erstes Interface mit Gateway)
+```
+
+### Eigenen Server einhängen (Modbus TCP, OPC UA, ...)
+
+Ein TCP-Server besteht nur aus einer Session-Klasse; Annahme, Verdrängung ruhender Verbindungen, Fristen und Freigabe übernimmt [`TcpServer`](include/rtos/net/tcp_server.hpp):
+
+```cpp
+struct ModbusSession {                        // eine Verbindung
+    bool open(Connection& c, std::uint32_t now) noexcept;              // angenommen
+    void pump(Connection& c, std::uint32_t now, bool event) noexcept;  // lesen, antworten
+    void closed() noexcept;                   // Verbindung weg
+    bool finished() const noexcept;           // FIN gesendet: Platz frei
+    bool evictable() const noexcept;          // ruht: darf verdrängt werden
+    std::uint32_t deadline() const noexcept;  // nächste Frist (0: keine)
+};
+rtos::net::TcpServer<Stack, ModbusSession, 4> modbus{stack};
+modbus.listen(502);
+runtime.add(modbus, "modbus");                // läuft im Netz-Thread
+```
+
+UDP-Dienste binden sich mit `stack.udp_bind(port, handler)` und sind ebenfalls ein Dienst mit `service()` und `next_deadline()`. Auf Adress- oder Link-Wechsel reagiert ein Dienst über `stack.subscribe(NetEventHandler)`. Vorbild sind [dhcp.hpp](include/rtos/net/dhcp.hpp) und [mdns.hpp](include/rtos/net/mdns.hpp). Den Test für die Server-Ebene zeigt [tcp_server_test.cpp](tests/tcp_server_test.cpp).
+
+### Weiteres Interface (USB CDC-NCM)
+
+1. **Treiber:** USB CDC-NCM transportiert Ethernet-Frames. Der Treiber erfüllt das Concept `NetDriver` ([driver.hpp](include/rtos/net/driver.hpp)): `mac()`, `link_up()`, `transmit(frame)`, `receive()`. Er nimmt seine Puffer aus demselben Paketpool; das Budget prüft `static_assert` in `fcu_net`.
+2. **Anhängen:** `const auto usb = stack.attach(ncm, {192.168.7.1/24, kein Gateway});` (Platz für 2 Interfaces ist vorgesehen, `Cfg::interfaces`).
+3. **Adressen für den PC:** `rtos::net::DhcpServer<Stack> dhcpd{stack, usb, {.first = 192.168.7.10, .count = 2}}; dhcpd.start(); runtime.add(dhcpd);` Der Server vergibt keinen Router, der PC leitet also seinen Internetverkehr nicht über das Gerät.
+4. **Automatisch:** mDNS antwortet auf dem neuen Interface mit dessen Adresse, HTTPS ist dort ebenfalls erreichbar, und Antworten gehen über das Interface der eigenen Adresse (strong host).
+5. **Test:** [dhcp_server_test.cpp](tests/dhcp_server_test.cpp) verbindet zwei Stacks über eine In-Memory-Leitung (`PipeEnd`), so wie der USB-Link es täte.
 
 ## Kernel-Dienste und Ausführungskontexte
 
