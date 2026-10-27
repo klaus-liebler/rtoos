@@ -1,20 +1,14 @@
 #pragma once
-// Variant (Part 6 5.2.6) -- the tagged-union wire type used for every Read/Write attribute
-// Value. Deliberately built as a std::variant of concrete C++ types (type-safe, no manual
-// tagging) instead of open62541's void*+UA_DataType-descriptor approach -- "modern C++" per
-// the project brief, at zero cost here since -fno-rtti/-fno-exceptions still apply (std::visit
-// with `if constexpr` compiles down to a plain jump table, no dynamic_cast/throw involved).
+// Variant (Part 6 5.2.2.16): the scalar built-in types this server's variables use, plus
+// DateTime, ByteString and Guid. Arrays: a UInt32 array (the ArrayDimensions attribute) and a
+// String array (Server.NamespaceArray); the application's variables are scalars.
 //
-// Extending this later (adding a type from the full OPC UA canon, e.g. Guid, ByteString,
-// Int64/UInt64-as-payload, arrays): three places, no rework of the surrounding codec --
-//   1. Add the C++ type as a new alternative to Variant::Storage below.
-//   2. Add a TypeIdFor<T>() specialization.
-//   3. Add one `else if constexpr` arm each in EncodeVariant()/DecodeVariant() (variant.cpp).
-// Only the types this server's current address space actually needs are wired up today.
-// Note: DateTime is intentionally NOT a Variant alternative (yet) -- it's a `using ... =
-// int64_t` alias identical to Int64, so it can't coexist with Int64 in the same std::variant
-// without a distinct wrapper type; add that wrapper when a node actually needs a DateTime
-// Value (ServerStatus does not for the minimal address space built so far).
+// Decoding never fails on a well-formed value it cannot represent (an array, a matrix, an
+// ExtensionObject, a DataValue, ...): the value is skipped and the Variant holds Unsupported.
+// A Write of such a value is answered with BadTypeMismatch instead of closing the connection
+// over a decoding error.
+#include <algorithm>
+#include <span>
 #include <variant>
 
 #include "rtos/opcua/byte_stream.hpp"
@@ -22,9 +16,6 @@
 
 namespace rtos::opcua {
 
-// Part 6 5.1.2 Table 1 -- the standard built-in "Identifier" values, which double as this
-// type's NodeId in namespace 0 (see Variant::DataTypeNodeId()). Only scalar types (bit 7/6 of
-// the wire encoding byte, marking Array/ArrayDimensions, are never set by this server).
 enum class BuiltinTypeId : Byte {
     Boolean = 1, SByte = 2, Byte_ = 3, Int16 = 4, UInt16 = 5, Int32 = 6, UInt32 = 7,
     Int64 = 8, UInt64 = 9, Float = 10, Double = 11, String = 12, DateTime = 13, Guid = 14,
@@ -33,11 +24,50 @@ enum class BuiltinTypeId : Byte {
     Variant = 24, DiagnosticInfo = 25,
 };
 
+/// DateTime as a Variant alternative (DateTime itself is an Int64).
+struct DateTimeValue {
+    DateTime value = 0;
+    friend constexpr bool operator==(const DateTimeValue &, const DateTimeValue &) = default;
+};
+
+/// ByteString as a Variant alternative (a view: valid as long as its source is).
+struct ByteStringValue {
+    std::string_view value;
+    bool isNull = true;
+    friend constexpr bool operator==(const ByteStringValue &a, const ByteStringValue &b) {
+        return a.isNull == b.isNull && a.value == b.value;
+    }
+};
+
+/// A one-dimensional UInt32 array (the ArrayDimensions attribute).
+struct UInt32Array {
+    std::span<const UInt32> values;
+    friend constexpr bool operator==(const UInt32Array &a, const UInt32Array &b) {
+        return a.values.size() == b.values.size() && std::equal(a.values.begin(), a.values.end(), b.values.begin());
+    }
+};
+
+/// A one-dimensional String array (e.g. Server.NamespaceArray).
+struct StringArray {
+    std::span<const String> values;
+    friend constexpr bool operator==(const StringArray &a, const StringArray &b) {
+        return a.values.size() == b.values.size() && std::equal(a.values.begin(), a.values.end(), b.values.begin());
+    }
+};
+
+/// A decoded value this server does not represent: its type, and whether it was an array.
+struct Unsupported {
+    BuiltinTypeId type = BuiltinTypeId::Boolean;
+    bool array = false;
+    friend constexpr bool operator==(const Unsupported &, const Unsupported &) = default;
+};
+
 class Variant {
 public:
     using Storage = std::variant<std::monostate, Boolean, SByte, Byte, Int16, UInt16, Int32,
                                  UInt32, Int64, UInt64, Float, Double, String,
-                                 opcua::NodeId, StatusCode, QualifiedName, LocalizedText>;
+                                 opcua::NodeId, StatusCode, QualifiedName, LocalizedText,
+                                 DateTimeValue, ByteStringValue, Guid, UInt32Array, StringArray, Unsupported>;
     Storage storage;
 
     constexpr Variant() = default;
@@ -53,6 +83,11 @@ public:
     }
 
     constexpr bool IsEmpty() const { return std::holds_alternative<std::monostate>(storage); }
+    constexpr bool IsSupported() const { return !std::holds_alternative<Unsupported>(storage); }
+    constexpr bool IsArray() const {
+        if(const auto *u = std::get_if<Unsupported>(&storage)) return u->array;
+        return std::holds_alternative<UInt32Array>(storage) || std::holds_alternative<StringArray>(storage);
+    }
 
     // Undefined or the empty variant if IsEmpty() -- check first.
     BuiltinTypeId TypeId() const;
@@ -62,11 +97,14 @@ public:
 
     template <typename T>
     const T *GetIf() const { return std::get_if<T>(&storage); }
+
+    friend bool operator==(const Variant &a, const Variant &b) { return a.storage == b.storage; }
 };
 
 bool EncodeVariant(ByteWriter &w, const Variant &v);
-// Rejects (returns false) Variants with the Array or ArrayDimensions flag bits set -- this
-// server has no use for array-valued Variants yet (see header comment on extending this).
+/// False only for a malformed encoding (see the file comment).
 bool DecodeVariant(ByteReader &r, Variant &out);
+/// Skip one encoded value of built-in type `type` (any of the 25, nested ones included).
+bool SkipBuiltin(ByteReader &r, BuiltinTypeId type, int depth = 0);
 
 }  // namespace rtos::opcua

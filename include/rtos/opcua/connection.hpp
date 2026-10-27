@@ -13,6 +13,7 @@
 
 #include "rtos/opcua/address_space.hpp"
 #include "rtos/opcua/secure_channel.hpp"
+#include "rtos/opcua/services.hpp"
 #include "rtos/opcua/session.hpp"
 #include "rtos/opcua/transport.hpp"
 #include "rtos/opcua/types.hpp"
@@ -50,6 +51,7 @@ private:
     bool helloReceived_ = false;
     SecureChannel secureChannel_;
     Session session_;
+    ViewState view_;  // browse continuation points of the session
 
     // Scratch buffer every response is built into before handing it to transport_->Send() --
     // one per connection so concurrent connections never share/race on it (NX_TCPSERVER

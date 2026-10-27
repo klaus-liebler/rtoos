@@ -240,6 +240,22 @@ bool parse_response(UaBytes body, Response& out) {
 
 // ---- fixture ------------------------------------------------------------------------------------
 
+// ---- session steps ------------------------------------------------------------------------
+struct Created {
+    std::optional<Response> response;
+    ua::NodeId token;
+    UaBytes server_nonce;
+    bool server_certificate_null = true;
+};
+struct ActivateOptions {
+    bool sign = true;                     // a ClientSignature on a secured channel
+    bool corrupt_signature = false;       // ... with one bit flipped
+    ua::UInt32 token_type = 321;          // AnonymousIdentityToken
+    std::string_view policy_id = "anonymous";
+    bool null_token = false;              // no UserIdentityToken at all
+    ua::Int32 locale_ids = 0;
+};
+
 using Server = rtos::net::OpcUaServer<TestStack, 2>;
 
 class OpcUaTest : public NetTest {
@@ -375,6 +391,21 @@ protected:
     bool secured = false;
     std::array<Byte, 32> client_signing{}, server_signing{};
     ua::NodeId auth_token;
+    // the identity of the last signed channel (open_basic): CreateSession sends the
+    // certificate, ActivateSession signs with the key
+    std::span<const unsigned char> identity_cert, identity_key;
+
+    /// RSASSA-PKCS1-v1_5 SHA-256 signature with `key_der` (client side).
+    UaBytes rsa_sign(std::span<const unsigned char> key_der, std::span<const Byte> message) {
+        auto& cc = ClientCrypto::instance();
+        RsaKey key;
+        UaBytes signature(256);
+        const UaBytes info = digest_info(message);
+        const bool ok = cc.private_key(std::span<const Byte>(key_der.data(), key_der.size()), key) &&
+                        wc_RsaSSL_Sign(info.data(), (word32)info.size(), signature.data(), 256, &key, &cc.rng) == 256;
+        wc_FreeRsaKey(&key);
+        return ok ? signature : UaBytes{};
+    }
 
     std::optional<UaBytes> hello(ua::UInt32 receive_size = 65535) {
         ua::ByteWriter w(buffer);
@@ -445,6 +476,8 @@ protected:
     /// `after_send` runs between sending the OPN and receiving the answer.
     bool open_basic(std::span<const unsigned char> cert, std::span<const unsigned char> key_der,
                     const std::function<void()>& after_send = {}) {
+        identity_cert = cert;
+        identity_key = key_der;
         auto& cc = ClientCrypto::instance();
         RsaKey server_pub, client_priv, client_pub;
         if (!cc.public_key(std::span<const Byte>(server_cert, sizeof server_cert), server_pub) ||
@@ -622,8 +655,13 @@ protected:
         return resp;
     }
 
-    bool session() {
-        const auto created = call([&](ua::ByteWriter& w) {
+    // ---- sessions -------------------------------------------------------------------------
+    /// CreateSession; `certificate`: the client certificate to send (default: the channel's).
+    Created create_session(std::optional<std::span<const unsigned char>> certificate = std::nullopt,
+                           std::size_t nonce_size = 32) {
+        Created out;
+        const auto cert = certificate.value_or(identity_cert);
+        out.response = call([&](ua::ByteWriter& w) {
             ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::CreateSessionRequest));
             request_header(w, ua::NodeId(), 2);
             w.WriteString("urn:rtoos:test-client");
@@ -636,39 +674,88 @@ protected:
             w.WriteString(ua::String::Null());  // serverUri
             w.WriteString(kEndpoint);
             w.WriteString("session");
-            std::array<Byte, 32> nonce{};
-            w.WriteByteString(std::string_view(reinterpret_cast<const char*>(nonce.data()), 32), false);
-            if (secured) {
-                w.WriteByteString(std::string_view(reinterpret_cast<const char*>(client_cert), sizeof client_cert), false);
+            std::vector<Byte> nonce(nonce_size, 0x5A);
+            w.WriteByteString(std::string_view(reinterpret_cast<const char*>(nonce.data()), nonce.size()), false);
+            if (!cert.empty()) {
+                w.WriteByteString(std::string_view(reinterpret_cast<const char*>(cert.data()), cert.size()), false);
             } else {
                 w.WriteByteString({}, true);
             }
             w.WriteDouble(60000);
             w.WriteUInt32(0);
         });
-        if (!created || !ua::IsGood(created->result)) {
-            return false;
+        if (!out.response || !ua::IsGood(out.response->result) || out.response->type != ua::NodeId(0, ua::ns0::CreateSessionResponse)) {
+            return out;
         }
-        ua::ByteReader r = created->reader();
+        ua::ByteReader r = out.response->reader();
         ua::NodeId session_id;
+        ua::Double timeout = 0;
+        std::string_view nonce, server_certificate;
+        bool nonce_null = true;
         ua::DecodeNodeId(r, session_id);
-        ua::DecodeNodeId(r, auth_token);
-        const auto activated = call([&](ua::ByteWriter& w) {
+        ua::DecodeNodeId(r, out.token);
+        r.ReadDouble(timeout);
+        r.ReadByteString(nonce, nonce_null);
+        r.ReadByteString(server_certificate, out.server_certificate_null);
+        out.server_nonce.assign(nonce.begin(), nonce.end());
+        return out;
+    }
+
+    std::optional<Response> activate_session(const ua::NodeId& token, std::span<const Byte> server_nonce,
+                                             const ActivateOptions& o = {}) {
+        // ClientSignature (Part 4 5.6.3): server certificate (leaf) || server nonce
+        UaBytes signature;
+        if (secured && o.sign) {
+            UaBytes signed_data(std::begin(server_cert), std::end(server_cert));
+            signed_data.insert(signed_data.end(), server_nonce.begin(), server_nonce.end());
+            signature = rsa_sign(identity_key, signed_data);
+            if (o.corrupt_signature && !signature.empty()) signature[10] ^= 0x01;
+        }
+        return call([&](ua::ByteWriter& w) {
             ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::ActivateSessionRequest));
-            request_header(w, auth_token, 3);
-            w.WriteString(ua::String::Null());  // client signature
-            w.WriteByteString({}, true);
-            w.WriteInt32(0);   // software certificates
-            w.WriteInt32(0);   // locale ids
-            ua::EncodeNodeId(w, ua::NodeId(0, 321));  // AnonymousIdentityToken, binary
-            w.WriteByte(0x01);
-            std::array<Byte, 64> token_body{};
-            ua::ByteWriter t(token_body);
-            t.WriteString("anonymous");
-            w.WriteByteString(std::string_view(reinterpret_cast<const char*>(token_body.data()), t.Position()), false);
+            request_header(w, token, 3);
+            if (!signature.empty()) {
+                w.WriteString("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256");
+                w.WriteByteString(std::string_view(reinterpret_cast<const char*>(signature.data()), signature.size()),
+                                  false);
+            } else {
+                w.WriteString(ua::String::Null());  // client signature
+                w.WriteByteString({}, true);
+            }
+            w.WriteInt32(0);  // software certificates
+            w.WriteInt32(o.locale_ids);
+            for (ua::Int32 i = 0; i < o.locale_ids; i++) w.WriteString("en-US");
+            if (o.null_token) {
+                ua::EncodeNullExtensionObject(w);
+            } else {
+                ua::EncodeNodeId(w, ua::NodeId(0, o.token_type));
+                w.WriteByte(0x01);
+                std::array<Byte, 64> token_body{};
+                ua::ByteWriter t(token_body);
+                t.WriteString(o.policy_id);
+                w.WriteByteString(std::string_view(reinterpret_cast<const char*>(token_body.data()), t.Position()), false);
+            }
             w.WriteString(ua::String::Null());  // user token signature
             w.WriteByteString({}, true);
         });
+    }
+
+    std::optional<Response> close_session(const ua::NodeId& token) {
+        return call([&](ua::ByteWriter& w) {
+            ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::CloseSessionRequest));
+            request_header(w, token, 6);
+            w.WriteBoolean(true);  // deleteSubscriptions
+        });
+    }
+
+    /// CreateSession + ActivateSession; auth_token is the session's token afterwards.
+    bool session(const ActivateOptions& o = {}) {
+        const Created created = create_session();
+        if (!created.response || !ua::IsGood(created.response->result)) {
+            return false;
+        }
+        auth_token = created.token;
+        const auto activated = activate_session(created.token, created.server_nonce, o);
         return activated && ua::IsGood(activated->result);
     }
 
@@ -777,6 +864,54 @@ TEST(OpcUaStatusCodes, HaveTheSpecificationValues) {
     static_assert(std::to_underlying(ua::StatusCode::BadConnectionClosed) == 0x80AE0000u);
     static_assert(std::to_underlying(ua::StatusCode::BadUnexpectedError) == 0x80010000u);
     static_assert(std::to_underlying(ua::StatusCode::UncertainInitialValue) == 0x40920000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNonceInvalid) == 0x80240000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadCertificateInvalid) == 0x80120000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadApplicationSignatureInvalid) == 0x80580000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadCertificateUriInvalid) == 0x80170000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMaxAgeInvalid) == 0x80700000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTooManyOperations) == 0x80100000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadIndexRangeInvalid) == 0x80360000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadIndexRangeNoData) == 0x80370000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadDataEncodingInvalid) == 0x80380000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadDataEncodingUnsupported) == 0x80390000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadWriteNotSupported) == 0x80730000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadBrowseDirectionInvalid) == 0x804D0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadViewIdUnknown) == 0x806B0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadReferenceTypeIdInvalid) == 0x804C0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadContinuationPointInvalid) == 0x804A0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNoContinuationPoints) == 0x804B0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadBrowseNameInvalid) == 0x80600000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadSubscriptionIdInvalid) == 0x80280000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMonitoredItemIdInvalid) == 0x80420000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMonitoringModeInvalid) == 0x80410000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMonitoredItemFilterInvalid) == 0x80430000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMonitoredItemFilterUnsupported) == 0x80440000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadFilterNotAllowed) == 0x80450000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTooManySubscriptions) == 0x80770000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTooManyMonitoredItems) == 0x80DB0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTooManyPublishRequests) == 0x80780000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNoSubscription) == 0x80790000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadSequenceNumberUnknown) == 0x807A0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadMessageNotAvailable) == 0x807B0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadDeadbandFilterInvalid) == 0x808E0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTimeout) == 0x800A0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadRequestTooLarge) == 0x80B80000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadResponseTooLarge) == 0x80B90000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadSequenceNumberInvalid) == 0x80880000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadSecureChannelTokenUnknown) == 0x80870000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNodeClassInvalid) == 0x805F0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNodeAttributesInvalid) == 0x80620000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTcpEndpointUrlInvalid) == 0x80830000u);
+    static_assert(std::to_underlying(ua::StatusCode::GoodSubscriptionTransferred) == 0x002D0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTooManyArguments) == 0x80E50000u);
+    static_assert(std::to_underlying(ua::StatusCode::GoodCompletesAsynchronously) == 0x002E0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadNotFound) == 0x803E0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadInvalidState) == 0x80AF0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadTimestampNotSupported) == 0x80A10000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadWaitingForInitialData) == 0x80320000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadServerNotConnected) == 0x800D0000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadCertificateTimeInvalid) == 0x80140000u);
+    static_assert(std::to_underlying(ua::StatusCode::BadCertificateUntrusted) == 0x801A0000u);
 }
 
 // The monotonic clock is 64 bits: past 2^32 ms (49.7 days) it keeps counting forward.
@@ -988,6 +1123,292 @@ TEST_F(OpcUaTest, OpenSecureChannelIsBackgroundWork) {
 
 // A Read on one channel is answered in the foreground while an RSA OpenSecureChannel of
 // another client still waits for its background step (the RSA work does not delay it).
+// ---- sessions (ported from open62541 tests/server/check_session.c, check_session_errorpaths.c,
+// tests/client/check_activateSession.c; the tests about open62541's internals -- session
+// attributes, callbacks, access-control plugins, the local server API -- are listed with their
+// reasons in tests/open62541/rules.tsv) --------------------------------------------------------
+
+
+// open62541: server/check_session.c Session_close_before_activate
+TEST_F(OpcUaTest, Session_close_before_activate) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    const Created created = create_session();
+    ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+    const auto closed = close_session(created.token);
+    ASSERT_TRUE(closed);
+    EXPECT_EQ(closed->result, ua::StatusCode::Good);
+}
+
+// open62541: server/check_session.c Session_activate_then_close
+// open62541: client/check_activateSession.c Client_activateSession
+// open62541: client/check_activateSession.c Client_read
+// open62541: client/check_activateSession.c Client_activateSessionClose
+TEST_F(OpcUaTest, Session_activate_then_close) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    const auto [status, value] = read(ua::NodeId(0, ua::ns0::Server_ServerStatus_CurrentTime));
+    EXPECT_TRUE(ua::IsGood(status));
+    EXPECT_NE(value.GetIf<ua::DateTimeValue>(), nullptr);
+    const auto closed = close_session(auth_token);
+    ASSERT_TRUE(closed);
+    EXPECT_EQ(closed->result, ua::StatusCode::Good);
+}
+
+// After CloseSession, its token is unknown. (open62541 closes the SecureChannel first; a
+// closed channel ends the connection here, which the TCP tests cover.)
+// open62541: server/check_session.c Session_readAfterClose
+// open62541: server/check_session_errorpaths.c Session_closeTwiceFails
+TEST_F(OpcUaTest, Session_readAfterClose) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    ASSERT_TRUE(close_session(auth_token));
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadSessionIdInvalid);
+    const auto again = close_session(auth_token);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->result, ua::StatusCode::BadSessionIdInvalid);
+}
+
+// open62541: server/check_session.c Session_browse
+TEST_F(OpcUaTest, Session_browse) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    const auto r = call([&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::BrowseRequest));
+        request_header(w, auth_token, 8);
+        ua::EncodeNodeId(w, ua::NodeId());
+        w.WriteDateTime(0);
+        w.WriteUInt32(0);
+        w.WriteUInt32(0);
+        w.WriteInt32(1);
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::RootFolder));
+        w.WriteInt32(0);
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::HierarchicalReferences));
+        w.WriteBoolean(true);
+        w.WriteUInt32(0);
+        w.WriteUInt32(0x3F);
+    });
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->result, ua::StatusCode::Good);
+    ua::ByteReader b = r->reader();
+    ua::Int32 results = 0, references = 0;
+    ua::StatusCode status{};
+    std::string_view cp;
+    bool cp_null = true;
+    ASSERT_TRUE(b.ReadInt32(results) && results == 1 && b.ReadStatusCode(status) && b.ReadByteString(cp, cp_null) &&
+                b.ReadInt32(references));
+    EXPECT_EQ(status, ua::StatusCode::Good);
+    EXPECT_GT(references, 0) << "Objects, Types, Views";
+}
+
+// open62541: server/check_session.c Session_write_read_value
+TEST_F(OpcUaTest, Session_write_read_value) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    ASSERT_TRUE(session());
+    EXPECT_TRUE(ua::IsGood(write(kLed, 123)));
+    const auto [status, value] = read(kLed);
+    EXPECT_TRUE(ua::IsGood(status));
+    ASSERT_NE(value.GetIf<ua::UInt16>(), nullptr);
+    EXPECT_EQ(*value.GetIf<ua::UInt16>(), 123);
+}
+
+// open62541: server/check_session.c Session_multiple_reads
+TEST_F(OpcUaTest, Session_multiple_reads) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    for (int i = 0; i < 10; i++) {
+        EXPECT_TRUE(ua::IsGood(read(ua::NodeId(0, ua::ns0::Server_ServerStatus_State)).first)) << i;
+    }
+}
+
+// open62541: server/check_session.c Session_reconnect_after_disconnect
+TEST_F(OpcUaTest, Session_reconnect_after_disconnect) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    EXPECT_TRUE(ua::IsGood(read(kLed).first));
+    reset_connection();
+    poll(1);
+    channel = token = sequence = request = 0;
+    connect();
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    EXPECT_TRUE(ua::IsGood(read(kLed).first));
+}
+
+// Two clients, two sessions; a session's token is not valid on another connection.
+// open62541: server/check_session.c Session_create_multiple
+// open62541: server/check_session.c Session_secureChannel_mismatch
+// open62541: server/check_session.c Session_closeSession_secureChannel_mismatch
+TEST_F(OpcUaTest, Session_create_multiple) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    const ua::NodeId first_token = auth_token;
+    Peer first;
+    swap(first);
+    connect();
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    EXPECT_NE(auth_token, first_token);
+    EXPECT_TRUE(ua::IsGood(read(kLed).first));
+    // the first client's token on the second connection
+    const ua::NodeId own = auth_token;
+    auth_token = first_token;
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadSessionIdInvalid);
+    const auto closed = close_session(first_token);
+    ASSERT_TRUE(closed);
+    EXPECT_EQ(closed->result, ua::StatusCode::BadSessionIdInvalid);
+    auth_token = own;
+    swap(first);
+    EXPECT_TRUE(ua::IsGood(read(kLed).first)) << "the first session still works";
+}
+
+// open62541: server/check_session.c Session_createSession_certIgnored_on_none_policy
+// open62541: server/check_session.c Session_createSession_noServerCertOnNonePolicy
+TEST_F(OpcUaTest, Session_createSession_certIgnored_on_none_policy) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    static constexpr unsigned char dummy[] = {0x30, 0x82, 0x01, 0x00};
+    const Created created = create_session(std::span<const unsigned char>(dummy));
+    ASSERT_TRUE(created.response);
+    EXPECT_EQ(created.response->result, ua::StatusCode::Good);
+    EXPECT_TRUE(created.server_certificate_null) << "no server certificate on SecurityPolicy None";
+}
+
+// open62541: server/check_session_errorpaths.c Session_activateWithBadToken
+TEST_F(OpcUaTest, Session_activateWithBadToken) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    const Created created = create_session();
+    ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+    const auto r = activate_session(ua::NodeId(1, 4711), created.server_nonce);
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->result, ua::StatusCode::BadSessionIdInvalid);
+}
+
+// open62541: server/check_session_errorpaths.c Session_activate_withLocaleIds_succeeds
+// open62541: client/check_activateSession.c Client_activateSessionLocaleIds
+TEST_F(OpcUaTest, Session_activate_withLocaleIds_succeeds) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    EXPECT_TRUE(session({.locale_ids = 2}));
+}
+
+// open62541: client/check_activateSession.c Client_activateSession_nullToken
+TEST_F(OpcUaTest, Client_activateSession_nullToken) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    EXPECT_TRUE(session({.null_token = true}));
+}
+
+// A session without requests for its timeout is closed.
+// open62541: client/check_activateSession.c Client_activateSessionTimeout
+TEST_F(OpcUaTest, Client_activateSessionTimeout) {
+    static std::uint64_t ms = 1'000'000;
+    ua::SetClock(nullptr, []() noexcept { return ms; });
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());  // requested 60 s
+    ms += 59'000;
+    EXPECT_TRUE(ua::IsGood(read(kLed).first)) << "a request is activity";
+    ms += 59'000;
+    EXPECT_TRUE(ua::IsGood(read(kLed).first));
+    ms += 61'000;
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadSessionIdInvalid) << "timed out";
+    ua::SetClock(nullptr, nullptr);
+}
+
+// A renewed SecureChannel (a second OpenSecureChannel) keeps the session.
+// open62541: client/check_activateSession.c Client_renewSecureChannel
+TEST_F(OpcUaTest, Client_renewSecureChannel) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    const ua::UInt32 old_token = token, old_channel = channel;
+    ASSERT_TRUE(open_none());
+    EXPECT_EQ(channel, old_channel);
+    EXPECT_NE(token, old_token);
+    EXPECT_TRUE(ua::IsGood(read(kLed).first));
+}
+
+// ---- rtoos: session checks ---------------------------------------------------------------------
+
+TEST_F(OpcUaTest, ServicesNeedAnActivatedSession) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadSessionIdInvalid) << "no session";
+    const Created created = create_session();
+    ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+    auth_token = created.token;
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadSessionNotActivated);
+}
+
+TEST_F(OpcUaTest, UnknownServiceIsAFaultWithTheRequestHandle) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    const auto r = call([&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, 712));  // HistoryReadRequest
+        request_header(w, auth_token, 4242);
+    });
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->type, ua::NodeId(0, ua::ns0::ServiceFault));
+    EXPECT_EQ(r->result, ua::StatusCode::BadServiceUnsupported);
+}
+
+TEST_F(OpcUaTest, OnlyTheAnonymousTokenOfTheOfferedPolicyIsAccepted) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    for (const ActivateOptions o : {ActivateOptions{.token_type = 324}, ActivateOptions{.token_type = 327},
+                                    ActivateOptions{.policy_id = "username"}}) {
+        const Created created = create_session();
+        ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+        const auto r = activate_session(created.token, created.server_nonce, o);
+        ASSERT_TRUE(r);
+        EXPECT_EQ(r->result, ua::StatusCode::BadIdentityTokenInvalid);
+    }
+}
+
+TEST_F(OpcUaTest, ActivateSessionChecksTheClientSignature) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    for (const ActivateOptions o : {ActivateOptions{.sign = false}, ActivateOptions{.corrupt_signature = true}}) {
+        const Created created = create_session();
+        ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+        EXPECT_EQ(created.server_nonce.size(), 32u);
+        EXPECT_FALSE(created.server_certificate_null);
+        const auto r = activate_session(created.token, created.server_nonce, o);
+        ASSERT_TRUE(r);
+        EXPECT_EQ(r->result, ua::StatusCode::BadApplicationSignatureInvalid);
+    }
+    // a signature over an old nonce does not count either: every activation gets a new one
+    const Created created = create_session();
+    ASSERT_TRUE(created.response && ua::IsGood(created.response->result));
+    ASSERT_TRUE(activate_session(created.token, created.server_nonce));
+    const auto replay = activate_session(created.token, created.server_nonce);
+    ASSERT_TRUE(replay);
+    EXPECT_EQ(replay->result, ua::StatusCode::BadApplicationSignatureInvalid);
+}
+
+TEST_F(OpcUaTest, CreateSessionOnASignedChannelNeedsItsClientAndANonce) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    Created created = create_session(std::span<const unsigned char>(rogue_cert));
+    ASSERT_TRUE(created.response);
+    EXPECT_EQ(created.response->result, ua::StatusCode::BadCertificateInvalid) << "not the channel's certificate";
+    created = create_session(std::nullopt, 16);
+    ASSERT_TRUE(created.response);
+    EXPECT_EQ(created.response->result, ua::StatusCode::BadNonceInvalid);
+}
+
 TEST_F(OpcUaTest, ReadIsAnsweredWhileAnRsaOpenWaits) {
     ASSERT_TRUE(hello());
     ASSERT_TRUE(open_none());

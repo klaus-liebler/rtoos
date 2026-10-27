@@ -57,7 +57,9 @@ bool VerifySymmetric(std::span<const Byte> key, std::span<const Byte> message, s
     if(signature.size() != security::SHA256_DIGEST_SIZE) return false;
     Byte expected[security::SHA256_DIGEST_SIZE];
     if(!security::HmacSha256(key, message, expected)) return false;
-    return std::memcmp(expected, signature.data(), security::SHA256_DIGEST_SIZE) == 0;
+    // constant time: a byte-wise early exit would tell an attacker how much of a forged
+    // signature was right
+    return security::ConstantTimeEqual(expected, signature);
 }
 
 } // namespace
@@ -212,6 +214,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
         if(IsGood(result)) {
             isOpen_ = true;
             isDiscoveryOnly_ = true;
+            securityMode_ = SECURITY_MODE_NONE;
             channelId_ = assignedChannelId;
             tokenId_ += 1;
             createdAt_ = Now();
@@ -243,6 +246,11 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     // Defensive upper bound (real RSA-2048 certs are typically 900-1500 bytes) -- keeps the
     // fixed-size scratch buffers sized safely (see MAX_SIGNED).
     if(clientCertDer.size() > MAX_CERT_DER) return false;
+    // SenderCertificate may be a chain (leaf first): the leaf is the client's identity.
+    const std::span<const Byte> clientLeaf =
+        security::LeafCertificate(std::span<const Byte>((const Byte *)clientCertDer.data(), clientCertDer.size()));
+    if(clientLeaf.empty()) return false;
+    clientCertDer = std::string_view((const char *)clientLeaf.data(), clientLeaf.size());
 
     RsaPublicKey clientKey;
     certificateCheck_ = CheckClientCertificate(clientCertDer, clientKey);
@@ -319,6 +327,13 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     Byte serverNonce[NONCE_SIZE] = {};
     if(IsGood(result)) {
         isOpen_ = true;
+        isDiscoveryOnly_ = false;
+        securityMode_ = securityMode;
+        std::memcpy(clientModulus_, clientKey.modulus.data(), clientKey.modulus.size());
+        std::memcpy(clientExponent_, clientKey.exponent.data(), clientKey.exponent.size());
+        clientModulusSize_ = clientKey.modulus.size();
+        clientExponentSize_ = clientKey.exponent.size();
+        if(!security::Sha1(clientLeaf, clientThumbprint_)) return false;
         channelId_ = assignedChannelId;
         tokenId_ += 1;
         createdAt_ = Now();

@@ -2,6 +2,7 @@
 
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 #include <wolfssl/wolfcrypt/hmac.h>
@@ -185,6 +186,44 @@ bool HmacSha256(std::span<const Byte> key, std::span<const Byte> data, Byte out[
 
 bool Random(std::span<Byte> out) {
     return g_rngReady && wc_RNG_GenerateBlock(&g_rng, out.data(), (word32)out.size()) == 0;
+}
+
+namespace {
+bool AesCbc(std::span<const Byte, AES_KEY_SIZE> key, std::span<const Byte, AES_BLOCK_SIZE> iv, std::span<Byte> data,
+            bool encrypt) {
+    if(data.size() % AES_BLOCK_SIZE != 0) return false;
+    Aes aes;
+    if(wc_AesInit(&aes, g_heap, INVALID_DEVID) != 0) return false;
+    bool ok = wc_AesSetKey(&aes, key.data(), AES_KEY_SIZE, iv.data(), encrypt ? AES_ENCRYPTION : AES_DECRYPTION) == 0;
+    if(ok) {
+        ok = (encrypt ? wc_AesCbcEncrypt(&aes, data.data(), data.data(), (word32)data.size())
+                      : wc_AesCbcDecrypt(&aes, data.data(), data.data(), (word32)data.size())) == 0;
+    }
+    wc_AesFree(&aes);
+    return ok;
+}
+} // namespace
+
+bool AesCbcEncrypt(std::span<const Byte, AES_KEY_SIZE> key, std::span<const Byte, AES_BLOCK_SIZE> iv, std::span<Byte> data) {
+    return AesCbc(key, iv, data, true);
+}
+bool AesCbcDecrypt(std::span<const Byte, AES_KEY_SIZE> key, std::span<const Byte, AES_BLOCK_SIZE> iv, std::span<Byte> data) {
+    return AesCbc(key, iv, data, false);
+}
+
+bool ConstantTimeEqual(std::span<const Byte> a, std::span<const Byte> b) {
+    if(a.size() != b.size()) return false;
+    Byte diff = 0;
+    for(size_t i = 0; i < a.size(); i++) diff |= static_cast<Byte>(a[i] ^ b[i]);
+    return diff == 0;
+}
+
+std::span<const Byte> LeafCertificate(std::span<const Byte> certificates) {
+    Der d{certificates};
+    Byte tag = 0;
+    std::span<const Byte> content;
+    if(!d.Next(tag, content) || tag != 0x30) return {};
+    return certificates.first(d.pos);
 }
 
 bool PSha256(std::span<const Byte> secret, std::span<const Byte> seed, std::span<Byte> out) {

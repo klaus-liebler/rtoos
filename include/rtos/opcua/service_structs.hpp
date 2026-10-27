@@ -6,6 +6,7 @@
 #include <span>
 
 #include "rtos/opcua/byte_stream.hpp"
+#include "rtos/opcua/service_header.hpp"
 #include "rtos/opcua/types.hpp"
 
 namespace rtos::opcua {
@@ -20,8 +21,9 @@ struct ApplicationDescription {
     Int32 applicationType = APPLICATION_TYPE_SERVER;
     String gatewayServerUri;
     String discoveryProfileUri;
-    // discoveryUrls (array of String): always encoded as a null array (no discovery service,
-    // see the project's decision to leave UA_ENABLE_DISCOVERY-equivalent functionality out).
+    // discoveryUrls (array of String): this server's own endpoint URL (FindServers), or a null
+    // array when empty (endpoint descriptions, decoded client descriptions).
+    std::string_view discoveryUrl;
 };
 bool EncodeApplicationDescription(ByteWriter &w, const ApplicationDescription &v);
 // discoveryUrls is decoded and discarded (only relevant for a CreateSessionRequest's
@@ -65,5 +67,10 @@ bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl);
 // Reads and discards a length-prefixed array of String -- LocaleIds/ProfileUris/... wherever
 // this server accepts but ignores the filter.
 bool SkipStringArray(ByteReader &r);
+
+/// FindServers (Part 4 5.4.2): this server's own ApplicationDescription, unless serverUris
+/// names other servers only.
+bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std::string_view endpointUrl,
+                       ByteWriter &w);
 
 }  // namespace rtos::opcua

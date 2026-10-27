@@ -61,6 +61,7 @@ struct String {
     constexpr String() = default;
     constexpr String(std::string_view v) : value(v), isNull(false) {}
     static constexpr String Null() { return String{}; }
+    friend constexpr bool operator==(const String &, const String &) = default;
 };
 
 // Part 6 5.1.3: StatusCode is a plain UInt32, top 16 bits are the severity+code, low 16 bits
@@ -110,6 +111,54 @@ enum class StatusCode : UInt32 {
     BadConnectionClosed = 0x80AE0000,
     BadUnexpectedError = 0x80010000,
     UncertainInitialValue = 0x40920000,
+    BadNonceInvalid = 0x80240000,
+    BadCertificateInvalid = 0x80120000,
+    BadApplicationSignatureInvalid = 0x80580000,
+    BadCertificateUriInvalid = 0x80170000,
+    BadMaxAgeInvalid = 0x80700000,
+    BadTooManyOperations = 0x80100000,
+    BadIndexRangeInvalid = 0x80360000,
+    BadIndexRangeNoData = 0x80370000,
+    BadDataEncodingInvalid = 0x80380000,
+    BadDataEncodingUnsupported = 0x80390000,
+    BadWriteNotSupported = 0x80730000,
+    BadBrowseDirectionInvalid = 0x804D0000,
+    BadViewIdUnknown = 0x806B0000,
+    BadReferenceTypeIdInvalid = 0x804C0000,
+    BadContinuationPointInvalid = 0x804A0000,
+    BadNoContinuationPoints = 0x804B0000,
+    BadBrowseNameInvalid = 0x80600000,
+    BadSubscriptionIdInvalid = 0x80280000,
+    BadMonitoredItemIdInvalid = 0x80420000,
+    BadMonitoringModeInvalid = 0x80410000,
+    BadMonitoredItemFilterInvalid = 0x80430000,
+    BadMonitoredItemFilterUnsupported = 0x80440000,
+    BadFilterNotAllowed = 0x80450000,
+    BadTooManySubscriptions = 0x80770000,
+    BadTooManyMonitoredItems = 0x80DB0000,
+    BadTooManyPublishRequests = 0x80780000,
+    BadNoSubscription = 0x80790000,
+    BadSequenceNumberUnknown = 0x807A0000,
+    BadMessageNotAvailable = 0x807B0000,
+    BadDeadbandFilterInvalid = 0x808E0000,
+    BadTimeout = 0x800A0000,
+    BadRequestTooLarge = 0x80B80000,
+    BadResponseTooLarge = 0x80B90000,
+    BadSequenceNumberInvalid = 0x80880000,
+    BadSecureChannelTokenUnknown = 0x80870000,
+    BadNodeClassInvalid = 0x805F0000,
+    BadNodeAttributesInvalid = 0x80620000,
+    BadTcpEndpointUrlInvalid = 0x80830000,
+    GoodSubscriptionTransferred = 0x002D0000,
+    BadTooManyArguments = 0x80E50000,
+    GoodCompletesAsynchronously = 0x002E0000,
+    BadNotFound = 0x803E0000,
+    BadInvalidState = 0x80AF0000,
+    BadTimestampNotSupported = 0x80A10000,
+    BadWaitingForInitialData = 0x80320000,
+    BadServerNotConnected = 0x800D0000,
+    BadCertificateTimeInvalid = 0x80140000,
+    BadCertificateUntrusted = 0x801A0000,
 };
 
 constexpr bool IsGood(StatusCode s) { return (static_cast<UInt32>(s) & 0x80000000u) == 0; }
@@ -127,6 +176,7 @@ struct Guid {
     UInt16 data2 = 0;
     UInt16 data3 = 0;
     Byte data4[8] = {};
+    friend constexpr bool operator==(const Guid &, const Guid &) = default;
 };
 
 struct NodeId {
@@ -138,6 +188,14 @@ struct NodeId {
 
     constexpr NodeId() = default;
     constexpr NodeId(UInt16 ns, UInt32 id) : namespaceIndex(ns), type(NodeIdType::Numeric), numeric(id) {}
+    /// A String NodeId (e.g. ns=1;s=the.answer); the text must outlive the NodeId.
+    static constexpr NodeId Str(UInt16 ns, std::string_view text) {
+        NodeId id;
+        id.namespaceIndex = ns;
+        id.type = NodeIdType::String;
+        id.string = text;
+        return id;
+    }
 
     friend constexpr bool operator==(const NodeId &a, const NodeId &b) {
         if(a.namespaceIndex != b.namespaceIndex || a.type != b.type)
@@ -170,6 +228,7 @@ struct QualifiedName {
 
     constexpr QualifiedName() = default;
     constexpr QualifiedName(UInt16 ns, std::string_view n) : namespaceIndex(ns), name(n) {}
+    friend constexpr bool operator==(const QualifiedName &, const QualifiedName &) = default;
 };
 
 struct LocalizedText {
@@ -178,6 +237,7 @@ struct LocalizedText {
 
     constexpr LocalizedText() = default;
     constexpr LocalizedText(std::string_view loc, std::string_view t) : locale(loc), text(t) {}
+    friend constexpr bool operator==(const LocalizedText &, const LocalizedText &) = default;
 };
 
 // NodeClass (Part 3 5.2.2) -- only the classes this server's address space actually uses.
@@ -189,6 +249,8 @@ enum class NodeClass : Int32 {
     VariableType = 16,
     ReferenceType = 32,
     DataType = 64,
+    View = 128,
+    Method = 4,
 };
 
 }  // namespace rtos::opcua

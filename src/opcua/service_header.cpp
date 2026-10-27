@@ -2,6 +2,7 @@
 
 #include "rtos/opcua/clock.hpp"
 #include "rtos/opcua/codec.hpp"
+#include "rtos/opcua/node_ids.hpp"
 
 namespace rtos::opcua {
 
@@ -46,6 +47,10 @@ bool EncodeResponseHeader(ByteWriter &w, const ResponseHeader &h) {
     if(!w.WriteByte(0x00)) return false;      // serviceDiagnostics: DiagnosticInfo, no fields present
     if(!w.WriteInt32(-1)) return false;       // stringTable: null array
     return EncodeNullExtensionObject(w);      // additionalHeader
+}
+
+bool EncodeServiceFault(ByteWriter &w, const RequestHeader &request, StatusCode result) {
+    return EncodeNodeId(w, NodeId(0, ns0::ServiceFault)) && EncodeResponseHeader(w, MakeResponseHeader(request, result));
 }
 
 ResponseHeader MakeResponseHeader(const RequestHeader &request, StatusCode result) {

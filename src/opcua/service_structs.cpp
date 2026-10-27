@@ -1,7 +1,9 @@
 #include "rtos/opcua/service_structs.hpp"
 
 #include "rtos/opcua/codec.hpp"
+#include "rtos/opcua/node_ids.hpp"
 #include "rtos/opcua/secure_channel.hpp"
+#include "rtos/opcua/service_header.hpp"
 
 namespace rtos::opcua {
 
@@ -21,7 +23,8 @@ bool EncodeApplicationDescription(ByteWriter &w, const ApplicationDescription &v
     if(!w.WriteInt32(v.applicationType)) return false;
     if(!w.WriteString(v.gatewayServerUri)) return false;
     if(!w.WriteString(v.discoveryProfileUri)) return false;
-    return w.WriteInt32(-1); // discoveryUrls: null array
+    if(v.discoveryUrl.empty()) return w.WriteInt32(-1); // discoveryUrls: null array
+    return w.WriteInt32(1) && w.WriteString(v.discoveryUrl);
 }
 
 bool DecodeApplicationDescription(ByteReader &r, ApplicationDescription &out) {
@@ -75,6 +78,28 @@ EndpointDescription BuildEndpoint(std::string_view endpointUrl, bool secure) {
 bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl) {
     return w.WriteInt32(2) && EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, true)) &&
            EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, false));
+}
+
+bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std::string_view endpointUrl,
+                       ByteWriter &w) {
+    String requestedUrl;
+    if(!requestBody.ReadString(requestedUrl)) return false;
+    if(!SkipStringArray(requestBody)) return false; // LocaleIds
+    Int32 uris = 0;
+    bool ours = false;
+    if(!requestBody.ReadInt32(uris)) return false;
+    for(Int32 i = 0; i < uris; i++) {
+        String uri;
+        if(!requestBody.ReadString(uri)) return false;
+        ours = ours || (!uri.isNull && uri.value == APPLICATION_URI);
+    }
+    if(!requestBody.Ok()) return false;
+    if(!EncodeNodeId(w, NodeId(0, ns0::FindServersResponse))) return false;
+    if(!EncodeResponseHeader(w, MakeResponseHeader(header, StatusCode::Good))) return false;
+    if(uris > 0 && !ours) return w.WriteInt32(0);
+    ApplicationDescription self = BuildEndpoint(endpointUrl, false).server;
+    self.discoveryUrl = (!requestedUrl.isNull && !requestedUrl.value.empty()) ? requestedUrl.value : endpointUrl;
+    return w.WriteInt32(1) && EncodeApplicationDescription(w, self);
 }
 
 bool SkipStringArray(ByteReader &r) {

@@ -20,6 +20,7 @@ void Connection::Reset(UInt32 connectionSlot, ITransport *transport, const Addre
     helloReceived_ = false;
     secureChannel_ = SecureChannel{};
     session_ = Session{};
+    view_.Clear();
 }
 
 void Connection::SendErrorAndClose(StatusCode error, std::string_view reason) {
@@ -140,6 +141,13 @@ void Connection::HandleServiceMessage(std::span<const Byte> msg) {
     log_debug("OPC UA: slot %u service typeId=(ns=%u,i=%u)", connectionSlot_,
              static_cast<unsigned>(typeId.namespaceIndex), static_cast<unsigned>(typeId.numeric));
 
+    // Every request starts with a RequestHeader (Part 4 7.28), unknown services included.
+    RequestHeader header;
+    if(!DecodeRequestHeader(body, header)) {
+        SendErrorAndClose(StatusCode::BadDecodingError, "malformed RequestHeader");
+        return;
+    }
+
     ByteWriter w(sendBuffer_);
     size_t startPos = 0;
     if(!BeginSymmetricMessage(w, "MSG", secureChannel_.ChannelId(), secureChannel_.TokenId(),
@@ -148,38 +156,43 @@ void Connection::HandleServiceMessage(std::span<const Byte> msg) {
         return;
     }
 
+    const auto is = [&](UInt32 id) { return typeId == NodeId(0, id); };
+    const ServiceContext ctx{*addressSpace_, secureChannel_.IsUnsecured()};
     bool handled;
-    if(secureChannel_.IsUnsecured() && typeId == NodeId(0, ns0::WriteRequest)) {
+    if(is(ns0::GetEndpointsRequest)) {
+        handled = HandleGetEndpoints(header, body, endpointUrl_, w);
+    } else if(is(ns0::FindServersRequest)) {
+        handled = HandleFindServers(header, body, endpointUrl_, w);
+    } else if(is(ns0::CreateSessionRequest)) {
+        view_.Clear();
+        handled = session_.HandleCreate(header, body, connectionSlot_, endpointUrl_, secureChannel_, w);
+    } else if(is(ns0::ActivateSessionRequest)) {
+        handled = session_.HandleActivate(header, body, secureChannel_, w);
+    } else if(is(ns0::CloseSessionRequest)) {
+        view_.Clear();
+        handled = session_.HandleClose(header, body, w);
+    } else if(const StatusCode s = session_.Check(header.authenticationToken); !IsGood(s)) {
+        // every other service needs the activated session of this connection
+        handled = EncodeServiceFault(w, header, s);
+    } else if(is(ns0::WriteRequest) && secureChannel_.IsUnsecured()) {
         // rtoos: a SecurityPolicy#None channel is read-only (see secure_channel.hpp's file
         // header comment) -- writing needs a signed channel of a trusted client.
-        ResponseHeader fault;
-        fault.timestamp = Now();
-        fault.requestHandle = 0;
-        fault.serviceResult = StatusCode::BadSecurityModeInsufficient;
-        handled = EncodeNodeId(w, NodeId(0, ns0::ServiceFault)) && EncodeResponseHeader(w, fault);
-    } else if(typeId == NodeId(0, ns0::CreateSessionRequest)) {
-        handled = session_.HandleCreate(body, connectionSlot_, endpointUrl_, w);
-    } else if(typeId == NodeId(0, ns0::ActivateSessionRequest)) {
-        handled = session_.HandleActivate(body, w);
-    } else if(typeId == NodeId(0, ns0::CloseSessionRequest)) {
-        handled = session_.HandleClose(body, w);
-    } else if(typeId == NodeId(0, ns0::GetEndpointsRequest)) {
-        handled = HandleGetEndpoints(body, endpointUrl_, w);
-    } else if(typeId == NodeId(0, ns0::ReadRequest)) {
-        handled = HandleRead(*addressSpace_, session_.IsActive(), body, w);
-    } else if(typeId == NodeId(0, ns0::WriteRequest)) {
-        handled = HandleWrite(*addressSpace_, session_.IsActive(), body, w);
-    } else if(typeId == NodeId(0, ns0::BrowseRequest)) {
-        handled = HandleBrowse(*addressSpace_, session_.IsActive(), body, w);
+        handled = EncodeServiceFault(w, header, StatusCode::BadSecurityModeInsufficient);
+    } else if(is(ns0::ReadRequest)) {
+        handled = HandleRead(ctx, header, body, w);
+    } else if(is(ns0::WriteRequest)) {
+        handled = HandleWrite(ctx, header, body, w);
+    } else if(is(ns0::BrowseRequest)) {
+        handled = HandleBrowse(ctx, view_, header, body, w);
+    } else if(is(ns0::BrowseNextRequest)) {
+        handled = HandleBrowseNext(ctx, view_, header, body, w);
+    } else if(is(ns0::TranslateBrowsePathsToNodeIdsRequest)) {
+        handled = HandleTranslateBrowsePaths(ctx, header, body, w);
+    } else if(is(ns0::RegisterNodesRequest) || is(ns0::UnregisterNodesRequest)) {
+        handled = HandleRegisterNodes(header, body, w, is(ns0::UnregisterNodesRequest));
     } else {
-        // Unimplemented service (e.g. CreateSubscription -- "later", see project notes) --
-        // ServiceFault with requestHandle echoed as 0 since we deliberately don't decode a
-        // RequestHeader for a service we don't even recognize the body shape of.
-        ResponseHeader fault;
-        fault.timestamp = Now();
-        fault.requestHandle = 0;
-        fault.serviceResult = StatusCode::BadServiceUnsupported;
-        handled = EncodeNodeId(w, NodeId(0, ns0::ServiceFault)) && EncodeResponseHeader(w, fault);
+        // a service this server does not implement (Part 4 7.33: ServiceFault)
+        handled = EncodeServiceFault(w, header, StatusCode::BadServiceUnsupported);
     }
 
     if(!handled || !w.Ok() || !secureChannel_.SignAndFinishSymmetric(w, startPos)) {

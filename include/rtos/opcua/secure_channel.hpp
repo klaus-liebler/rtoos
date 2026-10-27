@@ -77,6 +77,15 @@ public:
     bool IsUnsecured() const { return isDiscoveryOnly_; }
     // Result of the last client certificate check (Basic256Sha256 OPN).
     security::CertificateCheck LastCertificateCheck() const { return certificateCheck_; }
+    // MessageSecurityMode of the open channel (SECURITY_MODE_*).
+    Int32 SecurityMode() const { return securityMode_; }
+    // The client's application certificate of a secured channel: SHA-1 thumbprint of its leaf
+    // and its RSA-2048 public key (CreateSession/ActivateSession check against these).
+    std::span<const Byte, security::SHA1_DIGEST_SIZE> ClientThumbprint() const { return clientThumbprint_; }
+    security::RsaPublicKey ClientKey() const {
+        return {std::span<const Byte>(clientModulus_, clientModulusSize_),
+                std::span<const Byte>(clientExponent_, clientExponentSize_)};
+    }
     UInt32 ChannelId() const { return channelId_; }
     UInt32 TokenId() const { return tokenId_; }
     // Pre-increment, not post: serverSequenceNumber_ starts at 0 (zero-init, see the .bss/.data
@@ -120,6 +129,12 @@ private:
     UInt32 revisedLifetimeMs_ = 0;
     UInt32 serverSequenceNumber_ = 0; // see NextServerSequenceNumber() comment: pre-incremented
     security::CertificateCheck certificateCheck_ = security::CertificateCheck::Ok;
+    Int32 securityMode_ = 0;
+    Byte clientThumbprint_[security::SHA1_DIGEST_SIZE] = {};
+    Byte clientModulus_[security::MAX_RSA_MODULUS_BYTES] = {};
+    Byte clientExponent_[8] = {};
+    size_t clientModulusSize_ = 0;
+    size_t clientExponentSize_ = 0;
 
     // HMAC-SHA256 signing keys derived from the OPN nonce exchange (Part 6 6.7.5) -- Sign mode
     // only needs these (no AES encrypting key/IV derived; see the file header comment).

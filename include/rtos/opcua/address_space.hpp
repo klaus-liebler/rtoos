@@ -60,9 +60,14 @@ struct Node {
     // staticValue mutation.
     WriteCallback writeCallback = nullptr;
     void *userContext = nullptr;
+    // ValueRank (Part 3 5.6.2): -1 scalar (every application variable), 1 a one-dimensional
+    // array (e.g. Server.NamespaceArray).
+    Int32 valueRank = -1;
 
     // --- ObjectType/VariableType/ReferenceType/DataType-only field (Part 3 5.6.2ff) ---
     bool isAbstract = false;
+    // --- ReferenceType-only: symmetric (References itself; Part 3 5.3.3) -- no InverseName ---
+    bool symmetric = false;
     // --- ReferenceType-only field -- mandatory (non-null) for an asymmetric ReferenceType per
     // spec (Part 3 5.5.2); none of this server's ReferenceTypes are symmetric, see
     // ReadNodeAttribute's Symmetric case (services.cpp).
@@ -186,7 +191,7 @@ constexpr bool AllDataTypesResolve(std::span<const Node> nodes) {
 // to fill in, and one this server actually shipped without at least once (2026-08-19).
 constexpr bool AllReferenceTypesHaveInverseName(std::span<const Node> nodes) {
     for(const Node &n : nodes) {
-        if(n.nodeClass == NodeClass::ReferenceType && n.inverseName.text.empty())
+        if(n.nodeClass == NodeClass::ReferenceType && !n.symmetric && n.inverseName.text.empty())
             return false;
     }
     return true;

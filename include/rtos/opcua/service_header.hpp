@@ -33,6 +33,9 @@ bool EncodeResponseHeader(ByteWriter &w, const ResponseHeader &h);
 // standard shape needed by every service handler's response.
 ResponseHeader MakeResponseHeader(const RequestHeader &request, StatusCode result);
 
+/// ServiceFault (Part 4 7.33): the answer to a request that failed as a whole.
+bool EncodeServiceFault(ByteWriter &w, const RequestHeader &request, StatusCode result);
+
 // ExtensionObject (Part 6 5.2.10) encoded as "no body" (TypeId = ns=0;i=0, encoding byte 0) --
 // used for RequestHeader.additionalHeader on encode, and reused as the generic "encode an
 // empty extension object" building block anywhere else it's needed later (e.g. a future

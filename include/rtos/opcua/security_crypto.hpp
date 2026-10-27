@@ -32,6 +32,19 @@ bool Sha256(std::span<const Byte> data, Byte out[SHA256_DIGEST_SIZE]);
 bool Sha1(std::span<const Byte> data, Byte out[SHA1_DIGEST_SIZE]);
 bool HmacSha256(std::span<const Byte> key, std::span<const Byte> data, Byte out[SHA256_DIGEST_SIZE]);
 bool Random(std::span<Byte> out);
+/// Equal contents, in time independent of where they differ (signature checks).
+bool ConstantTimeEqual(std::span<const Byte> a, std::span<const Byte> b);
+/// The first DER element of `certificates` - the leaf of a chain sent as one ByteString
+/// (Part 6 6.2.3: leaf followed by its issuers); empty if malformed.
+std::span<const Byte> LeafCertificate(std::span<const Byte> certificates);
+
+// AES-256-CBC (Basic256Sha256's SymmetricEncryptionAlgorithm, SignAndEncrypt): `data` (a
+// multiple of 16 bytes) in place; the IV is the channel's derived one for every message (Part 6
+// 6.7.5 -- the sequence header in the first block makes each message's first block unique).
+constexpr size_t AES_KEY_SIZE = 32;
+constexpr size_t AES_BLOCK_SIZE = 16;
+bool AesCbcEncrypt(std::span<const Byte, AES_KEY_SIZE> key, std::span<const Byte, AES_BLOCK_SIZE> iv, std::span<Byte> data);
+bool AesCbcDecrypt(std::span<const Byte, AES_KEY_SIZE> key, std::span<const Byte, AES_BLOCK_SIZE> iv, std::span<Byte> data);
 
 // RFC 5246 5. / OPC UA Part 6 6.7.5 -- expands (secret, seed) into exactly out.size() bytes.
 bool PSha256(std::span<const Byte> secret, std::span<const Byte> seed, std::span<Byte> out);
