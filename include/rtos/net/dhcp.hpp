@@ -170,7 +170,8 @@ public:
     DhcpClient& operator=(const DhcpClient&) = delete;
 
     bool start() noexcept {
-        if (!stack_.udp_bind(dhcp::client_port, udp_handler_, interface_) || !stack_.subscribe(events_)) {
+        if (!stack_.udp_bind(dhcp::client_port, udp_handler_, InterfaceSet::of({interface_})) ||
+            !stack_.subscribe(events_)) {
             return false;
         }
         restart(0);
@@ -180,7 +181,7 @@ public:
     /// Stop the protocol (e.g. to fall back to a static address); the interface's
     /// current configuration is left as it is.
     void stop() noexcept {
-        stack_.udp_unbind(dhcp::client_port, interface_);
+        stack_.udp_unbind(dhcp::client_port, udp_handler_);
         state_ = State::Stopped;
     }
 

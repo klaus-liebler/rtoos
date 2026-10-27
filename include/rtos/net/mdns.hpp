@@ -57,17 +57,22 @@ public:
     MdnsResponder(const MdnsResponder&) = delete;
     MdnsResponder& operator=(const MdnsResponder&) = delete;
 
-    /// Join the group on all interfaces and start probing where an address exists.
-    bool start(RenameCallback renamed = nullptr, void* context = nullptr) noexcept {
+    /// Answer on the interfaces in `on` (default: all): join the group there and start
+    /// probing where an address exists.
+    bool start(InterfaceSet on = InterfaceSet::all(), RenameCallback renamed = nullptr, void* context = nullptr) noexcept {
+        on_ = on;
         renamed_ = renamed;
         rename_context_ = context;
         for (std::size_t n = 0; n < stack_.interface_count(); ++n) {
-            if (!stack_.join(static_cast<InterfaceId>(n), mdns_group)) {
-                return false;
+            const auto id = static_cast<InterfaceId>(n);
+            if (on_.contains(id)) {
+                if (!stack_.join(id, mdns_group)) {
+                    return false;
+                }
+                restart(id, 0);
             }
-            restart(static_cast<InterfaceId>(n), 0);
         }
-        return stack_.udp_bind(mdns_port, udp_handler_) && stack_.subscribe(events_);
+        return stack_.udp_bind(mdns_port, udp_handler_, on_) && stack_.subscribe(events_);
     }
 
     void service() noexcept {
@@ -147,7 +152,7 @@ private:
     void restart(InterfaceId id, std::uint32_t delay_ms) noexcept {
         State& s = states_[id];
         s.sent = 0;
-        if (!stack_.configured(id)) {
+        if (!on_.contains(id) || !stack_.configured(id)) {
             s.phase = Phase::Idle;
             return;
         }
@@ -384,6 +389,7 @@ private:
     std::array<State, Stack::max_interfaces> states_{};
     std::uint32_t answered_ = 0;
     std::uint32_t conflicts_ = 0;
+    InterfaceSet on_ = InterfaceSet::none();
     RenameCallback renamed_ = nullptr;
     void* rename_context_ = nullptr;
     UdpHandler udp_handler_{this, &MdnsResponder::received};

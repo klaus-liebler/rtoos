@@ -52,6 +52,7 @@
 #include "rtos/net/bytes.hpp"
 #include "rtos/net/checksum.hpp"
 #include "rtos/net/driver.hpp"
+#include "rtos/net/interface.hpp"
 #include "rtos/net/packet.hpp"
 #include "rtos/net/tcp.hpp"
 
@@ -64,9 +65,6 @@ inline constexpr std::uint16_t ethertype_ipv4 = 0x0800;
 inline constexpr std::uint16_t ethertype_arp = 0x0806;
 inline constexpr std::uint8_t ip_proto_icmp = 1;
 inline constexpr std::uint8_t ip_proto_udp = 17;
-
-using InterfaceId = std::uint8_t;
-inline constexpr InterfaceId any_interface = 0xFF;
 
 struct DefaultStackConfig {
     static constexpr std::size_t interfaces = 2;
@@ -306,27 +304,29 @@ public:
 
     // ---- UDP ----------------------------------------------------------------------
 
-    /// Deliver datagrams for `port` (from `only` or, by default, any interface).
-    /// Several sockets may share a port when they are bound to different interfaces.
-    bool udp_bind(std::uint16_t port, const UdpHandler& handler, InterfaceId only = any_interface) noexcept {
+    /// Deliver datagrams for `port` arriving on the interfaces in `on` (default: all).
+    /// Sockets may share a port when their interface sets do not overlap.
+    bool udp_bind(std::uint16_t port, const UdpHandler& handler, InterfaceSet on = InterfaceSet::all()) noexcept {
+        if (on.empty()) {
+            return false;
+        }
         for (auto& s : udp_) {
-            if (s.handler != nullptr && s.port == port &&
-                (s.interface == only || s.interface == any_interface || only == any_interface)) {
+            if (s.handler != nullptr && s.port == port && s.on.intersects(on)) {
                 return false;  // in use
             }
         }
         for (auto& s : udp_) {
             if (s.handler == nullptr) {
-                s = {port, only, &handler};
+                s = {port, on, &handler};
                 return true;
             }
         }
         return false;
     }
 
-    void udp_unbind(std::uint16_t port, InterfaceId only = any_interface) noexcept {
+    void udp_unbind(std::uint16_t port, const UdpHandler& handler) noexcept {
         for (auto& s : udp_) {
-            if (s.handler != nullptr && s.port == port && s.interface == only) {
+            if (s.handler == &handler && s.port == port) {
                 s = UdpSocket{};
             }
         }
@@ -465,7 +465,7 @@ private:
 
     struct UdpSocket {
         std::uint16_t port = 0;
-        InterfaceId interface = any_interface;
+        InterfaceSet on = InterfaceSet::none();
         const UdpHandler* handler = nullptr;
     };
 
@@ -602,7 +602,7 @@ private:
             case ip_proto_udp: udp_input(id, std::move(packet), src, dst); break;
             case ip_proto_tcp:
                 if (dst == local_address(id)) {
-                    tcp_.input(std::move(packet), src, dst);
+                    tcp_.input(std::move(packet), src, dst, id);
                 }
                 break;
             default: ++stats_.rx_dropped; break;
@@ -660,7 +660,7 @@ private:
         }
         const std::uint16_t dst_port = load_be16(h + 2);
         for (const auto& s : udp_) {
-            if (s.handler != nullptr && s.port == dst_port && (s.interface == any_interface || s.interface == id)) {
+            if (s.handler != nullptr && s.port == dst_port && s.on.contains(id)) {
                 const UdpDatagram d{src, load_be16(h), dst, dst_port, id,
                                     std::span<const std::byte>(h + udp_header_size, length - udp_header_size)};
                 s.handler->received(s.handler->context, d);

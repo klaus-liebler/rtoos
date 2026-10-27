@@ -36,6 +36,7 @@
 #include "rtos/net/address.hpp"
 #include "rtos/net/bytes.hpp"
 #include "rtos/net/checksum.hpp"
+#include "rtos/net/interface.hpp"
 #include "rtos/net/packet.hpp"
 
 namespace rtos::net {
@@ -289,10 +290,21 @@ public:
     Tcp& operator=(const Tcp&) = delete;
 
     /// Accept connections on `port`. The handler must outlive the stack.
-    bool listen(std::uint16_t port, const TcpHandler& handler) noexcept {
+    /// Accept connections to `port` arriving on the interfaces in `on` (default: all).
+    /// Listeners may share a port when their interface sets do not overlap; a SYN on
+    /// an interface without a listener is answered with RST.
+    bool listen(std::uint16_t port, const TcpHandler& handler, InterfaceSet on = InterfaceSet::all()) noexcept {
+        if (on.empty()) {
+            return false;
+        }
+        for (const auto& l : listeners_) {
+            if (l.handler != nullptr && l.port == port && l.on.intersects(on)) {
+                return false;
+            }
+        }
         for (auto& l : listeners_) {
             if (l.handler == nullptr) {
-                l = {port, &handler};
+                l = {port, on, &handler};
                 return true;
             }
         }
@@ -310,7 +322,7 @@ public:
     // ---- called by the stack ----------------------------------------------------
 
     /// A TCP segment for us. `segment` starts at the TCP header.
-    void input(PacketRef segment, Ipv4Address src, Ipv4Address dst) noexcept {
+    void input(PacketRef segment, Ipv4Address src, Ipv4Address dst, InterfaceId arrived) noexcept {
         PacketBuffer& b = *segment;
         if (b.size() < tcp_header_size) {
             return;
@@ -327,6 +339,7 @@ public:
         Incoming seg{};
         seg.src = src;
         seg.dst = dst;
+        seg.interface = arrived;
         seg.src_port = load_be16(h);
         seg.dst_port = load_be16(h + 2);
         seg.seq = load_be32(h + 4);
@@ -389,12 +402,14 @@ public:
 private:
     struct Listener {
         std::uint16_t port = 0;
+        InterfaceSet on = InterfaceSet::none();
         const TcpHandler* handler = nullptr;
     };
 
     struct Incoming {
         Ipv4Address src;
         Ipv4Address dst;
+        InterfaceId interface;
         std::uint16_t src_port, dst_port;
         std::uint32_t seq, ack;
         std::uint8_t flags;
@@ -443,9 +458,9 @@ private:
         return nullptr;
     }
 
-    const TcpHandler* listener_for(std::uint16_t port) const noexcept {
+    const TcpHandler* listener_for(std::uint16_t port, InterfaceId interface) const noexcept {
         for (const auto& l : listeners_) {
-            if (l.handler != nullptr && l.port == port) {
+            if (l.handler != nullptr && l.port == port && l.on.contains(interface)) {
                 return l.handler;
             }
         }
@@ -456,7 +471,7 @@ private:
         if (seg.flags & tcp_flag::rst) {
             return;
         }
-        const TcpHandler* handler = listener_for(seg.dst_port);
+        const TcpHandler* handler = listener_for(seg.dst_port, seg.interface);
         if (handler != nullptr && (seg.flags & tcp_flag::syn) && !(seg.flags & tcp_flag::ack)) {
             for (auto& c : connections_) {
                 if (c.state_ == TcpState::Closed) {

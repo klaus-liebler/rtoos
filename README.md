@@ -213,9 +213,20 @@ struct ModbusSession {                        // eine Verbindung
     std::uint32_t deadline() const noexcept;  // nächste Frist (0: keine)
 };
 rtos::net::TcpServer<Stack, ModbusSession, 4> modbus{stack};
-modbus.listen(502);
+modbus.listen(502, rtos::net::InterfaceSet::of({eth}));  // nur Ethernet; ohne Angabe: alle
 runtime.add(modbus, "modbus");                // läuft im Netz-Thread
 ```
+
+**Welche Interfaces ein Dienst bedient**, legt eine `InterfaceSet` fest ([interface.hpp](include/rtos/net/interface.hpp)). Die Vorgabe ist überall „alle“, sonst eine Liste:
+
+| Dienst | Aufruf | Vorgabe |
+|---|---|---|
+| TCP-Server, HTTPS | `server.listen(port, set)` / `https.start(443, set)` | alle |
+| UDP-Socket | `stack.udp_bind(port, handler, set)` | alle |
+| mDNS | `mdns.start(set, ...)` | alle |
+| DHCP-Client, DHCP-Server | Konstruktor mit *einem* `InterfaceId` | (pro Interface, eigener Adresspool) |
+
+Ein Port darf mehrfach belegt werden, wenn sich die Mengen nicht überschneiden, z. B. zwei verschiedene Server auf Port 80 je Interface. Ein SYN auf einem Interface ohne passenden Listener beantwortet der Stack mit RST.
 
 UDP-Dienste binden sich mit `stack.udp_bind(port, handler)` und sind ebenfalls ein Dienst mit `service()` und `next_deadline()`. Auf Adress- oder Link-Wechsel reagiert ein Dienst über `stack.subscribe(NetEventHandler)`. Vorbild sind [dhcp.hpp](include/rtos/net/dhcp.hpp) und [mdns.hpp](include/rtos/net/mdns.hpp). Den Test für die Server-Ebene zeigt [tcp_server_test.cpp](tests/tcp_server_test.cpp).
 

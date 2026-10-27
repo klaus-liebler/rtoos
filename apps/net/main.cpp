@@ -476,10 +476,10 @@ void net_main(void*) {
         return;
     }
 
-    mdns.start(&on_mdns_renamed);
+    mdns.start(net::InterfaceSet::all(), &on_mdns_renamed);
     dhcp.start();
     sntp.start();
-    server.start(443);
+    server.start(443);  // all interfaces (a list: net::InterfaceSet::of({...}))
     board::print("net: mdns ");
     board::print(mdns.name());
     board::print(", https://");

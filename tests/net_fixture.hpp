@@ -150,7 +150,8 @@ protected:
 
     PacketRef tcp(std::uint16_t src_port, std::uint16_t dst_port, std::uint32_t seq, std::uint32_t ack,
                   std::uint8_t flags, std::string_view payload = {}, std::uint16_t window = 8192,
-                  std::optional<std::uint16_t> mss = std::nullopt) {
+                  std::optional<std::uint16_t> mss = std::nullopt, Ipv4Address dst = device_ip,
+                  Ipv4Address src = peer_ip) {
         const std::size_t hlen = mss ? 24 : 20;
         std::vector<std::byte> t(hlen + payload.size());
         store_be16(t.data(), src_port);
@@ -167,8 +168,8 @@ protected:
         }
         std::memcpy(t.data() + hlen, payload.data(), payload.size());
         store_be16(t.data() + 16,
-                   checksum_finish(checksum_add(t, TestStack::pseudo_sum(peer_ip, device_ip, ip_proto_tcp, t.size()))));
-        return ipv4(ip_proto_tcp, t);
+                   checksum_finish(checksum_add(t, TestStack::pseudo_sum(src, dst, ip_proto_tcp, t.size()))));
+        return ipv4(ip_proto_tcp, t, dst, src);
     }
 
     void deliver(PacketRef f) {

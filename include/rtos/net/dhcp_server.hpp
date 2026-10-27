@@ -49,7 +49,8 @@ public:
     DhcpServer& operator=(const DhcpServer&) = delete;
 
     bool start() noexcept {
-        return stack_.configured(interface_) && stack_.udp_bind(dhcp::server_port, udp_handler_, interface_);
+        return stack_.configured(interface_) &&
+               stack_.udp_bind(dhcp::server_port, udp_handler_, InterfaceSet::of({interface_}));
     }
 
     // NetService: expiry is checked lazily when an address is needed.

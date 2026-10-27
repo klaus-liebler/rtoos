@@ -67,7 +67,10 @@ public:
     TcpServer(const TcpServer&) = delete;
     TcpServer& operator=(const TcpServer&) = delete;
 
-    bool listen(std::uint16_t port) noexcept { return stack_.tcp().listen(port, handler_); }
+    /// Serve `port` on the interfaces in `on` (default: all).
+    bool listen(std::uint16_t port, InterfaceSet on = InterfaceSet::all()) noexcept {
+        return stack_.tcp().listen(port, handler_, on);
+    }
 
     // ---- NetService ------------------------------------------------------------
 

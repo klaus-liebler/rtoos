@@ -189,7 +189,7 @@ private:
 
     void unbind(Query& q) noexcept {
         if (q.port != 0) {
-            stack_.udp_unbind(q.port);
+            stack_.udp_unbind(q.port, q.handler);
             q.port = 0;
         }
     }

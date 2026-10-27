@@ -78,7 +78,10 @@ public:
     HttpsServer(const HttpsServer&) = delete;
     HttpsServer& operator=(const HttpsServer&) = delete;
 
-    bool start(std::uint16_t port = 443) noexcept { return tcp_.listen(port); }
+    /// Serve HTTPS on `port` on the interfaces in `on` (default: all).
+    bool start(std::uint16_t port = 443, InterfaceSet on = InterfaceSet::all()) noexcept {
+        return tcp_.listen(port, on);
+    }
 
     // ---- NetService ------------------------------------------------------------
     void service() noexcept { tcp_.service(); }

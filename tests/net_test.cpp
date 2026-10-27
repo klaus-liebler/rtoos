@@ -385,14 +385,48 @@ TEST_F(TwoInterfaceTest, UdpSocketsPerInterface) {
         static void received(void* self, const UdpDatagram&) noexcept { ++static_cast<Counter*>(self)->n; }
     } on_eth, on_usb;
     const UdpHandler h_eth{&on_eth, &Counter::received}, h_usb{&on_usb, &Counter::received};
-    ASSERT_TRUE(stack.udp_bind(67, h_eth, eth));
-    ASSERT_TRUE(stack.udp_bind(67, h_usb, usb_if));
-    EXPECT_FALSE(stack.udp_bind(67, h_eth));  // any-interface socket would overlap
+    ASSERT_TRUE(stack.udp_bind(67, h_eth, InterfaceSet::of({eth})));
+    ASSERT_TRUE(stack.udp_bind(67, h_usb, InterfaceSet::of({usb_if})));
+    EXPECT_FALSE(stack.udp_bind(67, h_eth));  // all interfaces would overlap
     deliver(udp(68, 67, as_bytes("a"), Ipv4Address::broadcast()));
     usb.rx.push_back(udp(68, 67, as_bytes("b"), Ipv4Address::broadcast(), usb_peer));
     poll();
     EXPECT_EQ(on_eth.n, 1);
     EXPECT_EQ(on_usb.n, 1);
+}
+
+TEST_F(TwoInterfaceTest, TcpListenerOnChosenInterfacesOnly) {
+    struct Counter {
+        int accepted = 0;
+        static void on(void* self, TcpConnectionBase&) noexcept { ++static_cast<Counter*>(self)->accepted; }
+    } modbus;
+    const TcpHandler h{&modbus, &Counter::on, nullptr, nullptr, nullptr};
+    ASSERT_TRUE(stack.tcp().listen(502, h, InterfaceSet::of({eth})));
+    EXPECT_FALSE(stack.tcp().listen(502, h));  // overlaps on eth
+    usb.rx.push_back(tcp(5000, 502, 1, 0, tcp_flag::syn, {}, 8192, 1460, usb_ip, usb_peer));
+    poll();
+    EXPECT_EQ(modbus.accepted, 0);
+    EXPECT_FALSE(usb_sent().empty());  // not served on USB: RST (after ARP for the peer)
+    deliver(tcp(5000, 502, 1, 0, tcp_flag::syn, {}, 8192, 1460));
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].flags(), tcp_flag::syn | tcp_flag::ack);  // eth: accepted
+}
+
+TEST_F(TwoInterfaceTest, SynOnInterfaceWithoutListenerIsReset) {
+    const TcpHandler h{nullptr, nullptr, nullptr, nullptr, nullptr};
+    ASSERT_TRUE(stack.tcp().listen(502, h, InterfaceSet::of({usb_if})));
+    deliver(tcp(5000, 502, 1, 0, tcp_flag::syn, {}, 8192, 1460));  // on eth
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_TRUE(f[0].flags() & tcp_flag::rst);
+}
+
+TEST_F(TwoInterfaceTest, ListenersShareAPortOnDisjointInterfaces) {
+    const TcpHandler a{nullptr, nullptr, nullptr, nullptr, nullptr}, b{nullptr, nullptr, nullptr, nullptr, nullptr};
+    EXPECT_TRUE(stack.tcp().listen(80, a, InterfaceSet::of({eth})));
+    EXPECT_TRUE(stack.tcp().listen(80, b, InterfaceSet::of({usb_if})));
+    EXPECT_FALSE(stack.tcp().listen(80, a, InterfaceSet::of({eth, usb_if})));
 }
 
 TEST_F(TwoInterfaceTest, LinkChangesAreReported) {
