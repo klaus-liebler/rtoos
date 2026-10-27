@@ -148,6 +148,12 @@ private:
     Keys client_{};  // what the client sends: verify, decrypt
     Keys server_{};  // what this server sends: sign, encrypt
     bool Encrypted() const { return securityMode_ == SECURITY_MODE_SIGN_AND_ENCRYPT; }
+    // SecurityTokenRequestType (Part 4 5.5.2.2): Issue opens a new channel, Renew needs an open one
+    static constexpr Int32 REQUEST_TYPE_ISSUE = 0, REQUEST_TYPE_RENEW = 1;
+    bool RequestTypeValid(Int32 requestType) const {
+        return (requestType == REQUEST_TYPE_ISSUE && !isOpen_) || (requestType == REQUEST_TYPE_RENEW && isOpen_);
+    }
+    Byte lastClientNonce_[security::SHA256_DIGEST_SIZE] = {};  // of the last Basic256Sha256 open
 };
 
 }  // namespace rtos::opcua

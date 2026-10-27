@@ -46,6 +46,7 @@ std::size_t browse_with_max_results(Open62541ViewTest& t, const BrowseDescriptio
 }
 
 // open62541: server/check_services_view.c Service_Browse_WithMaxResults
+// open62541: server/check_services_attributes_all.c browse_next
 TEST_F(Open62541ViewTest, Service_Browse_WithMaxResults) {
     const BrowseDescription d{.node = ns0(ua::ns0::Server)};
     const BrowseResult all = browse(d);
@@ -86,6 +87,7 @@ TEST_F(Open62541ViewTest, Service_Browse_WithBrowseName) {
 }
 
 // open62541: server/check_services_view.c Service_Browse_ClassMask
+// open62541: server/check_server_client_readwrite.c browse_with_filter
 TEST_F(Open62541ViewTest, Service_Browse_ClassMask) {
     const auto with_mask = [&](ua::UInt32 mask) {
         const BrowseResult r = browse({.node = ns0(ua::ns0::ObjectsFolder), .nodeClassMask = mask});
@@ -104,6 +106,7 @@ TEST_F(Open62541ViewTest, Service_Browse_ClassMask) {
 }
 
 // open62541: server/check_services_view.c Service_Browse_ReferenceTypes
+// open62541: server/check_services_attributes_all.c browse_with_filter
 TEST_F(Open62541ViewTest, Service_Browse_ReferenceTypes) {
     const BrowseResult all = browse({.node = ns0(ua::ns0::ObjectsFolder), .resultMask = 0x01});
     ASSERT_EQ(all.status, ua::StatusCode::Good);
@@ -117,6 +120,8 @@ TEST_F(Open62541ViewTest, Service_Browse_ReferenceTypes) {
 }
 
 // open62541: server/check_services_view.c ServiceTest_TranslateBrowsePathsToNodeIds
+// open62541: server/check_server_client_readwrite.c translate_browse_path
+// open62541: server/check_services_attributes_all.c translate_browsepath
 TEST_F(Open62541ViewTest, ServiceTest_TranslateBrowsePathsToNodeIds) {
     // /Objects/Server/ServerStatus/State = 85/2253/2256/2259
     const PathResult r = translate(ns0(ua::ns0::ObjectsFolder),
@@ -143,6 +148,7 @@ TEST_F(Open62541ViewTest, Service_TranslateBrowsePathsWithHashCollision) {
 }
 
 // open62541: server/check_services_view.c Service_TranslateBrowsePathsNoMatches
+// open62541: server/check_services_attributes_all.c translate_browsepath_bad
 TEST_F(Open62541ViewTest, Service_TranslateBrowsePathsNoMatches) {
     const PathResult r = translate(ns0(ua::ns0::ObjectsFolder),
                                    {{.referenceType = ns0(ua::ns0::Organizes),
@@ -154,6 +160,8 @@ TEST_F(Open62541ViewTest, Service_TranslateBrowsePathsNoMatches) {
 // The "simplified browse path" of open62541 is a TranslateBrowsePaths over hierarchical
 // references (with subtypes).
 // open62541: server/check_services_view.c BrowseSimplifiedBrowsePath
+// open62541: server/check_server_readwrite.c srv_browseSimplified
+// open62541: server/check_server.c checkServerTranslateBrowsePath
 TEST_F(Open62541ViewTest, BrowseSimplifiedBrowsePath) {
     const PathResult r = translate(ns0(ua::ns0::RootFolder),
                                    {{.referenceType = ns0(ua::ns0::HierarchicalReferences), .includeSubtypes = true,
@@ -176,6 +184,7 @@ TEST_F(Open62541ViewTest, BrowsePathTooLongIsRejected) {
 }
 
 // open62541: server/check_services_view.c Service_Browse_EmptyRefType
+// open62541: server/check_server.c checkServerBrowse
 TEST_F(Open62541ViewTest, Service_Browse_EmptyRefType) {
     const BrowseResult r = browse({.node = ns0(ua::ns0::ObjectsFolder), .includeSubtypes = true});
     EXPECT_EQ(r.status, ua::StatusCode::Good);
@@ -223,6 +232,7 @@ TEST_F(Open62541ViewTest, View_TranslateBrowsePath_emptyPath) {
 }
 
 // open62541: server/check_services_view.c View_BrowseBothDirections_includesInverse
+// open62541: server/check_server_client_readwrite.c browse_all_directions
 TEST_F(Open62541ViewTest, View_BrowseBothDirections_includesInverse) {
     const BrowseResult r = browse({.node = ns0(ua::ns0::ObjectsFolder), .direction = 2,
                                    .referenceType = ns0(ua::ns0::HierarchicalReferences), .includeSubtypes = true});
@@ -271,6 +281,8 @@ TEST_F(Open62541ViewTest, Service_UnregisterNodes_tooMany) {
 }
 
 // Registered NodeIds are the NodeIds themselves (no aliases), string ones included.
+// open62541: server/check_server_client_readwrite.c client_register_nodes
+// open62541: server/check_server_readwrite.c srv_registerNodes
 TEST_F(Open62541ViewTest, RegisterNodesReturnsTheNodeIds) {
     Response resp = register_request({kAnswer, kDevice}, false);
     ASSERT_EQ(resp.result, ua::StatusCode::Good);

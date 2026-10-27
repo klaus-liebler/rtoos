@@ -126,10 +126,7 @@ bool SecureChannel::SignAndFinishSymmetric(ByteWriter &w, size_t startPos) {
     if(!w.WriteRaw(signature, sizeof(signature))) return false;
     if(!Encrypted()) return true;
     // encrypt in place: everything after the cleartext header (sequence header on)
-    const auto written = w.Written();
-    const std::span<Byte> encrypted(const_cast<Byte *>(written.data()) + startPos + SYMMETRIC_CLEAR_HEADER,
-                                    written.size() - startPos - SYMMETRIC_CLEAR_HEADER);
-    return security::AesCbcEncrypt(server_.encrypting, server_.iv, encrypted);
+    return security::AesCbcEncrypt(server_.encrypting, server_.iv, w.WrittenFrom(startPos + SYMMETRIC_CLEAR_HEADER));
 }
 
 bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSecureMessage &out) {
@@ -253,7 +250,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
         if(!seq.ReadUInt32(requestedLifetimeMs)) return false;
         if(!seq.Ok()) return false;
         (void)clientProtocolVersion;
-        (void)requestType;
+        if(!RequestTypeValid(requestType)) return false;
 
         StatusCode result = (securityMode == SECURITY_MODE_NONE)
             ? StatusCode::Good : StatusCode::BadSecurityModeRejected;
@@ -363,7 +360,11 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     if(!seq.ReadUInt32(requestedLifetimeMs)) return false;
     if(!seq.Ok()) return false;
     (void)clientProtocolVersion;
-    (void)requestType; // Issue vs. Renew handled identically, see the header comment
+    if(!RequestTypeValid(requestType)) return false;
+    // a renewal brings a new nonce: reusing the old one would give the old keys again
+    if(requestType == REQUEST_TYPE_RENEW && !clientNonceIsNull && clientNonce.size() == NONCE_SIZE &&
+       security::ConstantTimeEqual(std::span<const Byte>((const Byte *)clientNonce.data(), NONCE_SIZE), lastClientNonce_))
+        return false;
 
     StatusCode result = (securityMode == SECURITY_MODE_SIGN || securityMode == SECURITY_MODE_SIGN_AND_ENCRYPT)
         ? StatusCode::Good : StatusCode::BadSecurityModeRejected;
@@ -403,6 +404,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
         };
         if(!derive(serverNonceSpan, clientNonceSpan, client_) || !derive(clientNonceSpan, serverNonceSpan, server_))
             return false;
+        std::memcpy(lastClientNonce_, clientNonce.data(), NONCE_SIZE);
     }
 
     // --- Build the OpenSecureChannelResponse body (SeqHeader + Body) ---

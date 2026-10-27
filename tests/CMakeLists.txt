@@ -26,7 +26,9 @@ add_executable(rtos_tests
     usb_fuzz_test.cpp
     opcua_test.cpp
     opcua_o6_view_test.cpp
-    opcua_o6_attributes_test.cpp)
+    opcua_o6_attributes_test.cpp
+    opcua_o6_subscriptions_test.cpp
+    opcua_codec_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_certs GTest::gtest_main)
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # UBSan in trap mode needs no runtime library; static linking makes the test

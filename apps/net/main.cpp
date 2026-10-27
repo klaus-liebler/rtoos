@@ -30,6 +30,7 @@
 //            OpcUaMessages (UInt16, inputs 2..5) - the same registers as Modbus.
 //            Basic256Sha256 Sign or SignAndEncrypt with a client certificate signed by the CA: read and
 //            write; SecurityPolicy None: read only. RSA-2048 (OPC UA only, see CLAUDE.md).
+//            Subscriptions (data changes) on every variable.
 //
 // One network thread owns the whole stack: it runs Stack::poll() whenever the ETH
 // interrupt signals it (notify_from_isr) or the next protocol timer is due.

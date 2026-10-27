@@ -14,6 +14,10 @@
 // (two OAEP decryptions, one signature) - the most expensive single step of the whole
 // device. An OPN is background work (one step), every other message is answered inline.
 //
+// Subscriptions: every pump() ticks the session's subscriptions (sampling, publishing cycles)
+// and sends due Publish responses once the previous message has left (ITransport::CanSend);
+// deadline() includes the next sampling or publishing time.
+//
 // Framing: one UA TCP message at a time (header MessageSize, single chunk, at most
 // Connection's buffer); a response the TCP window cannot take at once is finished before
 // the next message is read.
@@ -28,6 +32,7 @@
 
 #include "rtos/net/interface.hpp"
 #include "rtos/net/tcp_server.hpp"
+#include "rtos/opcua/clock.hpp"
 #include "rtos/opcua/address_space.hpp"
 #include "rtos/opcua/connection.hpp"
 #include "rtos/opcua/secure_channel.hpp"
@@ -68,7 +73,7 @@ public:
     /// `endpoint_url` (e.g. "opc.tcp://fcu.local:4840") and `address_space` outlive the server.
     OpcUaServer(Stack& stack, const opcua::AddressSpace& address_space, std::string_view endpoint_url,
                 const OpcUaServerConfig& config = {}) noexcept
-        : tcp_(stack), address_space_(address_space), endpoint_url_(endpoint_url), config_(config) {
+        : stack_(stack), tcp_(stack), address_space_(address_space), endpoint_url_(endpoint_url), config_(config) {
         for (std::size_t i = 0; i < MaxClients; ++i) {
             auto& s = tcp_.session(static_cast<std::uint8_t>(i));
             s.owner = this;
@@ -137,6 +142,7 @@ private:
             return true;
         }
         void RequestClose() override { close_requested = true; }
+        bool CanSend() const override { return conn != nullptr && pending.empty() && !close_requested; }
 
         // ---- TcpSession ---------------------------------------------------------------
         bool open(Connection& c, std::uint32_t now) noexcept {
@@ -179,6 +185,11 @@ private:
                     return;
                 }
             }
+            // subscriptions: sampling, publishing cycles, Publish responses
+            if (!close_requested && !open_waiting && pending.empty()) {
+                protocol.Tick();
+                flush();
+            }
             const std::uint32_t idle = owner->config_.idle_timeout_ms;
             if ((close_requested && pending.empty()) || conn->eof() ||
                 (idle != 0 && static_cast<std::int32_t>(now - (last_ms + idle)) >= 0)) {
@@ -191,8 +202,21 @@ private:
         [[nodiscard]] bool finished() const noexcept { return done; }
         [[nodiscard]] bool evictable() const noexcept { return rx_size == 0 && pending.empty() && !open_waiting; }
         [[nodiscard]] std::uint32_t deadline() const noexcept {
+            if (done) {
+                return 0;
+            }
             const std::uint32_t idle = owner->config_.idle_timeout_ms;
-            return done || idle == 0 ? 0 : last_ms + idle;
+            std::uint32_t best = idle == 0 ? 0 : last_ms + idle;
+            // the next subscription work, from the monotonic clock into the stack's ms
+            if (const opcua::DateTime next = protocol.NextDeadline(); next != 0) {
+                const opcua::DateTime now = opcua::NowMonotonic();
+                const opcua::DateTime ms = next > now ? (next - now + 9'999) / 10'000 : 0;
+                const std::uint32_t at = owner->stack_.now_ms() + static_cast<std::uint32_t>(std::min<opcua::DateTime>(ms, 3'600'000));
+                if (best == 0 || static_cast<std::int32_t>(at - best) < 0) {
+                    best = at;
+                }
+            }
+            return best;
         }
 
         // ---- BackgroundSession ------------------------------------------------------------
@@ -229,6 +253,7 @@ private:
         }
     };
 
+    Stack& stack_;
     TcpServer<Stack, Session, MaxClients> tcp_;
     const opcua::AddressSpace& address_space_;
     std::string_view endpoint_url_;

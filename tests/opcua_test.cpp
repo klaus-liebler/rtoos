@@ -259,7 +259,7 @@ struct ActivateOptions {
 using Server = rtos::net::OpcUaServer<TestStack, 2>;
 
 class OpcUaTest : public NetTest {
-protected:
+public:
     static constexpr std::uint16_t port = 4840;
     alignas(16) static inline std::array<std::byte, 48 * 1024> crypto_memory{};
     Bank bank;
@@ -395,6 +395,8 @@ protected:
     std::array<Byte, 80> client_keys{}, server_keys{};
     bool encrypted = false;  // SignAndEncrypt
     ua::StatusCode last_error = ua::StatusCode::Good;  // of an ERR answer to open_basic
+    ua::Int32 request_type = -1;  // OPN SecurityTokenRequestType; -1: Issue, or Renew once open
+    bool fixed_nonce = false;     // open_basic: always the same client nonce
     ua::NodeId auth_token;
     // the identity of the last signed channel (open_basic): CreateSession sends the
     // certificate, ActivateSession signs with the key
@@ -431,13 +433,13 @@ protected:
         ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::OpenSecureChannelRequest));
         request_header(w, ua::NodeId(), 1);
         w.WriteUInt32(0);  // protocol version
-        w.WriteInt32(0);   // Issue
+        w.WriteInt32(request_type >= 0 ? request_type : (channel != 0 ? 1 : 0));  // Issue, or Renew once open
         w.WriteInt32(mode);
         w.WriteByteString(std::string_view(reinterpret_cast<const char*>(nonce.data()), nonce.size()), nonce.empty());
         w.WriteUInt32(600000);
     }
 
-    bool open_none() {
+    bool open_none(ua::Int32 mode = 1) {
         ua::ByteWriter w(buffer);
         ua::EncodeTcpHeader(w, "OPN", ua::ChunkType::Final, 0);
         w.WriteUInt32(0);
@@ -446,7 +448,7 @@ protected:
         w.WriteByteString({}, true);
         w.WriteUInt32(++sequence);
         w.WriteUInt32(++request);
-        open_body(w, 1, {});
+        open_body(w, mode, {});
         w.PatchUInt32(4, static_cast<ua::UInt32>(w.Position()));
         send(w.Written());
         const auto reply = receive();
@@ -493,6 +495,7 @@ protected:
         }
         std::array<Byte, 32> client_nonce{};
         wc_RNG_GenerateBlock(&cc.rng, client_nonce.data(), client_nonce.size());
+        if (fixed_nonce) client_nonce.fill(0x42);
 
         // header + asymmetric security header
         ua::ByteWriter w(buffer);
@@ -658,6 +661,11 @@ protected:
         if (!wait) {
             return std::nullopt;
         }
+        return wait_response();
+    }
+
+    /// The next MSG from the server, verified (and decrypted) and decoded.
+    std::optional<Response> wait_response() {
         const auto reply = receive();
         if (!reply || !is_message(*reply, "MSG")) {
             return std::nullopt;
@@ -986,6 +994,9 @@ TEST_F(OpcUaTest, ClientCertificatesAreCheckedAgainstTheCa) {
               sec::CertificateCheck::TimeInvalid);
 }
 
+// open62541: check_securechannel_unit.c processHELACK_happyPath_returnsGood
+// open62541: check_securechannel_unit.c processHELACK_remoteReceiveCapped_capsSendBuffer
+// open62541: check_securechannel_unit.c processHELACK_remoteSendCapped_capsRecvBuffer
 TEST_F(OpcUaTest, HelloIsAcknowledgedWithTheSmallerBuffers) {
     const auto ack = hello(16384);
     ASSERT_TRUE(ack.has_value());
@@ -1000,12 +1011,14 @@ TEST_F(OpcUaTest, HelloIsAcknowledgedWithTheSmallerBuffers) {
     EXPECT_EQ(send_size, 8192u);
 }
 
+// open62541: check_securechannel_unit.c processHELACK_bufferTooSmall_returnsBad
 TEST_F(OpcUaTest, HelloWithTooSmallBuffersIsAnError) {
     const auto err = hello(1024);
     ASSERT_TRUE(err.has_value());
     EXPECT_TRUE(is_message(*err, "ERR"));
 }
 
+// open62541: check_securechannel.c SecureChannel_sendSymmetricMessage_modeNone
 TEST_F(OpcUaTest, NoneChannelReadsButCannotWrite) {
     bank.set_holding(0, 7);
     ASSERT_TRUE(hello());
@@ -1019,6 +1032,10 @@ TEST_F(OpcUaTest, NoneChannelReadsButCannotWrite) {
     EXPECT_EQ(bank.holding(0), 7);
 }
 
+// open62541: server/check_server_getendpoints.c testServerCertificateInGetEndpoints
+// open62541: server/check_discovery.c Server_getEndpoints_emptyPolicyId
+// open62541: server/check_server.c checkNoneEndpointUserTokens
+// open62541: server/check_server_client_readwrite.c client_get_endpoints
 TEST_F(OpcUaTest, GetEndpointsOffersBasic256Sha256AndNone) {
     ASSERT_TRUE(hello());
     ASSERT_TRUE(open_none());
@@ -1065,6 +1082,8 @@ TEST_F(OpcUaTest, GetEndpointsOffersBasic256Sha256AndNone) {
     }
 }
 
+// open62541: check_securechannel.c SecureChannel_sendSymmetricMessage_modeSign
+// open62541: check_securechannel.c SecureChannel_sendSymmetricMessage
 TEST_F(OpcUaTest, TrustedClientOnASignedChannelWrites) {
     ASSERT_TRUE(hello());
     ASSERT_TRUE(open_basic(client_cert, client_key));
@@ -1205,6 +1224,7 @@ TEST_F(OpcUaTest, Session_close_before_activate) {
 }
 
 // open62541: server/check_session.c Session_activate_then_close
+// open62541: server/check_accesscontrol.c Client_anonymous
 // open62541: client/check_activateSession.c Client_activateSession
 // open62541: client/check_activateSession.c Client_read
 // open62541: client/check_activateSession.c Client_activateSessionClose
@@ -1476,6 +1496,7 @@ TEST_F(OpcUaTest, CreateSessionOnASignedChannelNeedsItsClientAndANonce) {
 // ---- SignAndEncrypt, crypto (ported from open62541 tests/encryption) ------------------------------
 
 // open62541: encryption/check_encryption_basic256sha256.c encryption_connect
+// open62541: check_securechannel.c SecureChannel_sendSymmetricMessage_modeSignAndEncrypt
 // open62541: encryption/check_encryption_basic256sha256_with_config.c encryption_connect
 // open62541: encryption/check_ca_chain.c encryption_connect_Basic256Sha256_ca
 TEST_F(OpcUaTest, TrustedClientOnASignAndEncryptChannel) {
@@ -1546,6 +1567,7 @@ TEST(OpcUaCrypto, HmacSha256VerifyRejectsTamperedAndShortSignatures) {
 
 // The building blocks of Basic256Sha256, each against an independent reference.
 // open62541: encryption/check_securitypolicy_crypto.c securitypolicy_basic256sha256
+// open62541: check_securechannel.c SecureChannel_derivedKeyLength
 TEST(OpcUaCrypto, Basic256Sha256Primitives) {
     // AES-256-CBC: NIST SP 800-38A F.2.5
     std::array<Byte, 32> key{};
@@ -1578,6 +1600,276 @@ TEST(OpcUaCrypto, Basic256Sha256Primitives) {
         0xc3, 0x10, 0xa3, 0x39, 0x48, 0xe9, 0xcd, 0x87, 0x04, 0x3c, 0xf8, 0x6c, 0xe4, 0xd1, 0xd3, 0xda,
         0xce, 0x7f, 0x1e, 0x35, 0x4e, 0x76, 0xe5, 0x1b, 0xf9, 0xed, 0xb8, 0xa8, 0x28, 0xbe, 0x1d, 0x12};
     EXPECT_EQ(material, expected);
+}
+
+// ---- subscriptions over TCP: Publish responses sent from the connection's tick -----------------
+
+// The OPC UA monotonic clock follows the test's stack clock.
+std::uint32_t* g_stack_now = nullptr;
+
+TEST_F(OpcUaTest, SubscriptionPublishesOverAnEncryptedChannel) {
+    g_stack_now = &now;
+    ua::SetClock(nullptr, []() noexcept { return std::uint64_t{*g_stack_now}; });
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key, {}, 3));
+    ASSERT_TRUE(session());
+    auto created = call([&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::CreateSubscriptionRequest));
+        request_header(w, auth_token, 20);
+        w.WriteDouble(100);
+        w.WriteUInt32(30);
+        w.WriteUInt32(10);
+        w.WriteUInt32(0);
+        w.WriteBoolean(true);
+        w.WriteByte(0);
+    });
+    ASSERT_TRUE(created && ua::IsGood(created->result));
+    ua::UInt32 sub = 0;
+    ua::ByteReader cr = created->reader();
+    ASSERT_TRUE(cr.ReadUInt32(sub));
+    auto items = call([&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::CreateMonitoredItemsRequest));
+        request_header(w, auth_token, 21);
+        w.WriteUInt32(sub);
+        w.WriteInt32(2);
+        w.WriteInt32(1);
+        ua::EncodeNodeId(w, kLed);
+        w.WriteUInt32(13);
+        w.WriteString(ua::String::Null());
+        ua::EncodeQualifiedName(w, ua::QualifiedName{});
+        w.WriteInt32(2);
+        w.WriteUInt32(77);  // client handle
+        w.WriteDouble(50);
+        ua::EncodeNullExtensionObject(w);
+        w.WriteUInt32(1);
+        w.WriteBoolean(true);
+    });
+    ASSERT_TRUE(items && ua::IsGood(items->result));
+
+    // Publish, then the first notification's value
+    const auto publish_value = [&]() -> std::optional<ua::UInt16> {
+        (void)call(
+            [&](ua::ByteWriter& w) {
+                ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::PublishRequest));
+                request_header(w, auth_token, 30);
+                w.WriteInt32(0);
+            },
+            false, false);
+        const auto r = wait_response();
+        if (!r || !ua::IsGood(r->result) || r->type != ua::NodeId(0, ua::ns0::PublishResponse)) return std::nullopt;
+        ua::ByteReader b = r->reader();
+        ua::UInt32 id = 0, seq = 0, handle = 0;
+        ua::Int32 available = 0, notifications = 0, count = 0;
+        ua::Boolean more = false;
+        ua::DateTime time = 0;
+        if (!b.ReadUInt32(id) || id != sub || !b.ReadInt32(available)) return std::nullopt;
+        for (ua::Int32 i = 0; i < available; i++) b.ReadUInt32(seq);
+        if (!b.ReadBoolean(more) || !b.ReadUInt32(seq) || !b.ReadDateTime(time) || !b.ReadInt32(notifications) ||
+            notifications != 1)
+            return std::nullopt;
+        ua::NodeId type;
+        Byte encoding = 0;
+        std::string_view body;
+        bool null = true;
+        if (!ua::DecodeNodeId(b, type) || type != ua::NodeId(0, ua::ns0::DataChangeNotification) || !b.ReadByte(encoding) ||
+            !b.ReadByteString(body, null))
+            return std::nullopt;
+        ua::ByteReader d(std::span<const Byte>(reinterpret_cast<const Byte*>(body.data()), body.size()));
+        Byte mask = 0;
+        ua::Variant value;
+        if (!d.ReadInt32(count) || count != 1 || !d.ReadUInt32(handle) || handle != 77 || !d.ReadByte(mask) ||
+            !(mask & 0x01) || !ua::DecodeVariant(d, value) || value.GetIf<ua::UInt16>() == nullptr)
+            return std::nullopt;
+        return *value.GetIf<ua::UInt16>();
+    };
+
+    const auto initial = publish_value();
+    ASSERT_TRUE(initial);
+    EXPECT_EQ(*initial, 0) << "the initial value";
+    const std::array<std::uint16_t, 1> on{1};
+    ASSERT_EQ(bank.write(0, on), rtos::modbus::Exception::None);  // as Modbus would
+    const auto changed = publish_value();
+    ASSERT_TRUE(changed);
+    EXPECT_EQ(*changed, 1) << "the change, via Modbus";
+    ua::SetClock(nullptr, nullptr);
+}
+
+// ---- Hello and SecureChannel states (ported from open62541 tests/server/check_server.c,
+// check_services_securechannel.c) ------------------------------------------------------------------
+
+/// A Hello with an EndpointUrl of `url_length` bytes and `trailing` extra bytes: the answer's type.
+std::string hello_answer(OpcUaTest& t, std::size_t url_length, std::size_t trailing, ua::StatusCode& error) {
+    UaBytes msg(8 + 20 + 4 + url_length + trailing, 0);
+    ua::ByteWriter w(msg);
+    ua::EncodeTcpHeader(w, "HEL", ua::ChunkType::Final, static_cast<ua::UInt32>(msg.size()));
+    w.WriteUInt32(0);
+    w.WriteUInt32(65535);
+    w.WriteUInt32(65535);
+    w.WriteUInt32(0);
+    w.WriteUInt32(0);
+    w.WriteString(std::string(url_length, 'x'));
+    t.send(msg);
+    const auto reply = t.receive();
+    if (!reply) return "none";
+    if (is_message(*reply, "ERR")) {
+        ua::ByteReader r(*reply);
+        r.Skip(8);
+        r.ReadStatusCode(error);
+    }
+    return std::string(reinterpret_cast<const char*>(reply->data()), 3);
+}
+
+// open62541: server/check_server.c helloEndpointUrlLimit
+TEST_F(OpcUaTest, helloEndpointUrlLimit) {
+    ua::StatusCode error = ua::StatusCode::Good;
+    EXPECT_EQ(hello_answer(*this, 4095, 0, error), "ACK");
+    for (std::size_t length : {4096u, 4097u, 5000u}) {
+        reset_connection();
+        poll(1);
+        connect();
+        EXPECT_EQ(hello_answer(*this, length, 0, error), "ERR") << length;
+        EXPECT_EQ(error, ua::StatusCode::BadTcpEndpointUrlInvalid);
+    }
+}
+
+// open62541: server/check_server.c helloTrailingData
+TEST_F(OpcUaTest, helloTrailingData) {
+    ua::StatusCode error = ua::StatusCode::Good;
+    for (std::size_t trailing : {1u, 8u}) {
+        reset_connection();
+        poll(1);
+        connect();
+        EXPECT_EQ(hello_answer(*this, 32, trailing, error), "ERR") << trailing;
+        EXPECT_EQ(error, ua::StatusCode::BadDecodingError);
+    }
+}
+
+// An Issue on an open channel, a Renew without one and an unknown request type are refused
+// (open62541: BadInternalError from its state machine; here the ERR of a refused OPN).
+// open62541: server/check_services_securechannel.c OpenSecureChannel_issue_wrongState_rejected
+// open62541: server/check_services_securechannel.c OpenSecureChannel_renew_wrongState_rejected
+// open62541: server/check_services_securechannel.c OpenSecureChannel_unknownRequestType_rejected
+TEST_F(OpcUaTest, OpenSecureChannelRequestTypeMustFitTheState) {
+    ASSERT_TRUE(hello());
+    request_type = 1;  // Renew before any channel
+    EXPECT_FALSE(open_none());
+    EXPECT_TRUE(closed);
+    for (const ua::Int32 type : {0, 99}) {
+        reset_connection();
+        poll(1);
+        channel = token = 0;
+        connect();
+        ASSERT_TRUE(hello());
+        request_type = 0;
+        ASSERT_TRUE(open_none());
+        request_type = type;  // Issue again on the open channel; an unknown type
+        EXPECT_FALSE(open_none()) << type;
+        EXPECT_TRUE(closed) << type;
+    }
+}
+
+// open62541: server/check_services_securechannel.c OpenSecureChannel_renew_nonceReuse_rejected
+TEST_F(OpcUaTest, OpenSecureChannel_renew_nonceReuse_rejected) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    ASSERT_TRUE(open_basic(client_cert, client_key)) << "a Renew with a fresh nonce";
+    fixed_nonce = true;  // the next two opens use the same nonce
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    EXPECT_FALSE(open_basic(client_cert, client_key));
+    EXPECT_EQ(last_error, ua::StatusCode::BadSecurityChecksFailed);
+}
+
+// open62541: server/check_services_securechannel.c CloseSecureChannel_smoke_doesNotCrash
+TEST_F(OpcUaTest, CloseSecureChannel_smoke_doesNotCrash) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ua::ByteWriter w(buffer);
+    ua::EncodeTcpHeader(w, "CLO", ua::ChunkType::Final, 0);
+    w.WriteUInt32(channel);
+    w.WriteUInt32(token);
+    w.WriteUInt32(++sequence);
+    w.WriteUInt32(++request);
+    ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::CloseSecureChannelRequest));
+    request_header(w, ua::NodeId(), 99);
+    w.PatchUInt32(4, static_cast<ua::UInt32>(w.Position()));
+    send(w.Written());
+    EXPECT_FALSE(receive().has_value()) << "no response (Part 4 5.5.3)";
+    EXPECT_TRUE(closed);
+}
+
+// SecurityPolicy None with mode Sign, Basic256Sha256 with mode None or an unknown mode:
+// rejected (BadSecurityModeRejected).
+// open62541: check_securechannel.c SecureChannel_open_invalidSecurityMode
+// open62541: check_securechannel_unit.c setSecurityMode_nonePolicyWithSign_rejected
+// open62541: check_securechannel_unit.c setSecurityMode_invalidMode_rejected
+// open62541: check_securechannel.c SecureChannel_open_validSecurityMode
+// open62541: check_securechannel_unit.c setSecurityMode_noneMode_accepted
+// open62541: check_securechannel_unit.c setSecurityMode_outOfRange_rejected
+TEST_F(OpcUaTest, SecureChannel_open_invalidSecurityMode) {
+    ASSERT_TRUE(hello());
+    EXPECT_FALSE(open_none(2)) << "None with Sign";
+    EXPECT_FALSE(open_none(4)) << "an unknown mode";
+    for (const ua::Int32 mode : {1, 4}) {
+        reset_connection();
+        poll(1);
+        channel = token = 0;
+        connect();
+        ASSERT_TRUE(hello());
+        EXPECT_FALSE(open_basic(client_cert, client_key, {}, mode)) << mode;
+    }
+    reset_connection();
+    poll(1);
+    channel = token = 0;
+    connect();
+    ASSERT_TRUE(hello());
+    EXPECT_TRUE(open_none(1));
+}
+
+// A MSG with another TokenId closes the channel.
+// open62541: check_securechannel.c SecureChannel_validateMessageToken
+TEST_F(OpcUaTest, SecureChannel_validateMessageToken) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    ASSERT_TRUE(session());
+    token += 7;
+    EXPECT_EQ(read(kLed).first, ua::StatusCode::BadInternalError) << "no answer";
+    (void)receive();
+    EXPECT_TRUE(closed);
+}
+
+// FindServers: this server, unless the ServerUris name others only.
+// open62541: server/check_server_client_readwrite.c client_find_servers
+// open62541: server/check_server_client_readwrite.c client_find_servers_with_filter
+TEST_F(OpcUaTest, client_find_servers) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    const auto find = [&](std::optional<std::string_view> uri) -> ua::Int32 {
+        const auto r = call([&](ua::ByteWriter& w) {
+            ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::FindServersRequest));
+            request_header(w, ua::NodeId(), 11);
+            w.WriteString(kEndpoint);
+            w.WriteInt32(0);
+            if (uri) {
+                w.WriteInt32(1);
+                w.WriteString(*uri);
+            } else {
+                w.WriteInt32(0);
+            }
+        });
+        if (!r || !ua::IsGood(r->result)) return -1;
+        ua::ByteReader b = r->reader();
+        ua::Int32 count = -1;
+        b.ReadInt32(count);
+        if (count == 1) {
+            ua::ApplicationDescription app;
+            EXPECT_TRUE(ua::DecodeApplicationDescription(b, app));
+            EXPECT_EQ(app.applicationUri.value, "urn:factory-control-unit:opcua-native");
+        }
+        return count;
+    };
+    EXPECT_EQ(find(std::nullopt), 1);
+    EXPECT_EQ(find("urn:factory-control-unit:opcua-native"), 1);
+    EXPECT_EQ(find("urn:somewhere:else"), 0);
 }
 
 TEST_F(OpcUaTest, ReadIsAnsweredWhileAnRsaOpenWaits) {

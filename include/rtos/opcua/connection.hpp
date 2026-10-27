@@ -14,6 +14,7 @@
 #include "rtos/opcua/address_space.hpp"
 #include "rtos/opcua/secure_channel.hpp"
 #include "rtos/opcua/services.hpp"
+#include "rtos/opcua/subscriptions.hpp"
 #include "rtos/opcua/session.hpp"
 #include "rtos/opcua/transport.hpp"
 #include "rtos/opcua/types.hpp"
@@ -32,6 +33,10 @@ public:
     // ChunkType checked internally). May call transport->Send()/RequestClose() any number of
     // times (typically 0 or 1 Send() and at most one RequestClose()).
     void HandleMessage(std::span<const Byte> msg);
+    /// Periodic work: sampling, publishing cycles, Publish responses (when the transport can send).
+    void Tick();
+    /// NowMonotonic() of the next Tick() with work, 0: none.
+    DateTime NextDeadline() const;
 
     // Result of the last client certificate check (OpenSecureChannel, Basic256Sha256).
     security::CertificateCheck LastCertificateCheck() const { return secureChannel_.LastCertificateCheck(); }
@@ -52,6 +57,7 @@ private:
     SecureChannel secureChannel_;
     Session session_;
     ViewState view_;  // browse continuation points of the session
+    Subscriptions subscriptions_;  // the session's subscriptions
 
     // Scratch buffer every response is built into before handing it to transport_->Send() --
     // one per connection so concurrent connections never share/race on it (NX_TCPSERVER

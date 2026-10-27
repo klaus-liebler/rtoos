@@ -6,6 +6,8 @@
 // attribute but Value is writable (WriteMask 0 -> BadNotWritable), values carry no stored
 // status or source timestamp, and the variables are scalars. Tests that do not fit are listed
 // with their reasons in tests/open62541/rules.tsv.
+#include <algorithm>
+
 #include "opcua_service_harness.hpp"
 
 namespace {
@@ -21,6 +23,8 @@ class Open62541AttributesTest : public ServiceTest {};
 // ---- Read ------------------------------------------------------------------------------------
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeValueWithoutTimestamp
+// open62541: server/check_server.c checkServerReadValue
+// open62541: server/check_server_readwrite.c srv_readWriteNode
 TEST_F(Open62541AttributesTest, ReadSingleAttributeValueWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer});
     EXPECT_EQ(v.status, ua::StatusCode::Good);
@@ -31,6 +35,8 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeValueWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeNodeIdWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readNodeId
+// open62541: server/check_server.c checkServerReadNodeId
 TEST_F(Open62541AttributesTest, ReadSingleAttributeNodeIdWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::NodeId)});
     ASSERT_NE(v.value.GetIf<ua::NodeId>(), nullptr);
@@ -38,6 +44,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeNodeIdWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeNodeClassWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readNodeClass
 TEST_F(Open62541AttributesTest, ReadSingleAttributeNodeClassWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::NodeClass)});
     ASSERT_NE(v.value.GetIf<ua::Int32>(), nullptr);
@@ -45,6 +52,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeNodeClassWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeBrowseNameWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readBrowseName
 TEST_F(Open62541AttributesTest, ReadSingleAttributeBrowseNameWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::BrowseName)});
     ASSERT_NE(v.value.GetIf<ua::QualifiedName>(), nullptr);
@@ -52,6 +60,8 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeBrowseNameWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeDisplayNameWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readDisplayName
+// open62541: server/check_server.c checkServerReadDisplayName
 TEST_F(Open62541AttributesTest, ReadSingleAttributeDisplayNameWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::DisplayName)});
     ASSERT_NE(v.value.GetIf<ua::LocalizedText>(), nullptr);
@@ -60,6 +70,8 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeDisplayNameWithoutTimestamp) 
 
 // Nodes have no description text here: the attribute is an empty LocalizedText.
 // open62541: server/check_services_attributes.c ReadSingleAttributeDescriptionWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readDescription
+// open62541: server/check_server.c checkServerReadDescription
 TEST_F(Open62541AttributesTest, ReadSingleAttributeDescriptionWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::Description)});
     EXPECT_EQ(v.status, ua::StatusCode::Good);
@@ -70,6 +82,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeDescriptionWithoutTimestamp) 
 // open62541: server/check_services_attributes.c ReadSingleAttributeWriteMaskWithoutTimestamp
 // open62541: server/check_services_attributes.c ReadSingleAttributeUserWriteMaskWithoutTimestamp
 // open62541: server/check_services_attributes.c ReadSingleAttributeUserWriteMaskViaPublicAPI
+// open62541: server/check_server_readwrite.c srv_readWriteMask
 TEST_F(Open62541AttributesTest, ReadSingleAttributeWriteMaskWithoutTimestamp) {
     for (A a : {A::WriteMask, A::UserWriteMask}) {
         const DataValue v = read({.node = kAnswer, .attribute = attr(a)});
@@ -79,6 +92,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeWriteMaskWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeIsAbstractWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readIsAbstract
 TEST_F(Open62541AttributesTest, ReadSingleAttributeIsAbstractWithoutTimestamp) {
     const DataValue v = read({.node = ns0(ua::ns0::Organizes), .attribute = attr(A::IsAbstract)});
     ASSERT_NE(v.value.GetIf<ua::Boolean>(), nullptr);
@@ -99,6 +113,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeSymmetricWithoutTimestamp) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeInverseNameWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readInverseName
 TEST_F(Open62541AttributesTest, ReadSingleAttributeInverseNameWithoutTimestamp) {
     const DataValue v = read({.node = ns0(ua::ns0::Organizes), .attribute = attr(A::InverseName)});
     ASSERT_NE(v.value.GetIf<ua::LocalizedText>(), nullptr);
@@ -106,6 +121,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeInverseNameWithoutTimestamp) 
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeEventNotifierWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readEventNotifier
 TEST_F(Open62541AttributesTest, ReadSingleAttributeEventNotifierWithoutTimestamp) {
     const DataValue v = read({.node = kDevice, .attribute = attr(A::EventNotifier)});
     EXPECT_EQ(v.status, ua::StatusCode::Good);
@@ -115,6 +131,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeEventNotifierWithoutTimestamp
 
 // The variable here is an Int32 (open62541's test variable: BaseDataType).
 // open62541: server/check_services_attributes.c ReadSingleAttributeDataTypeWithoutTimestamp
+// open62541: server/check_server.c checkServerReadDataType
 TEST_F(Open62541AttributesTest, ReadSingleAttributeDataTypeWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::DataType)});
     EXPECT_EQ(v.status, ua::StatusCode::Good);
@@ -124,6 +141,8 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeDataTypeWithoutTimestamp) {
 
 // Scalars: ValueRank -1 (open62541's test variable: -2, "any").
 // open62541: server/check_services_attributes.c ReadSingleAttributeValueRankWithoutTimestamp
+// open62541: server/check_server_readwrite.c srv_readValueRank
+// open62541: server/check_server.c checkServerReadWriteRank
 TEST_F(Open62541AttributesTest, ReadSingleAttributeValueRankWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::ValueRank)});
     ASSERT_NE(v.value.GetIf<ua::Int32>(), nullptr);
@@ -140,6 +159,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeArrayDimensionsWithoutTimesta
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeAccessLevelWithoutTimestamp
 // open62541: server/check_services_attributes.c ReadAccessLevel_adminSession_isFull
+// open62541: server/check_server_readwrite.c srv_readAccessLevel
 TEST_F(Open62541AttributesTest, ReadSingleAttributeAccessLevelWithoutTimestamp) {
     const DataValue v = read({.node = kAnswer, .attribute = attr(A::AccessLevel)});
     ASSERT_NE(v.value.GetIf<ua::Byte>(), nullptr);
@@ -182,6 +202,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeHistorizingWithoutTimestamp) 
 // A variable whose value comes from a callback (open62541: a "data source").
 // open62541: server/check_services_attributes.c ReadSingleDataSourceAttributeValueWithoutTimestamp
 // open62541: server/check_services_attributes.c ReadSingleAttributeValueWithExternalSource
+// open62541: server/check_services_attributes_all.c datasource_variable
 TEST_F(Open62541AttributesTest, ReadSingleDataSourceAttributeValueWithoutTimestamp) {
     g_temperature = 23.25;
     const DataValue v = read({.node = kTemperature});
@@ -228,6 +249,7 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeDataTypeDefinitionForSimpleTy
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeOutOfRange
+// open62541: server/check_services_attributes_all.c read_wrong_attribute
 TEST_F(Open62541AttributesTest, ReadSingleAttributeOutOfRange) {
     for (ua::UInt32 id : {28u, 0x8000'0000u, 0xFFFF'FFFFu}) {
         const DataValue v = read({.node = ns0(ua::ns0::Server), .attribute = id});
@@ -237,6 +259,9 @@ TEST_F(Open62541AttributesTest, ReadSingleAttributeOutOfRange) {
 }
 
 // open62541: server/check_services_attributes.c ReadSingleAttributeValue_InvalidNode
+// open62541: server/check_server_client_readwrite.c read_nonexistent_node
+// open62541: server/check_services_attributes_all.c read_nonexistent_node
+// open62541: server/check_server.c checkServerReadNonExistingNode
 // open62541: server/check_services_attributes.c ReadUnknownAttribute_returnsError
 // open62541: server/check_services_attributes.c ReadSingleAttributeRange_invalidNode_returnsError
 TEST_F(Open62541AttributesTest, ReadSingleAttributeValue_InvalidNode) {
@@ -291,6 +316,8 @@ TEST_F(Open62541AttributesTest, ReadObjectProperty_NotFound) {
 
 // open62541: server/check_services_attributes.c WriteSingleAttributeValue
 // open62541: server/check_services_attributes.c WriteDataValue
+// open62541: server/check_server_readwrite.c srv_writeValue
+// open62541: server/check_server.c checkServerWriteValue
 TEST_F(Open62541AttributesTest, WriteSingleAttributeValue) {
     EXPECT_EQ(write({.node = kAnswer, .value = ua::Variant::Of(ua::Int32{20})}), ua::StatusCode::Good);
     const DataValue v = read({.node = kAnswer}, 0);
@@ -397,6 +424,99 @@ TEST_F(Open62541AttributesTest, WriteSingleDataSourceAttributeValue) {
 TEST_F(Open62541AttributesTest, WriteSingleAttributeValue_InvalidNode) {
     EXPECT_EQ(write({.node = ua::NodeId(1, 99999), .value = ua::Variant::Of(ua::Int32{42})}),
               ua::StatusCode::BadNodeIdUnknown);
+}
+
+// open62541: server/check_server_client_readwrite.c read_write_bool
+// open62541: server/check_server_client_readwrite.c write_multiple_nodes
+// open62541: server/check_server_readwrite.c srv_multiWrite
+TEST_F(Open62541AttributesTest, read_write_bool) {
+    Response resp = write_request({{.node = kBool, .value = ua::Variant::Of(true)},
+                                   {.node = kUInt16, .value = ua::Variant::Of(ua::UInt16{7})},
+                                   {.node = kReadonly, .value = ua::Variant::Of(ua::Int32{1})}});
+    ASSERT_EQ(resp.result, ua::StatusCode::Good);
+    ua::ByteReader r = resp.reader();
+    ua::Int32 count = 0;
+    ua::StatusCode a{}, b{}, c{};
+    ASSERT_TRUE(r.ReadInt32(count) && count == 3 && r.ReadStatusCode(a) && r.ReadStatusCode(b) && r.ReadStatusCode(c));
+    EXPECT_EQ(a, ua::StatusCode::Good);
+    EXPECT_EQ(b, ua::StatusCode::Good);
+    EXPECT_EQ(c, ua::StatusCode::BadNotWritable) << "each operation on its own";
+    const DataValue v = read({.node = kBool});
+    ASSERT_NE(v.value.GetIf<ua::Boolean>(), nullptr);
+    EXPECT_TRUE(*v.value.GetIf<ua::Boolean>());
+}
+
+// open62541: server/check_server_client_readwrite.c read_multiple_attributes
+// open62541: server/check_server_readwrite.c srv_multiRead
+TEST_F(Open62541AttributesTest, read_multiple_attributes) {
+    Response resp = read_request({{.node = kAnswer}, {.node = kAnswer, .attribute = attr(A::DisplayName)},
+                                  {.node = ua::NodeId(1, 4711)}, {.node = kDevice, .attribute = attr(A::NodeClass)}});
+    auto all = values(resp);
+    ASSERT_EQ(all.size(), 4u);
+    EXPECT_EQ(*all[0].value.GetIf<ua::Int32>(), 42);
+    EXPECT_NE(all[1].value.GetIf<ua::LocalizedText>(), nullptr);
+    EXPECT_EQ(all[2].status, ua::StatusCode::BadNodeIdUnknown);
+    EXPECT_EQ(*all[3].value.GetIf<ua::Int32>(), static_cast<ua::Int32>(ua::NodeClass::Object));
+}
+
+// open62541: server/check_server_client_readwrite.c read_server_namespacearray
+TEST_F(Open62541AttributesTest, read_server_namespacearray) {
+    const DataValue v = read({.node = ns0(ua::ns0::Server_NamespaceArray)});
+    EXPECT_EQ(v.status, ua::StatusCode::Good);
+    // a String array (the decoder of this test skips arrays: type and form only)
+    EXPECT_TRUE(v.value.IsArray());
+    EXPECT_EQ(v.value.TypeId(), ua::BuiltinTypeId::String);
+    std::array<Byte, 128> buffer{};
+    ua::ByteWriter w(buffer);
+    ASSERT_TRUE(ua::EncodeVariant(w, ua::Variant::Of(ua::StringArray{ua::kNamespaceArray})));
+    EXPECT_EQ(w.Written()[1], 2) << "two namespaces";
+    const DataValue rank = read({.node = ns0(ua::ns0::Server_NamespaceArray), .attribute = attr(A::ValueRank)});
+    EXPECT_EQ(*rank.value.GetIf<ua::Int32>(), 1);
+}
+
+// Every attribute of every node class: the ones the class has are Good, the others
+// BadAttributeIdInvalid (Part 3 5.9 table of attributes per NodeClass; optional attributes
+// this server does not provide: DataTypeDefinition, RolePermissions, UserRolePermissions,
+// AccessRestrictions).
+// open62541: server/check_services_attributes_all.c read_object_attributes
+// open62541: server/check_services_attributes_all.c read_variable_all_attributes
+// open62541: server/check_services_attributes_all.c read_referencetype_attributes
+// open62541: server/check_services_attributes_all.c read_datatype_attributes
+// open62541: server/check_services_attributes_all.c read_variable_edge_attributes
+// open62541: server/check_services_attributes_all.c read_userAccessLevel_via_read_api
+TEST_F(Open62541AttributesTest, EveryAttributeOfEveryNodeClass) {
+    const std::vector<ua::UInt32> base = {1, 2, 3, 4, 5, 6, 7};
+    struct Case {
+        ua::NodeId node;
+        std::vector<ua::UInt32> extra;  // beyond the base attributes
+    };
+    const Case cases[] = {
+        {kDevice, {12}},                                     // Object: EventNotifier
+        {kAnswer, {13, 14, 15, 16, 17, 18, 19, 20, 27}},     // Variable
+        {ns0(ua::ns0::Organizes), {8, 9, 10}},               // ReferenceType
+        {ns0(ua::ns0::DataType_Int32), {8}},                 // DataType
+        {ns0(ua::ns0::BaseDataVariableType), {8, 13, 14, 15, 16}},  // VariableType
+        {ns0(ua::ns0::FolderType), {8}},                     // ObjectType
+    };
+    for (const Case& c : cases) {
+        for (ua::UInt32 id = 1; id <= 27; id++) {
+            const bool has = std::find(base.begin(), base.end(), id) != base.end() ||
+                             std::find(c.extra.begin(), c.extra.end(), id) != c.extra.end();
+            const DataValue v = read({.node = c.node, .attribute = id});
+            EXPECT_EQ(v.status, has ? ua::StatusCode::Good : ua::StatusCode::BadAttributeIdInvalid)
+                << "node " << c.node.numeric << c.node.string << " attribute " << id;
+        }
+    }
+}
+
+// Not writable at all (BadNotWritable) is not the same as not writable for this user
+// (BadUserAccessDenied: a read-only channel).
+// open62541: server/check_accesscontrol.c Client_write_notWritableVsUserAccessDenied
+TEST_F(Open62541AttributesTest, Client_write_notWritableVsUserAccessDenied) {
+    ctx.readOnly = true;
+    EXPECT_EQ(write({.node = kAnswer, .value = ua::Variant::Of(ua::Int32{1})}), ua::StatusCode::BadUserAccessDenied);
+    EXPECT_EQ(write({.node = kReadonly, .value = ua::Variant::Of(ua::Int32{1})}), ua::StatusCode::BadNotWritable);
+    EXPECT_EQ(g_answer, 42);
 }
 
 // ---- rtoos: request checks of Part 4 5.10 --------------------------------------------------

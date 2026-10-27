@@ -57,7 +57,8 @@ target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
 add_library(rtos_opcua STATIC
     src/opcua/clock.cpp src/opcua/codec.cpp src/opcua/connection.cpp src/opcua/secure_channel.cpp
     src/opcua/security_crypto.cpp src/opcua/service_header.cpp src/opcua/service_structs.cpp
-    src/opcua/services.cpp src/opcua/session.cpp src/opcua/tcp_message.cpp src/opcua/variant.cpp)
+    src/opcua/services.cpp src/opcua/session.cpp src/opcua/subscriptions.cpp src/opcua/tcp_message.cpp
+    src/opcua/variant.cpp)
 target_link_libraries(rtos_opcua PUBLIC rtos_kernel rtos_wolfssl)
 
 enable_testing()

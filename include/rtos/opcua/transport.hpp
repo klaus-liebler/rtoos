@@ -24,6 +24,10 @@ public:
     // disconnect callback fires.
     virtual void RequestClose() = 0;
 
+    // True when Send() may be called now: the previous message has been handed to TCP
+    // completely (Connection::Tick sends Publish responses only then).
+    virtual bool CanSend() const = 0;
+
 protected:
     // Never deleted through this interface: no virtual (deleting) destructor, which would
     // pull operator delete into a heap-free image.

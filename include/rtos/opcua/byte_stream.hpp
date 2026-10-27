@@ -183,6 +183,13 @@ public:
         std::memcpy(data_.data() + offset, &value, sizeof(UInt32));
         return true;
     }
+    bool PatchByte(size_t offset, Byte value) {
+        if(!ok_ || offset >= pos_) return false;
+        data_[offset] = value;
+        return true;
+    }
+    /// The bytes written from `offset` on, writable (in-place encryption of a finished message).
+    std::span<Byte> WrittenFrom(size_t offset) { return data_.subspan(offset, pos_ - offset); }
 
 private:
     bool CheckRemaining(size_t n) const { return ok_ && n <= (data_.size() - pos_); }

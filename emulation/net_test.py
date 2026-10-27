@@ -612,6 +612,24 @@ def main() -> int:
                 denied = "SecurityModeInsufficient" in type(e).__name__ or "SecurityModeInsufficient" in str(e)
             check("OPC UA None: write rejected (BadSecurityModeInsufficient)", denied)
 
+            # Subscription: data change notifications of Uptime (Modbus input registers)
+            class Handler:
+                def __init__(self) -> None:
+                    self.values: list[int] = []
+
+                def datachange_notification(self, node, val, data) -> None:  # noqa: ARG002
+                    self.values.append(val)
+
+            handler = Handler()
+            subscription = ua_reader.create_subscription(200, handler)
+            subscription.subscribe_data_change(ua_reader.get_node(OPCUA_UPTIME))
+            deadline = time.monotonic() + 5
+            while len(handler.values) < 3 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            subscription.delete()
+            check("OPC UA subscription: Uptime data changes", len(handler.values) >= 3 and handler.values == sorted(handler.values),
+                  f"{len(handler.values)} notifications: {handler.values[:5]}")
+
             t_open = time.monotonic()
             signed = opcua_connect(certs, "opcua_client")
             open_ms = (time.monotonic() - t_open) * 1000

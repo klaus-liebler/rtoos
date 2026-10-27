@@ -21,6 +21,36 @@ void Connection::Reset(UInt32 connectionSlot, ITransport *transport, const Addre
     secureChannel_ = SecureChannel{};
     session_ = Session{};
     view_.Clear();
+    subscriptions_.Clear();
+}
+
+void Connection::Tick() {
+    if(!secureChannel_.IsOpen()) return;
+    session_.Expire();
+    if(!session_.IsActive()) {
+        // subscriptions belong to the session: they end with it (no transfer, Part 4 5.13.7)
+        if(subscriptions_.SubscriptionCount() != 0) subscriptions_.Clear();
+        return;
+    }
+    const ServiceContext ctx{*addressSpace_, secureChannel_.IsUnsecured()};
+    subscriptions_.Tick(ctx);
+    while(transport_->CanSend() && subscriptions_.PublishDue()) {
+        ByteWriter w(sendBuffer_);
+        size_t startPos = 0;
+        UInt32 requestId = 0;
+        // the RequestId is known once the response is chosen: patched into the sequence header
+        if(!BeginSymmetricMessage(w, "MSG", secureChannel_.ChannelId(), secureChannel_.TokenId(),
+                                  secureChannel_.NextServerSequenceNumber(), 0, startPos) ||
+           !subscriptions_.WritePublish(w, requestId) || !w.PatchUInt32(startPos + 20, requestId) ||
+           !secureChannel_.SignAndFinishSymmetric(w, startPos) || !transport_->Send(w.Written())) {
+            transport_->RequestClose();
+            return;
+        }
+    }
+}
+
+DateTime Connection::NextDeadline() const {
+    return session_.IsActive() ? subscriptions_.NextDeadline() : 0;
 }
 
 void Connection::SendErrorAndClose(StatusCode error, std::string_view reason) {
@@ -69,8 +99,13 @@ void Connection::HandleHello(std::span<const Byte> msg) {
         return;
     }
     HelloMessage hello;
-    if(!DecodeHelloBody(r, hello) || !r.Ok()) {
+    if(!DecodeHelloBody(r, hello) || !r.Ok() || r.Remaining() != 0) {
         SendErrorAndClose(StatusCode::BadDecodingError, "malformed Hello body");
+        return;
+    }
+    // Part 6 7.1.2.3: the EndpointUrl is shorter than 4096 bytes
+    if(!hello.endpointUrl.isNull && hello.endpointUrl.value.size() >= 4096) {
+        SendErrorAndClose(StatusCode::BadTcpEndpointUrlInvalid, "EndpointUrl too long");
         return;
     }
 
@@ -148,6 +183,19 @@ void Connection::HandleServiceMessage(std::span<const Byte> msg) {
         return;
     }
 
+    // Publish: queued, answered later by Tick() -- unless it fails at once (no sequence number
+    // is used for a request without an immediate response).
+    StatusCode publishFault = StatusCode::Good;
+    if(typeId == NodeId(0, ns0::PublishRequest)) {
+        publishFault = session_.Check(header.authenticationToken);
+        if(IsGood(publishFault)) publishFault = subscriptions_.QueuePublish(header, parsed.requestId, body);
+        if(publishFault == StatusCode::BadDecodingError) {
+            SendErrorAndClose(StatusCode::BadDecodingError, "malformed PublishRequest");
+            return;
+        }
+        if(IsGood(publishFault)) return;
+    }
+
     ByteWriter w(sendBuffer_);
     size_t startPos = 0;
     if(!BeginSymmetricMessage(w, "MSG", secureChannel_.ChannelId(), secureChannel_.TokenId(),
@@ -159,17 +207,21 @@ void Connection::HandleServiceMessage(std::span<const Byte> msg) {
     const auto is = [&](UInt32 id) { return typeId == NodeId(0, id); };
     const ServiceContext ctx{*addressSpace_, secureChannel_.IsUnsecured()};
     bool handled;
-    if(is(ns0::GetEndpointsRequest)) {
+    if(is(ns0::PublishRequest)) {
+        handled = EncodeServiceFault(w, header, publishFault);
+    } else if(is(ns0::GetEndpointsRequest)) {
         handled = HandleGetEndpoints(header, body, endpointUrl_, w);
     } else if(is(ns0::FindServersRequest)) {
         handled = HandleFindServers(header, body, endpointUrl_, w);
     } else if(is(ns0::CreateSessionRequest)) {
         view_.Clear();
+        subscriptions_.Clear();
         handled = session_.HandleCreate(header, body, connectionSlot_, endpointUrl_, secureChannel_, w);
     } else if(is(ns0::ActivateSessionRequest)) {
         handled = session_.HandleActivate(header, body, secureChannel_, w);
     } else if(is(ns0::CloseSessionRequest)) {
         view_.Clear();
+        subscriptions_.Clear();
         handled = session_.HandleClose(header, body, w);
     } else if(const StatusCode s = session_.Check(header.authenticationToken); !IsGood(s)) {
         // every other service needs the activated session of this connection
@@ -190,6 +242,26 @@ void Connection::HandleServiceMessage(std::span<const Byte> msg) {
         handled = HandleTranslateBrowsePaths(ctx, header, body, w);
     } else if(is(ns0::RegisterNodesRequest) || is(ns0::UnregisterNodesRequest)) {
         handled = HandleRegisterNodes(header, body, w, is(ns0::UnregisterNodesRequest));
+    } else if(is(ns0::CreateSubscriptionRequest)) {
+        handled = subscriptions_.HandleCreateSubscription(header, body, w);
+    } else if(is(ns0::ModifySubscriptionRequest)) {
+        handled = subscriptions_.HandleModifySubscription(header, body, w);
+    } else if(is(ns0::SetPublishingModeRequest)) {
+        handled = subscriptions_.HandleSetPublishingMode(header, body, w);
+    } else if(is(ns0::DeleteSubscriptionsRequest)) {
+        handled = subscriptions_.HandleDeleteSubscriptions(header, body, w);
+    } else if(is(ns0::CreateMonitoredItemsRequest)) {
+        handled = subscriptions_.HandleCreateMonitoredItems(ctx, header, body, w);
+    } else if(is(ns0::ModifyMonitoredItemsRequest)) {
+        handled = subscriptions_.HandleModifyMonitoredItems(header, body, w);
+    } else if(is(ns0::SetMonitoringModeRequest)) {
+        handled = subscriptions_.HandleSetMonitoringMode(header, body, w);
+    } else if(is(ns0::DeleteMonitoredItemsRequest)) {
+        handled = subscriptions_.HandleDeleteMonitoredItems(header, body, w);
+    } else if(is(ns0::SetTriggeringRequest)) {
+        handled = subscriptions_.HandleSetTriggering(header, body, w);
+    } else if(is(ns0::RepublishRequest)) {
+        handled = subscriptions_.HandleRepublish(header, body, w);
     } else {
         // a service this server does not implement (Part 4 7.33: ServiceFault)
         handled = EncodeServiceFault(w, header, StatusCode::BadServiceUnsupported);

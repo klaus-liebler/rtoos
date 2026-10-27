@@ -40,11 +40,29 @@ inline bool write_answer(void*, const ua::Variant& v) {
 }
 inline ua::Variant read_temperature(void*) { return ua::Variant::Of(g_temperature); }
 
+// Variables of other types with their own storage (context: the stored Variant).
+inline ua::Variant g_sbyte = ua::Variant::Of(ua::SByte{0}), g_uint16 = ua::Variant::Of(ua::UInt16{0}),
+                   g_float = ua::Variant::Of(ua::Float{0}), g_bool = ua::Variant::Of(false);
+inline ua::Variant read_stored(void* context) { return *static_cast<ua::Variant*>(context); }
+inline bool write_stored(void* context, const ua::Variant& v) {
+    *static_cast<ua::Variant*>(context) = v;
+    return true;
+}
+
 inline constexpr ua::NodeId kAnswer = ua::NodeId::Str(1, "the.answer");
 inline constexpr ua::NodeId kReadonly = ua::NodeId::Str(1, "readonly");
 inline constexpr ua::NodeId kDevice(1, 1000), kTemperature(1, 1001);
 inline constexpr ua::NodeId kZero1(1, 2001), kZero2(1, 2002), kZero3(1, 2003);
 inline constexpr char kZeros[3] = {0, 0, 0};
+inline constexpr ua::NodeId kSByte = ua::NodeId::Str(1, "sbyte"), kUInt16 = ua::NodeId::Str(1, "uint16"),
+                            kFloat = ua::NodeId::Str(1, "float"), kBool = ua::NodeId::Str(1, "bool");
+
+constexpr ua::Node stored_variable(const ua::NodeId& id, std::string_view name, ua::UInt32 type, ua::Variant* storage) {
+    return ua::Node{.nodeId = id, .nodeClass = ua::NodeClass::Variable, .browseName = ua::QualifiedName(1, name),
+                    .displayName = ua::LocalizedText("en-US", name), .dataType = ua::NodeId(0, type),
+                    .accessLevel = ua::ns0::ACCESS_LEVEL_CURRENT_READ | ua::ns0::ACCESS_LEVEL_CURRENT_WRITE,
+                    .readCallback = &read_stored, .writeCallback = &write_stored, .userContext = storage};
+}
 
 inline constexpr std::array kAppNodes = {
     ua::Node{.nodeId = kAnswer, .nodeClass = ua::NodeClass::Variable, .browseName = ua::QualifiedName(1, "the answer"),
@@ -60,6 +78,10 @@ inline constexpr std::array kAppNodes = {
              .browseName = ua::QualifiedName(1, "Temperature"), .displayName = ua::LocalizedText("en-US", "Temperature"),
              .dataType = ua::NodeId(0, ua::ns0::DataType_Double), .accessLevel = ua::ns0::ACCESS_LEVEL_CURRENT_READ,
              .readCallback = &read_temperature},
+    stored_variable(kSByte, "sbyte", ua::ns0::DataType_SByte, &g_sbyte),
+    stored_variable(kUInt16, "uint16", ua::ns0::DataType_UInt16, &g_uint16),
+    stored_variable(kFloat, "float", ua::ns0::DataType_Float, &g_float),
+    stored_variable(kBool, "bool", ua::ns0::DataType_Boolean, &g_bool),
     ua::Node{.nodeId = kZero1, .nodeClass = ua::NodeClass::Object, .browseName = ua::QualifiedName(0, {kZeros, 1}),
              .displayName = ua::LocalizedText("", "zero1")},
     ua::Node{.nodeId = kZero2, .nodeClass = ua::NodeClass::Object, .browseName = ua::QualifiedName(0, {kZeros, 2}),
@@ -79,6 +101,14 @@ inline constexpr std::array kAppReferences = {
     ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasTypeDefinition), true, ua::NodeId(0, ua::ns0::BaseObjectType)},
     ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasComponent), true, kTemperature},
     ua::ReferenceEntry{kTemperature, ua::NodeId(0, ua::ns0::HasComponent), false, kDevice},
+    ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasComponent), true, kSByte},
+    ua::ReferenceEntry{kSByte, ua::NodeId(0, ua::ns0::HasComponent), false, kDevice},
+    ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasComponent), true, kUInt16},
+    ua::ReferenceEntry{kUInt16, ua::NodeId(0, ua::ns0::HasComponent), false, kDevice},
+    ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasComponent), true, kFloat},
+    ua::ReferenceEntry{kFloat, ua::NodeId(0, ua::ns0::HasComponent), false, kDevice},
+    ua::ReferenceEntry{kDevice, ua::NodeId(0, ua::ns0::HasComponent), true, kBool},
+    ua::ReferenceEntry{kBool, ua::NodeId(0, ua::ns0::HasComponent), false, kDevice},
     ua::ReferenceEntry{ua::NodeId(0, ua::ns0::ObjectsFolder), ua::NodeId(0, ua::ns0::Organizes), true, kZero1},
     ua::ReferenceEntry{kZero1, ua::NodeId(0, ua::ns0::Organizes), false, ua::NodeId(0, ua::ns0::ObjectsFolder)},
     ua::ReferenceEntry{ua::NodeId(0, ua::ns0::ObjectsFolder), ua::NodeId(0, ua::ns0::Organizes), true, kZero2},
@@ -195,6 +225,10 @@ public:
     void SetUp() override {
         g_answer = 42;
         g_temperature = 21.5;
+        g_sbyte = ua::Variant::Of(ua::SByte{0});
+        g_uint16 = ua::Variant::Of(ua::UInt16{0});
+        g_float = ua::Variant::Of(ua::Float{0});
+        g_bool = ua::Variant::Of(false);
     }
 
     /// Run `handler` on the request body `encode` writes.

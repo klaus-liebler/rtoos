@@ -55,12 +55,6 @@ check_types_definition.c	Typbeschreibungen (UA_DataType) und DataTypeDefinition-
 check_types_range.c	NumericRange auf Arrays (Teilbereiche lesen/schreiben); die rtoos-Variablen sind Skalare, Teilbereiche gibt es nicht (Syntaxprüfung: opcua_o6_attributes_test.cpp IndexRangeAndDataEncoding).
 check_types_range_lookup.c	NumericRange auf Arrays (Teilbereiche lesen/schreiben); die rtoos-Variablen sind Skalare, Teilbereiche gibt es nicht.
 check_types_builtin.c	Funktionen der open62541-Typ-API (Konstruktoren, String-Hilfen, Vergleiche, Speicher); der rtoos-Codec ist in opcua_codec_test.cpp geprüft.
-check_chunking.c	OPEN Chunking
-check_encoding_roundtrip.c	OPEN Encoding
-check_types_builtin_binary.c	OPEN Binary encoding
-check_types_builtin_variant.c	OPEN Variant
-check_securechannel.c	OPEN SecureChannel
-check_securechannel_unit.c	OPEN SecureChannel unit
 
 # ---- encryption ------------------------------------------------------------------------------------
 encryption/check_encryption_aes128sha256rsaoaep.c	SecurityPolicy Aes128_Sha256_RsaOaep: rtoos bietet nur Basic256Sha256 (Sign, SignAndEncrypt) und None.
@@ -86,14 +80,13 @@ encryption/check_server_config_default.c	Default-Konfiguration eines open62541-S
 encryption/check_crypto_coverage.c	Abdeckungstests der Krypto-Plugin-API von open62541 (Hilfsfunktionen, Fehlerpfade der Plugins); die rtoos-Krypto prüft Basic256Sha256Primitives gegen Referenzwerte.
 encryption/check_encryption_basic256sha256.c::encryption_connect_pem	Laden von Zertifikat und Schlüssel im PEM-Format durch den Client; rtoos-Schlüssel sind DER und einkompiliert.
 encryption/check_encryption_basic256sha256.c::securitypolicy_basic256sha256_null_cert_no_underflow	Interne Funktion der open62541-SecurityPolicy (Blockgröße ohne Zertifikat); rtoos lehnt ein OPN ohne Client-Zertifikat ab, bevor gerechnet wird.
-encryption/check_encryption_basic256sha256.c::transfer_detached_subscription_anonymous	OPEN subscriptions
+encryption/check_encryption_basic256sha256.c::transfer_detached_subscription_anonymous	TransferSubscriptions einer abgelösten Subscription; rtoos überträgt keine Subscriptions, sie enden mit ihrer Session.
 encryption/check_hmac_verify_constanttime.c::*Sha1*	HMAC-SHA1 gehört zu den veralteten Policies Basic128Rsa15/Basic256; Basic256Sha256 nutzt HMAC-SHA256 (portiert).
 encryption/check_hmac_verify_constanttime.c::*Sha384*	HMAC-SHA384 gehört zu den ECC-Policies; Basic256Sha256 nutzt HMAC-SHA256 (portiert).
 encryption/check_securitypolicy_crypto.c	Andere SecurityPolicies als Basic256Sha256; rtoos bietet nur Basic256Sha256 und None.
 encryption/check_cert_validation_client_response.c::testCreateSession*	Prüfungen der open62541-Client-Bibliothek an der CreateSession-Antwort des Servers; rtoos enthält keinen Client (die Antwort selbst prüft CreateSessionOnASignedChannelNeedsItsClientAndANonce).
 
 # ---- server ----------------------------------------------------------------------------------------
-server/*	OPEN server
 
 # ---- server/check_services_view.c ----------------------------------------------------------------------
 server/check_services_view.c::Service_Browse_Recursive	Rekursives Browsen ist eine Server-API von open62541 (UA_Server_browseRecursive) ohne OPC-UA-Dienst; ein Client browst rekursiv über Browse/BrowseNext (portiert).
@@ -144,4 +137,167 @@ server/check_session_errorpaths.c::Session_protectedAttributes	Session-Attribute
 server/check_session_errorpaths.c::Session_notificationCallback_fires	Session-Callbacks der open62541-Server-API; keine Entsprechung in rtoos.
 server/check_session_errorpaths.c::Server_closeSession_helper	Schließt eine Session über die Server-API (UA_Server_closeSession); rtoos schließt Sessions nur über CloseSession oder Timeout.
 server/check_session_errorpaths.c::Session_unactivated_doesNotPinChannel	Bindung nicht aktivierter Sessions an Kanäle in open62541 (mehrere Sessions je Kanal); bei rtoos gehört genau eine Session zu einer Verbindung.
-server/check_session_errorpaths.c::Session_close_preserveSubscriptions_flag	OPEN subscriptions
+server/check_session_errorpaths.c::Session_close_preserveSubscriptions_flag	CloseSession mit deleteSubscriptions=false hebt Subscriptions für eine Übertragung auf; rtoos überträgt keine Subscriptions (TransferSubscriptions fehlt), sie enden mit der Session.
+
+# ---- top-level: encoding and SecureChannel internals ----------------------------------------------------------------
+check_chunking.c	Aufteilung einer Nachricht in mehrere Chunks: rtoos handelt MaxChunkCount 1 aus (Acknowledge) und lehnt Nachrichten aus mehreren Chunks ab; jede Antwort passt in einen Chunk (8192 Byte).
+check_types_builtin_variant.c	Funktionen der open62541-Typ-API (Variant-Bereiche, Kopien, Ordnung, DataType-Suche, DiagnosticInfo-Strukturen, StatusCode-Hilfen); der rtoos-Codec ist in opcua_codec_test.cpp geprüft.
+check_encoding_roundtrip.c::json_*	JSON-Encoding (Part 6 5.4); rtoos implementiert nur das binäre Encoding.
+check_encoding_roundtrip.c::xml_*	XML-Encoding (Part 6 5.3); rtoos implementiert nur das binäre Encoding.
+check_encoding_roundtrip.c::server_config_ops	Konfigurations-API von open62541; rtoos konfiguriert zur Übersetzungszeit.
+check_encoding_roundtrip.c::type_operations	Typ-API von open62541 (Kopieren, Löschen, Vergleichen dynamischer Typen); rtoos hat keine dynamischen Typen.
+check_encoding_roundtrip.c::nodeId_hash_order	Hash und Ordnung von NodeIds für den open62541-Nodestore; rtoos sucht linear in einer konstanten Tabelle.
+check_encoding_roundtrip.c::variant_copyRange_test	Teilbereiche von Variant-Arrays (UA_Variant_copyRange); rtoos-Variablen sind Skalare.
+check_types_builtin_binary.c::binary_datavalue_pico_clamp	Begrenzung der Picosekunden beim Kodieren; rtoos sendet keine Picosekunden (beim Dekodieren übersprungen: binary_datavalue_and_diagnosticinfo_are_skipped).
+check_types_builtin_binary.c::binary_calc*	Größenberechnung der generischen open62541-Kodierung (UA_calcSizeBinary); rtoos kodiert direkt in einen festen Puffer und prüft den Platz beim Schreiben.
+check_types_builtin_binary.c::binary_encode_*	Fehlerpfade der generischen open62541-Kodier-API (Null-Quellen, Null-Typen, vorab allozierte Puffer); keine Entsprechung im rtoos-Codec.
+check_types_builtin_binary.c::binary_decimal_notImplemented	Datentyp Decimal; den kennt rtoos nicht (wird als nicht unterstützter Wert übersprungen).
+check_types_builtin_binary.c::binary_decode_customAllocator	Eigene Speicherallokatoren beim Dekodieren; rtoos dekodiert ohne Heap (Views auf die Nachricht).
+check_types_builtin_binary.c::binary_expandednodeid_namespaceMapping	Namespace-Zuordnung zwischen Client und Server beim Dekodieren; rtoos hat feste Namespaces 0 und 1.
+check_types_builtin_binary.c::binary_variant_customArrayTypeLookup	Benutzerdefinierte Typen in Arrays; rtoos kennt nur die eingebauten Typen und überspringt Arrays.
+check_types_builtin_binary.c::binary_variant_preserveXmlExtensionObjectArray	Erhalt von XML-ExtensionObjects in Arrays beim Umkodieren; rtoos überspringt Arrays und ExtensionObjects.
+check_types_builtin_binary.c::binary_extensionObject_missingContent	Dekodieren von ExtensionObjects bekannter Strukturtypen in Objekte; rtoos überspringt ExtensionObjects (binary_extensionobjects_are_skipped).
+check_types_builtin_binary.c::binary_extensionObject_declaredLengthMismatch	Dekodieren von ExtensionObjects bekannter Strukturtypen in Objekte; rtoos überspringt ExtensionObjects anhand der Länge.
+check_types_builtin_binary.c::binary_union_noSelection	Union-Typen (Part 6 5.2.7); rtoos kennt keine Union-Typen.
+check_types_builtin_binary.c::binary_variant_dimensionOverflowOnEncode	Kodieren mehrdimensionaler Arrays; rtoos sendet nur eindimensionale Arrays (ArrayDimensions, NamespaceArray).
+check_types_builtin_binary.c::binary_find_datatype_by_binary	DataType-Suche anhand der Binärkodierung; rtoos hat keine Typbeschreibungen zur Laufzeit.
+check_types_builtin_binary.c::binary_variant_enum	Enum-Werte im Variant; rtoos definiert keine Enum-Typen.
+check_types_builtin_binary.c::binary_readrequest	Generische Strukturkodierung; rtoos kodiert jede Dienst-Struktur im Dienst selbst (geprüft durch die Service-Tests, hier: opcua_o6_attributes_test.cpp).
+check_types_builtin_binary.c::binary_writerequest	Generische Strukturkodierung; rtoos kodiert jede Dienst-Struktur im Dienst selbst (opcua_o6_attributes_test.cpp).
+check_types_builtin_binary.c::binary_browse*	Generische Strukturkodierung; rtoos kodiert jede Dienst-Struktur im Dienst selbst (opcua_o6_view_test.cpp).
+check_types_builtin_binary.c::binary_applicationdescription	Generische Strukturkodierung; rtoos kodiert die ApplicationDescription selbst (client_find_servers, GetEndpoints-Test).
+check_types_builtin_binary.c::binary_endpointdescription	Generische Strukturkodierung; rtoos kodiert die EndpointDescription selbst (GetEndpointsOffersBasic256Sha256AndNone dekodiert sie vollständig).
+check_types_builtin_binary.c::binary_callrequest	CallRequest (Methoden); rtoos hat keine Methoden.
+check_types_builtin_binary.c::binary_*subscriptionrequest	Generische Strukturkodierung; rtoos dekodiert die Subscription-Dienste selbst (opcua_o6_subscriptions_test.cpp).
+check_securechannel.c::SecureChannel_initAndDelete	Lebenszyklus der internen SecureChannel-Struktur von open62541.
+check_securechannel.c::SecureChannel_sendAsymmetricOPNMessage_*	Interne Sendefunktion der open62541-SecureChannel-Schicht; das OPN des rtoos-Servers prüfen die Ende-zu-Ende-Tests (open_basic entschlüsselt und verifiziert jede OPN-Antwort).
+check_securechannel.c::Securechannel_sendAsymmetricOPNMessage_extraPaddingPresentWhenKeyLargerThan2048Bits	ExtraPadding für RSA-Schlüssel über 2048 Bit; rtoos ist auf RSA-2048 festgelegt.
+check_securechannel.c::SecureChannel_sendSymmetricMessage_invalidParameters	Parameterprüfung der internen open62541-Sendefunktion.
+check_securechannel.c::SecureChannel_receiveSymmetricMessage_minimumPayload	Interne Empfangsfunktion von open62541; zu kurze Nachrichten deckt bei rtoos der Mutations-Fuzzer ab (MutatedMessagesKeepTheServerHealthy).
+check_securechannel.c::SecureChannel_renewal*	Überlappung von altem und neuem Token beim Renew: rtoos schaltet mit der OPN-Antwort sofort auf den neuen Token um (alte Tokens werden nicht weiter angenommen).
+check_securechannel.c::SecureChannel_firstTokenRejectsPlaceholder	Platzhalter-Token im Zustand des open62541-Clients.
+check_securechannel.c::SecureChannel_serverTimeoutRotatesToken	Token-Wechsel nach Ablauf der Lebensdauer in open62541; rtoos erneuert Tokens nur auf Anforderung des Clients (Renew).
+check_securechannel.c::SecureChannel_signedRenewalSequence	Ablauf signierter Renew-Nachrichten im open62541-Client; die Server-Seite prüft Client_renewSecureChannel und OpenSecureChannel_renew_nonceReuse_rejected.
+check_securechannel.c::SecureChannel_assemblePartialChunks	Zusammensetzen mehrerer Chunks; rtoos verarbeitet nur Nachrichten aus einem Chunk.
+check_securechannel.c::SecureChannel_countFinalChunkAgainstLimit	Zusammensetzen mehrerer Chunks; rtoos verarbeitet nur Nachrichten aus einem Chunk.
+check_securechannel.c::SecureChannel_maxMessageSizeOverride_*	Laufzeit-Konfiguration der maximalen Nachrichtengröße in open62541; rtoos hat feste 8192 Byte (MessageLargerThanTheBufferClosesTheConnection).
+check_securechannel.c::SecureChannel_IKMChaining_prependChainsOnRenewal	Schlüsselverkettung der ECC-Policies beim Renew; rtoos bietet nur Basic256Sha256.
+check_securechannel.c::SecureChannel_XDH_*	Schlüsselaustausch der ECC-Policies (XDH); rtoos bietet nur Basic256Sha256.
+check_securechannel_unit.c::setSecurityMode_noPolicy_rejected	Interne Konfiguration eines open62541-Kanals ohne Policy; rtoos legt Policy und Modus im OPN fest.
+check_securechannel_unit.c::setSecurityPolicy*	Interne Konfiguration der SecurityPolicy eines open62541-Kanals; rtoos wählt die Policy im OPN (None oder Basic256Sha256).
+check_securechannel_unit.c::processHELACK_lowProtocolVersion_capsVersion	Aushandeln einer älteren Protokollversion durch den open62541-Client; der rtoos-Server antwortet immer mit Version 0.
+check_securechannel_unit.c::processHELACK_maxMessageSizeTooSmall_returnsBad	Prüfung der MaxMessageSize im Acknowledge auf Client-Seite; der rtoos-Server sendet MaxMessageSize 8192.
+check_securechannel_unit.c::deleteBuffered_*	Puffer der open62541-Netzwerkschicht für unvollständige Chunks; rtoos puffert im OpcUaServer (Framing-Tests).
+check_securechannel_unit.c::loadBuffer_*	Puffer der open62541-Netzwerkschicht für unvollständige Chunks; rtoos puffert im OpcUaServer (Framing-Tests).
+check_securechannel_unit.c::isConnected_*	Zustandsabfrage der internen SecureChannel-Struktur von open62541.
+check_securechannel_unit.c::clear_emptyChannel_doesNotCrash	Lebenszyklus der internen SecureChannel-Struktur von open62541.
+check_securechannel_unit.c::shutdown_*	Herunterfahren der internen SecureChannel-Struktur von open62541; rtoos schließt über die TCP-Verbindung.
+
+# ---- server: subscriptions ----------------------------------------------------------------------------------------------
+server/check_services_subscriptions.c::Server_deleteSubscription_closeSessionFromMonitoredItemCallback	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_services_subscriptions.c::Server_deleteSubscription_callbackSeesConsistentIndex	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_services_subscriptions.c::Server_createSubscription_notificationCallback	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_services_subscriptions.c::Server_closeSessionFromMonitoredItemCreated	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_services_subscriptions.c::Server_transfer*	TransferSubscriptions (Subscriptions einer anderen Session übernehmen) ist nicht umgesetzt: eine Session je Verbindung, Subscriptions enden mit ihrer Session.
+server/check_services_subscriptions.c::Server_subscriptionSurvivesSessionTimeoutTransferableToSameUser	TransferSubscriptions (Subscriptions einer anderen Session übernehmen) ist nicht umgesetzt: eine Session je Verbindung, Subscriptions enden mit ihrer Session.
+server/check_services_subscriptions.c::Server_detachedSubscription_anonymousInsecureNotTransferable	TransferSubscriptions (Subscriptions einer anderen Session übernehmen) ist nicht umgesetzt: eine Session je Verbindung, Subscriptions enden mit ihrer Session.
+server/check_services_subscriptions.c::Server_subscriptionRecoverableWithOverride	TransferSubscriptions (Subscriptions einer anderen Session übernehmen) ist nicht umgesetzt: eine Session je Verbindung, Subscriptions enden mit ihrer Session.
+server/check_services_subscriptions.c::Server_diagnosticsRejectLongBrowseNames	Diagnose-Knoten der Subscriptions (SubscriptionDiagnosticsArray); rtoos hat keine Diagnose-Knoten.
+server/check_services_subscriptions.c::Server_createSession_*	Grenze der Session-Zahl des Servers; bei rtoos eine Session je Verbindung, die Grenze ist MaxClients (TcpServer).
+server/check_services_subscriptions_modify.c::transferSubscription	TransferSubscriptions (Subscriptions einer anderen Session übernehmen) ist nicht umgesetzt: eine Session je Verbindung, Subscriptions enden mit ihrer Session.
+server/check_monitoreditem_filter.c::Server_MonitoredItemsPercentFilterSetOnCreate	PercentDeadband braucht die Property EURange; die rtoos-Variablen haben keine (ohne EURange: BadMonitoredItemFilterUnsupported, portiert).
+server/check_monitoreditem_filter.c::Server_MonitoredItemsAbsoluteFilterNULLValue	Variable ohne Wert (null) über die Server-API; rtoos-Variablen liefern immer einen Wert ihres Datentyps (Callback oder Konstante).
+server/check_subscription_publishqueue.c	Interne Publish-Warteschlange von open62541 mit Konfigurationsgrenze 0; rtoos hat feste MAX_PUBLISH_REQUESTS (PublishQueueLimitsAndTimeouts).
+server/check_local_monitored_item.c	Lokale MonitoredItems mit Callbacks im Server (UA_Server_createDataChangeMonitoredItem); rtoos bietet MonitoredItems nur über den Dienst.
+server/check_subscription_events.c	Event-Subscriptions (EventFilter, Part 4 7.22.3); rtoos meldet nur Datenänderungen.
+server/check_subscription_events_local.c	Event-Subscriptions (EventFilter); rtoos meldet nur Datenänderungen.
+server/check_subscription_event_filter.c	EventFilter-Auswertung; rtoos meldet nur Datenänderungen (EventFilter: BadFilterNotAllowed).
+server/check_eventfilter_parser.c	Parser für EventFilter-Texte; rtoos kennt keine Events.
+server/check_server_alarmsconditions.c	Alarms & Conditions (Part 9); nicht Teil von rtoos.
+server/check_server_monitoringspeed.c	Geschwindigkeitsmessung der open62541-MonitoredItems (keine Prüfung des Verhaltens).
+
+# ---- server: other areas ---------------------------------------------------------------------------------------------------
+server/check_services_nodemanagement.c	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_services_nodemanagement_callbacks.c	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_server_speed_addnodes.c	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_nodes.c	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_nodestore.c	Nodestore von open62541 (Ablage und Verwaltung der Knoten zur Laufzeit); der rtoos-Adressraum ist eine konstante Tabelle.
+server/check_node_inheritance.c	Instanziieren von Typen mit Vererbung beim Anlegen von Knoten zur Laufzeit; der rtoos-Adressraum ist eine constexpr-Tabelle.
+server/check_server_node_services.c	Knoten-Dienste der Server-API (Anlegen, Löschen, Instanziieren); der rtoos-Adressraum ist eine constexpr-Tabelle.
+server/check_modelchange_network.c	ModelChange-Events nach Änderungen des Adressraums; der rtoos-Adressraum ändert sich nicht.
+server/check_server_enum_datatypedefinition.c	Enum-Datentypen mit DataTypeDefinition; rtoos definiert keine Enum-Typen.
+server/check_services_call.c	Methoden (Call-Dienst, Part 4 5.11); rtoos hat keine Methoden.
+server/check_services_method_coverage.c	Methoden (Call-Dienst); rtoos hat keine Methoden.
+server/check_services_history.c	Historie (HistoryRead/HistoryUpdate, Part 11); rtoos speichert keine Historie.
+server/check_server_historical_data.c	Historie (Part 11); rtoos speichert keine Historie.
+server/check_server_historical_data_circular.c	Historie (Part 11); rtoos speichert keine Historie.
+server/check_server_filetransfer.c	Dateiübertragung (FileType, Part 5 C); nicht Teil von rtoos (Firmware-Dateien liefert der HTTPS-Server).
+server/check_server_rbac*.c	Rollenbasierte Rechte (Part 18); rtoos hat eine feste Regel: None nur lesen, Basic256Sha256 mit CA-Zertifikat alles.
+server/check_server_password.c	Benutzername und Passwort; rtoos bietet nur das Anonymous-Token, Rechte folgen aus dem Client-Zertifikat.
+server/check_server_userspace.c	Benutzerbezogene Server-Erweiterungen von open62541 (Userland-Kontexte); keine Entsprechung in rtoos.
+server/check_server_auditing.c	Audit-Events (Part 4 6.5); rtoos erzeugt keine Events.
+server/check_server_diagnostics.c	Server-Diagnose (Diagnose-Knoten und -Zähler); rtoos zählt in OpcUaServerStats, ohne Diagnose-Knoten.
+server/check_server_ns0_diagnostics.c	Diagnose-Knoten in Namespace 0; rtoos hat einen schlanken Namespace 0 ohne Diagnose-Knoten.
+server/check_server_ns0_serverconfiguration.c	ServerConfiguration-Knoten (Part 12, Zertifikatsverwaltung); rtoos verwaltet Zertifikate nicht zur Laufzeit.
+server/check_server_asyncop.c	Asynchrone Operationen der Server-API (Antworten später aus anderen Threads); der rtoos-Server beantwortet alles im Netz-Thread.
+server/check_server_asyncop_singlethreaded.c	Asynchrone Operationen der Server-API; der rtoos-Server beantwortet alles im Netz-Thread.
+server/check_server_jobs.c	Zeitgesteuerte Jobs der Server-API (UA_Server_addRepeatedCallback); rtoos plant über NetRuntime.
+server/check_server_callbacks.c	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_server_attr_wrappers.c	Bequemlichkeitsfunktionen der Server-API zum Lesen/Schreiben einzelner Attribute; das Verhalten prüfen die Attribut-Tests über den Dienst.
+server/check_server_utils.c	Hilfsfunktionen der Server-API (Pfade, Namen, Namespaces); keine Entsprechung in rtoos.
+server/check_server_utils_coverage.c	Hilfsfunktionen der Server-API; keine Entsprechung in rtoos.
+server/check_interfaces.c	Interface-Typen (Part 3 5.3.3) beim Anlegen von Knoten; der rtoos-Adressraum ist eine constexpr-Tabelle.
+server/check_server_config_json.c	JSON-Konfigurationsdateien von open62541; rtoos konfiguriert zur Übersetzungszeit.
+server/check_server_json_config.c	JSON-Konfigurationsdateien von open62541; rtoos konfiguriert zur Übersetzungszeit.
+server/check_json_config_pki.c	JSON-Konfiguration der PKI; rtoos hat eine einkompilierte CA.
+server/check_server_http.c	OPC UA über HTTPS (Part 6 7.4); rtoos spricht OPC UA nur über opc.tcp.
+server/check_server_http_protocol.c	OPC UA über HTTPS (Part 6 7.4); rtoos spricht OPC UA nur über opc.tcp.
+server/check_server_websocket_protocol.c	OPC UA über WebSockets (Part 6 7.5); rtoos spricht OPC UA nur über opc.tcp.
+server/check_server_reverseconnect.c	Reverse Connect (Part 6 7.1.3: der Server baut die Verbindung auf); rtoos wartet auf Clients.
+server/check_server_readspeed.c	Geschwindigkeitsmessung des open62541-Lesepfads (keine Prüfung des Verhaltens).
+server/check_discovery_mdnsd.c	Multicast-Discovery (LDS-ME, Part 12); rtoos meldet sich per mDNS als fcu.local, ohne OPC-UA-Discovery-Records.
+server/check_findservers_on_network.c	FindServersOnNetwork eines Discovery-Servers (Part 12); rtoos ist kein Discovery-Server.
+server/check_discovery_coverage.c	Registrierung bei einem Discovery-Server (RegisterServer, Part 12); rtoos registriert sich nicht.
+server/check_discovery.c::Server_register*	Registrierung bei einem Discovery-Server (RegisterServer/RegisterServer2, Part 12); rtoos registriert sich nicht und ist kein Discovery-Server.
+server/check_discovery.c::Server_findServers_preserves_registered_discoveryUrls	DiscoveryUrls registrierter Server in FindServers; rtoos ist kein Discovery-Server (FindServers liefert nur sich selbst: client_find_servers).
+server/check_discovery.c::Server_new*	Lebenszyklus eines open62541-Servers mit Discovery-Konfiguration.
+server/check_discovery.c::Server_addEndpoint_rejectsInvalidSecurityMode	Endpunkte über die Server-API hinzufügen; die rtoos-Endpunkte sind fest (None, Sign, SignAndEncrypt).
+server/check_discovery.c::Server_getEndpoints_rejectsOutOfRangeSecurityMode	Endpunkte mit ungültigem Modus in der Server-Konfiguration; die rtoos-Endpunkte sind fest (GetEndpoints-Test).
+server/check_server_getendpoints.c::certificateTokenWithLaterSecurityPolicy	X509-Benutzertoken; rtoos bietet nur das Anonymous-Token.
+server/check_services_securechannel.c::NotifySecureChannel_*	Callbacks der open62541-Server-API (Subscription-/MonitoredItem-/Session-Ereignisse); rtoos hat keine solchen Erweiterungspunkte.
+server/check_accesscontrol.c::Client_user_*	Benutzername und Passwort; rtoos bietet nur das Anonymous-Token.
+server/check_accesscontrol.c::Client_pass_fail	Benutzername und Passwort; rtoos bietet nur das Anonymous-Token.
+server/check_accesscontrol.c::Server_*	Access-Control-Plugin von open62541 (Session-Parameter, Erlaubnis-Callbacks); rtoos hat eine feste Regel: None nur lesen, Basic256Sha256 mit CA-Zertifikat alles.
+server/check_accesscontrol.c::Client_commonAttributes_requireBrowse	Browse-Rechte pro Knoten über das Access-Control-Plugin; bei rtoos darf jede aktive Session browsen.
+server/check_server_readwrite.c::srv_writeDisplayName	Schreibt DisplayName über die Server-API; nur Value ist schreibbar (attributeWritePermissionPreservesRejectedValue).
+server/check_server_readwrite.c::srv_writeAccessLevel	Schreibt AccessLevel über die Server-API; nur Value ist schreibbar (attributeWritePermissionPreservesRejectedValue).
+server/check_server_readwrite.c::srv_getConfig	Lokale Server-API von open62541 (UA_Server_*) ohne Entsprechung: der rtoos-Adressraum ist eine konstante Tabelle, Konfiguration und Lebenszyklus sind fest.
+server/check_server_readwrite.c::srv_addNamespace	Lokale Server-API von open62541 (UA_Server_*) ohne Entsprechung: der rtoos-Adressraum ist eine konstante Tabelle, Konfiguration und Lebenszyklus sind fest.
+server/check_server_readwrite.c::srv_getNamespaceByName	Lokale Server-API von open62541 (UA_Server_*) ohne Entsprechung: der rtoos-Adressraum ist eine konstante Tabelle, Konfiguration und Lebenszyklus sind fest.
+server/check_server_readwrite.c::srv_add*	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_services_attributes_all.c::write_variable_all_attributes	Schreibt alle Attribute über die Server-API; nur Value ist schreibbar (attributeWritePermissionPreservesRejectedValue).
+server/check_services_attributes_all.c::read_method_attributes	Method-Knoten; rtoos hat keine Methoden.
+server/check_services_attributes_all.c::read_executable_userExecutable_method	Method-Knoten; rtoos hat keine Methoden.
+server/check_services_attributes_all.c::method_with_args	Method-Knoten; rtoos hat keine Methoden.
+server/check_services_attributes_all.c::read_view_attributes	View-Knoten; der rtoos-Adressraum hat keine Views.
+server/check_services_attributes_all.c::read_dataTypeDefinition	DataTypeDefinition strukturierter Typen; rtoos definiert keine (einfache Typen: ReadSingleAttributeDataTypeDefinitionForSimpleType).
+server/check_services_attributes_all.c::add_*	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_services_attributes_all.c::delete_*	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_services_attributes_all.c::instantiate_object	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_services_attributes_all.c::node_context_operations	Knoten-Kontexte der Server-API; rtoos-Knoten tragen ihren Kontext konstant (userContext).
+server/check_services_attributes_all.c::namespace_operations	Lokale Server-API von open62541 (UA_Server_*) ohne Entsprechung: der rtoos-Adressraum ist eine konstante Tabelle, Konfiguration und Lebenszyklus sind fest.
+server/check_services_attributes_all.c::variable_with_array	Array-Variablen; die rtoos-Anwendungsvariablen sind Skalare.
+server/check_server_client_readwrite.c::read_write_double	Liest und schreibt eine Double-Variable; Double ist abgedeckt durch ReadSingleDataSourceAttributeValueWithoutTimestamp (lesen) und DeadbandTypeKinds/Float (schreiben über gespeicherte Variablen).
+server/check_server_client_readwrite.c::read_write_string	String-Variablen werden geschrieben, indem der Dienst eine View auf die Nachricht erhält; die rtoos-Anwendungsvariablen sind Register (Zahlen), ohne beschreibbare String-Variablen.
+server/check_server_client_readwrite.c::read_write_array	Array-Variablen; die rtoos-Anwendungsvariablen sind Skalare.
+server/check_server_client_readwrite.c::read_bytestring	ByteString-Variable; die rtoos-Anwendungsvariablen sind Register (Zahlen); ByteString kodiert der Codec (binary_datetime_guid_bytestring_statuscode).
+server/check_server_client_readwrite.c::read_server_status	ServerStatus als Struktur (ExtensionObject); rtoos liefert die Komponenten einzeln (State, CurrentTime, ...).
+server/check_server_client_readwrite.c::client_add_*	Knoten oder Referenzen zur Laufzeit hinzufügen/löschen (NodeManagement, Part 4 5.7); der rtoos-Adressraum ist eine constexpr-Tabelle im Flash.
+server/check_server_client_readwrite.c::client_write_attributes	Schreibt feste Attribute; nur Value ist schreibbar (attributeWritePermissionPreservesRejectedValue).
+server/check_server_client_readwrite.c::*_with_index_range	Teilbereiche (NumericRange) von Arrays; die rtoos-Variablen sind Skalare (IndexRangeAndDataEncoding).
+server/check_server.c	Lokale Server-API von open62541 (UA_Server_*) ohne Entsprechung: der rtoos-Adressraum ist eine konstante Tabelle, Konfiguration und Lebenszyklus sind fest.
+server/check_server.c::*Listener*	Listener der open62541-Event-Loop (Verbindungsannahme, Zustände); rtoos nimmt Verbindungen über TcpServer an (tcp_server_test.cpp).
+server/check_server.c::listener*	Listener der open62541-Event-Loop (Verbindungsannahme, Zustände); rtoos nimmt Verbindungen über TcpServer an (tcp_server_test.cpp).
+server/check_server.c::openingListenerCloses	Listener der open62541-Event-Loop (Verbindungsannahme, Zustände); rtoos nimmt Verbindungen über TcpServer an (tcp_server_test.cpp).
+server/check_server.c::asyncListenerHello	Listener der open62541-Event-Loop (Verbindungsannahme, Zustände); rtoos nimmt Verbindungen über TcpServer an (tcp_server_test.cpp).
+server/check_server.c::checkTcpDisabled	Abschaltbarer TCP-Transport der open62541-Konfiguration; bei rtoos ist opc.tcp der einzige Transport.
