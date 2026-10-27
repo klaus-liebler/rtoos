@@ -1011,4 +1011,91 @@ TEST_F(TcpTest, AckOfUnsentDataIsChallengedAndDropped) {
     EXPECT_EQ(server.received, "good");
 }
 
+// ---------------------------------------------------------------------------
+// ARP spoofing (stack.hpp: learn only from replies to our own requests; the ideas
+// of NetX Duo's netx_arp_static_entry_pollute_test / netx_arp_gratuitous_test)
+// ---------------------------------------------------------------------------
+
+constexpr MacAddress attacker_mac = MacAddress::from(0x02, 0, 0, 0, 0, 0x66);
+constexpr Ipv4Address gateway_ip = Ipv4Address::from(192, 168, 77, 254);
+constexpr MacAddress gateway_mac = MacAddress::from(0x02, 0, 0, 0, 0, 0xFE);
+
+class ArpSpoofTest : public NetTest {
+protected:
+    /// Send one UDP datagram to `dst`; returns what left the device.
+    std::vector<Frame> send_udp(Ipv4Address dst) {
+        PacketRef p = stack.allocate();
+        p->append(as_bytes("x"));
+        stack.udp_send(std::move(p), dst, 9, 9);
+        return sent();
+    }
+    static bool is_arp_request_for(const Frame& f, Ipv4Address ip) {
+        return f.ethertype() == ethertype_arp && load_be16(f.bytes.data() + 14 + 6) == 1 &&
+               Ipv4Address::load(f.bytes.data() + 14 + 24) == ip;
+    }
+};
+
+TEST_F(ArpSpoofTest, UnsolicitedReplyCreatesNoEntry) {
+    const auto victim = Ipv4Address::from(192, 168, 77, 50);
+    deliver(arp(2, attacker_mac, victim, device_ip, device_mac));
+    const auto f = send_udp(victim);
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_TRUE(is_arp_request_for(f[0], victim)) << "the device must ask instead of trusting the reply";
+}
+
+TEST_F(ArpSpoofTest, SenderOfARequestIsNotLearned) {
+    const auto asker = Ipv4Address::from(192, 168, 77, 51);
+    deliver(arp(1, attacker_mac, asker, device_ip));
+    ASSERT_EQ(sent().size(), 1u);  // our ARP reply
+    const auto f = send_udp(asker);
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_TRUE(is_arp_request_for(f[0], asker));
+}
+
+TEST_F(ArpSpoofTest, KnownGatewayCannotBeRedirected) {
+    prime_arp(gateway_ip, gateway_mac);
+    const auto remote = Ipv4Address::from(10, 1, 2, 3);  // off-link: via the gateway
+    auto f = send_udp(remote);
+    ASSERT_EQ(f.size(), 1u);
+    ASSERT_EQ(f[0].dst_mac(), gateway_mac);
+    // Unsolicited reply, gratuitous ARP and a request: all claim the gateway's address.
+    deliver(arp(2, attacker_mac, gateway_ip, device_ip, device_mac));
+    deliver(arp(1, attacker_mac, gateway_ip, gateway_ip));
+    deliver(arp(1, attacker_mac, gateway_ip, device_ip));
+    (void)sent();
+    f = send_udp(remote);
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].dst_mac(), gateway_mac);
+    EXPECT_EQ(stack.stats().arp_ignored, 3u);
+}
+
+TEST_F(ArpSpoofTest, ReplyMustAnswerOurPendingRequest) {
+    const auto target = Ipv4Address::from(192, 168, 77, 60);
+    auto f = send_udp(target);
+    ASSERT_TRUE(is_arp_request_for(f.at(0), target));
+    deliver(arp(2, attacker_mac, Ipv4Address::from(192, 168, 77, 61), device_ip, device_mac));  // other address
+    deliver(arp(2, attacker_mac, target, Ipv4Address::from(192, 168, 77, 9)));                 // not to us
+    EXPECT_TRUE(sent().empty()) << "the parked datagram must wait for the real answer";
+    deliver(arp(2, peer_mac, target, device_ip, device_mac));
+    f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].dst_mac(), peer_mac);
+}
+
+TEST_F(ArpSpoofTest, ARealMacChangeIsLearnedAfterTheEntryExpires) {
+    const auto host = Ipv4Address::from(192, 168, 77, 70);
+    const auto new_mac = MacAddress::from(0x02, 0, 0, 0, 0, 0x71);
+    prime_arp(host, MacAddress::from(0x02, 0, 0, 0, 0, 0x70));
+    deliver(arp(2, new_mac, host, device_ip, device_mac));  // new NIC: ignored for now
+    EXPECT_NE(send_udp(host).at(0).dst_mac(), new_mac);
+    poll(TestStack::arp_timeout_ms + 1);
+    (void)sent();
+    auto f = send_udp(host);
+    ASSERT_TRUE(is_arp_request_for(f.at(0), host));
+    deliver(arp(2, new_mac, host, device_ip, device_mac));
+    f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].dst_mac(), new_mac);
+}
+
 }  // namespace

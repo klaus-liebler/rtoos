@@ -401,14 +401,29 @@ TEST_F(UsbNcmStackTest, AnswersArpAndPingOverUsb) {
     ASSERT_TRUE(host.out(0x02, NtbBuilder{{ethernet(0x0806, arp, MacAddress::broadcast()), ethernet(0x0800, ip)}}.build()));
     pass();
     pass();
-    const auto frames = sent_frames();
+    auto frames = sent_frames();
     ASSERT_EQ(frames.size(), 2u);
     EXPECT_EQ(rtos::net::load_be16(frames[0].data() + 12), 0x0806);  // ARP reply
     EXPECT_EQ(rtos::net::load_be16(frames[0].data() + 14 + 6), 2);
-    EXPECT_EQ(rtos::net::load_be16(frames[1].data() + 12), 0x0800);  // echo reply
-    EXPECT_EQ(frames[1][14 + 20], std::byte{0});
-    EXPECT_EQ(MacAddress::load(frames[1].data()), host_mac);
-    EXPECT_EQ(MacAddress::load(frames[1].data() + 6), device_mac);
+    // The device does not learn the host's MAC from its request (ARP hardening,
+    // stack.hpp): to answer the ping it asks itself.
+    EXPECT_EQ(rtos::net::load_be16(frames[1].data() + 12), 0x0806);
+    EXPECT_EQ(rtos::net::load_be16(frames[1].data() + 14 + 6), 1);
+    Bytes reply = arp;
+    rtos::net::store_be16(reply.data() + 6, 2);
+    host_mac.store(reply.data() + 8);
+    host_ip.store(reply.data() + 14);
+    device_mac.store(reply.data() + 18);
+    device_ip.store(reply.data() + 24);
+    ASSERT_TRUE(host.out(0x02, NtbBuilder{{ethernet(0x0806, reply)}}.build()));
+    pass();
+    pass();
+    frames = sent_frames();
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(rtos::net::load_be16(frames[0].data() + 12), 0x0800);  // echo reply
+    EXPECT_EQ(frames[0][14 + 20], std::byte{0});
+    EXPECT_EQ(MacAddress::load(frames[0].data()), host_mac);
+    EXPECT_EQ(MacAddress::load(frames[0].data() + 6), device_mac);
 }
 
 TEST_F(UsbNcmStackTest, DhcpServerLeasesAnAddressOverUsb) {

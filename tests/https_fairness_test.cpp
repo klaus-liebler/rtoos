@@ -151,7 +151,25 @@ protected:
         ASSERT_TRUE(echo.start(echo_port));
         runtime.add(server, "https");
         runtime.add(echo, "modbus");
-        // The device knows the peer's MAC.
+        // The device learns the peer's MAC the only way it accepts: the peer pings, the
+        // device asks for the peer's MAC to answer, network() replies.
+        std::vector<std::byte> ip(20 + 12);
+        ip[0] = std::byte{0x45};
+        store_be16(ip.data() + 2, static_cast<std::uint16_t>(ip.size()));
+        ip[8] = std::byte{64};
+        ip[9] = std::byte{ip_proto_icmp};
+        peer_ip.store(ip.data() + 12);
+        device_ip.store(ip.data() + 16);
+        store_be16(ip.data() + 10, checksum({ip.data(), 20}));
+        ip[20] = std::byte{8};
+        store_be16(ip.data() + 22, checksum({ip.data() + 20, 12}));
+        driver.rx.push_back(frame(ethertype_ipv4, ip));
+        pass();
+        pass();
+    }
+
+    /// ARP reply of the peer to a request of the device.
+    void answer_arp(Ipv4Address asked) {
         std::array<std::byte, 28> a{};
         store_be16(a.data(), 1);
         store_be16(a.data() + 2, ethertype_ipv4);
@@ -159,11 +177,10 @@ protected:
         a[5] = std::byte{4};
         store_be16(a.data() + 6, 2);
         peer_mac.store(a.data() + 8);
-        peer_ip.store(a.data() + 14);
+        asked.store(a.data() + 14);
         device_mac.store(a.data() + 18);
         device_ip.store(a.data() + 24);
         driver.rx.push_back(frame(ethertype_arp, a));
-        pass();
     }
 
     void TearDown() override {
@@ -246,6 +263,10 @@ protected:
     void network() {
         for (auto& p : driver.tx) {
             const Frame f{std::vector<std::byte>(p->data(), p->data() + p->size())};
+            if (f.ethertype() == ethertype_arp && load_be16(f.bytes.data() + 14 + 6) == 1) {
+                answer_arp(Ipv4Address::load(f.bytes.data() + 14 + 24));  // the device asks for a peer
+                continue;
+            }
             if (f.ethertype() != ethertype_ipv4 || f.ip_protocol() != ip_proto_tcp) {
                 continue;
             }

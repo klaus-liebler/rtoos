@@ -201,9 +201,15 @@ protected:
         return p;
     }
 
-    /// Teach the stack the peer's MAC so outgoing frames are not parked for ARP.
-    void prime_arp() {
-        deliver(arp(2, peer_mac, peer_ip, device_ip, device_mac));
+    /// Teach the stack the MAC of `ip` (default: the peer) so outgoing frames are not
+    /// parked for ARP. The stack only learns from replies to its own requests: `ip`
+    /// pings it, it asks for `ip`'s MAC to answer, and `ip` replies.
+    void prime_arp(Ipv4Address ip = peer_ip, MacAddress mac = peer_mac) {
+        std::vector<std::byte> echo(12);
+        echo[0] = std::byte{8};
+        store_be16(echo.data() + 2, checksum(echo));
+        deliver(ipv4(ip_proto_icmp, echo, device_ip, ip));
+        deliver(arp(2, mac, ip, device_ip, device_mac));
         (void)sent();
     }
 };

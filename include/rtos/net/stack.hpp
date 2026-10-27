@@ -25,6 +25,15 @@
 // from another station is answered once (defence) and gives the address up if it
 // repeats within DEFEND_INTERVAL. set_config() takes an address without probing.
 //
+// ARP cache (spoofing): the stack learns a MAC address only from the reply to its
+// own request (the entry is pending, the reply comes from the address asked for
+// and is addressed to us). Unsolicited replies, gratuitous ARP and the sender of a
+// request neither create nor change entries - unlike RFC 826's merge, which lets
+// any station on the link redirect our traffic to the gateway ("ARP spoofing").
+// Attempts to change a known address are counted (StackStats::arp_ignored). A
+// station whose MAC really changed is reached again when its entry expires
+// (arp_timeout_ms). Cfg::arp_trust_unsolicited = true restores RFC 826 merging.
+//
 // Zero copy: received frames are processed in their DMA buffer (headers stripped
 // in place); ICMP echo replies reuse the request buffer. Outgoing data is written
 // once into a buffer with `headroom` bytes in front, every layer prepends its
@@ -69,6 +78,8 @@ inline constexpr std::uint8_t ip_proto_udp = 17;
 struct DefaultStackConfig {
     static constexpr std::size_t interfaces = 2;
     static constexpr std::size_t arp_entries = 8;       ///< per interface
+    /// RFC 826 merge (learn from any ARP packet) instead of replies to own requests only.
+    static constexpr bool arp_trust_unsolicited = false;
     static constexpr std::size_t multicast_groups = 2;  ///< per interface
     static constexpr std::size_t udp_sockets = 4;
     static constexpr std::size_t event_handlers = 8;
@@ -120,6 +131,7 @@ struct StackStats {
     std::uint32_t arp_requests = 0;
     std::uint32_t tx_no_buffer = 0;  ///< sends deferred: pool down to the receive reserve
     std::uint32_t address_conflicts = 0;
+    std::uint32_t arp_ignored = 0;   ///< ARP that would have changed a known address
 };
 
 template <PacketAllocator Pool, class Cfg = DefaultStackConfig>
@@ -561,8 +573,17 @@ private:
         }
         const bool configured = i.config.address != Ipv4Address::any();
         const bool for_us = configured && target_ip == i.config.address;
-        if (sender_ip != Ipv4Address::any() && (for_us || arp_find(i, sender_ip) != nullptr)) {
-            arp_update(id, sender_ip, sender_mac);  // RFC 826: merge
+        if (sender_ip != Ipv4Address::any()) {
+            ArpEntry* e = arp_find(i, sender_ip);
+            if constexpr (Cfg::arp_trust_unsolicited) {
+                if (for_us || e != nullptr) {
+                    arp_update(id, sender_ip, sender_mac);  // RFC 826: merge
+                }
+            } else if (e != nullptr && e->pending && op == 2 && for_us) {
+                arp_update(id, sender_ip, sender_mac);  // the reply to our request
+            } else if (e != nullptr && e->valid && e->mac != sender_mac) {
+                ++stats_.arp_ignored;  // someone claims a known address: keep ours
+            }
         }
         if (op == 1 && for_us) {
             // Reply in place: turn the request around.

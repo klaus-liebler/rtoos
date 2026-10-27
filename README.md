@@ -222,6 +222,12 @@ Hinweise:
        gemeinsam: TCP, UDP, Paketpool, Routing (direktes Netz, sonst erstes Interface mit Gateway)
 ```
 
+### ARP-Härtung
+
+Der Stack lernt eine MAC-Adresse nur aus der Antwort auf seine eigene Anfrage ([stack.hpp](include/rtos/net/stack.hpp)). Unaufgeforderte Antworten, Gratuitous ARP und der Absender einer Anfrage legen keinen Eintrag an und ändern keinen. Nach RFC 826 könnte sonst jede Station im LAN den Verkehr zum Gateway auf sich umleiten (ARP-Spoofing). Versuche, eine bekannte Adresse umzubiegen, zählt `StackStats::arp_ignored`. Wechselt ein Gerät seine MAC tatsächlich, gilt die neue nach Ablauf des Eintrags (5 min). `Cfg::arp_trust_unsolicited = true` stellt das Verhalten nach RFC 826 wieder her. Tests: `ArpSpoofTest` in [net_test.cpp](tests/net_test.cpp); alle fünf schlagen mit dem RFC-826-Verhalten fehl.
+
+Den wirksamen Schutz liefern weiterhin Netz und Protokoll: Dynamic ARP Inspection am Switch, TLS sowie OPC UA mit Signatur und Verschlüsselung.
+
 ### Fairness in einem Thread
 
 Alle Server teilen sich den Netz-Thread. Damit ein Download der WebApp die Antwort eines Modbus- oder OPC-UA-Servers nicht verzögert, gelten drei Mechanismen ([service.hpp](include/rtos/net/service.hpp)):

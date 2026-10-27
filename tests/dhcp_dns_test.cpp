@@ -475,19 +475,7 @@ protected:
         NetTest::SetUp();
         const std::array servers{server_ip, dns2_ip};
         resolver.set_servers(servers);
-        // Second server on the link, MAC known (as for the peer).
-        std::array<std::byte, 28> arp{};
-        store_be16(arp.data(), 1);
-        store_be16(arp.data() + 2, ethertype_ipv4);
-        arp[4] = std::byte{6};
-        arp[5] = std::byte{4};
-        store_be16(arp.data() + 6, 2);
-        peer_mac.store(arp.data() + 8);
-        dns2_ip.store(arp.data() + 14);
-        device_mac.store(arp.data() + 18);
-        device_ip.store(arp.data() + 24);
-        deliver(frame(ethertype_arp, arp));
-        (void)sent();
+        prime_arp(dns2_ip);  // second server on the link, MAC known (as for the peer)
     }
 
     void poll(std::uint32_t advance_ms = 0) {
