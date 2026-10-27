@@ -13,7 +13,10 @@ boots the firmware in Renode connected to the TAP adapter "rtoos-tap", and check
   certs/ca.crt), the brotli web app byte-exact, 404/406, the 100 KB blob with
   throughput over a keep-alive connection, the WebSocket upgrade, status messages,
   100 echo round trips with random 1..511-byte payloads, the LED command and the
-  rejection of a cross-origin WebSocket.
+  rejection of a cross-origin WebSocket, Modbus TCP, and OPC UA (asyncua: SecurityPolicy
+  None read-only, Basic256Sha256/Sign with the client certificate certs/opcua_client.*
+  signed by the CA, a self-signed client rejected), and the latency of WebSocket, Modbus
+  and OPC UA requests while 5 downloads run.
 Exit code 0 if every check passed, 77 (CTest: skipped) if the TAP adapter with
 192.168.77.1 is missing - run emulation/renode/setup-tap.ps1 once as administrator.
 """
@@ -267,6 +270,31 @@ class ModbusClient:
         self.sock.close()
 
 
+OPCUA_URL = f"opc.tcp://{DEVICE_IP}:4840"
+OPCUA_LED, OPCUA_UPTIME = "ns=1;i=5000", "ns=1;i=5001"
+
+
+def opcua_connect(certs: Path, identity: str | None = None):
+    """asyncua client (sync API); `identity`: certs/<identity>.der/.key.der for
+    Basic256Sha256/Sign, None: SecurityPolicy None."""
+    from asyncua.sync import Client
+
+    client = Client(OPCUA_URL, timeout=10)
+    client.application_uri = "urn:rtoos:test-client"
+    if identity is not None:
+        client.set_security_string(f"Basic256Sha256,Sign,{certs / (identity + '.der')},"
+                                   f"{certs / (identity + '.key.der')},{certs / 'opcua.der'}")
+    try:
+        client.connect()
+    except BaseException:
+        # the client's own event-loop thread ends only with disconnect(): stop it, or it
+        # keeps the test process alive
+        if client.close_tloop:
+            client.tloop.stop()
+        raise
+    return client
+
+
 def tls_connect(ca: Path) -> ssl.SSLSocket:
     ctx = ssl.create_default_context(cafile=str(ca))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -415,6 +443,11 @@ def main() -> int:
 
         r = subprocess.run(["ping", "-n", "2", DEVICE_IP], capture_output=True, text=True, encoding="cp850")
         check("ping 192.168.77.2", "TTL=" in r.stdout)
+        # Full-size frames (1514 bytes) both ways: the receive buffer size in the DMA
+        # (DMACRXCR.RBSZ) once cut frames off at 768 bytes.
+        r = subprocess.run(["ping", "-n", "2", "-f", "-l", "1472", DEVICE_IP], capture_output=True, text=True,
+                           encoding="cp850")
+        check("ping with 1472 bytes (full Ethernet frames)", "TTL=" in r.stdout)
 
         q = struct.pack(">HHHHHH", 0x4242, 0, 1, 0, 0, 0) + b"\x03fcu\x05local\x00" + struct.pack(">HH", 1, 1)
         m = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -545,7 +578,7 @@ def main() -> int:
             check("Modbus TCP: read input registers (uptime)", uptime > 0, f"uptime {uptime} s")
             echo_write = mb.write(0, 1)
             check("Modbus TCP: write holding register 0 -> LED",
-                  echo_write == struct.pack(">BHH", 0x06, 0, 1) and console.wait_for("modbus: led on", 5)
+                  echo_write == struct.pack(">BHH", 0x06, 0, 1) and console.wait_for("registers: led on", 5)
                   and mb.read(0x03, 0, 1) == [1])
             mb.write(0, 0)
             exception = mb.request(struct.pack(">BHH", 0x03, 7, 2))  # registers 7..8: 8 is beyond
@@ -557,6 +590,48 @@ def main() -> int:
         except (OSError, ValueError) as e:
             check("Modbus TCP", False, repr(e))
             mb = None
+
+        # OPC UA (port 4840): the same registers as Modbus. None reads only, a client
+        # certificate signed by the CA may write, a self-signed one is rejected.
+        certs = ca.parent
+        ua_reader = None
+        try:
+            from asyncua import ua as ua_types
+
+            ua_reader = opcua_connect(certs)
+            # Browse (TranslateBrowsePathsToNodeIds, asyncua's get_child, is not implemented)
+            fcu = next(n for n in ua_reader.nodes.objects.get_children() if n.read_browse_name().Name == "FCU")
+            names = sorted(n.read_browse_name().Name for n in fcu.get_children())
+            check("OPC UA None: browse Objects/FCU", "Led" in names and "Uptime" in names, ", ".join(names))
+            uptime = ua_reader.get_node(OPCUA_UPTIME).read_value()
+            check("OPC UA None: read Uptime (Modbus input registers 0..1)", uptime > 0, f"uptime {uptime} s")
+            try:
+                ua_reader.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(1, ua_types.VariantType.UInt16)))
+                denied = False
+            except ua_types.UaStatusCodeError as e:
+                denied = "SecurityModeInsufficient" in type(e).__name__ or "SecurityModeInsufficient" in str(e)
+            check("OPC UA None: write rejected (BadSecurityModeInsufficient)", denied)
+
+            t_open = time.monotonic()
+            signed = opcua_connect(certs, "opcua_client")
+            open_ms = (time.monotonic() - t_open) * 1000
+            signed.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(1, ua_types.VariantType.UInt16)))
+            check("OPC UA Basic256Sha256/Sign (client signed by the CA): write Led -> LED + Modbus",
+                  console.wait_for("registers: led on", 5) and mb is not None and mb.read(0x03, 0, 1) == [1],
+                  f"connect incl. RSA-2048 handshake {open_ms:.0f} ms")
+            signed.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(0, ua_types.VariantType.UInt16)))
+            signed.disconnect()
+
+            try:
+                rogue = opcua_connect(certs, "opcua_rogue")
+                rogue.disconnect()
+                rejected = False
+            except Exception:  # noqa: BLE001 - asyncua reports the refusal as a status or a closed connection
+                rejected = True
+            check("OPC UA: self-signed client certificate rejected", rejected)
+        except Exception as e:  # noqa: BLE001
+            check("OPC UA", False, repr(e))
+            ua_reader = None
 
         # Buffer budget under load: 5 parallel 100 KB downloads (5 x 4 segments in
         # flight) while a WebSocket echoes - nothing may stall (receive reserve).
@@ -579,6 +654,8 @@ def main() -> int:
         echo_ok = ws is not None
         load_rtts: list[float] = []
         modbus_rtts: list[float] = []
+        opcua_rtts: list[float] = []
+        opcua_ok = ua_reader is not None
         if ws:
             reader = WsReader(ws)
             for i in range(20):
@@ -594,6 +671,13 @@ def main() -> int:
                         modbus_rtts.append((time.monotonic() - t_mb) * 1000)
                     except (OSError, ValueError):
                         modbus_ok = False
+                if ua_reader is not None and any(th.is_alive() for th in threads):
+                    t_ua = time.monotonic()
+                    try:
+                        ua_reader.get_node(OPCUA_UPTIME).read_value()
+                        opcua_rtts.append((time.monotonic() - t_ua) * 1000)
+                    except Exception:  # noqa: BLE001
+                        opcua_ok = False
         for th in threads:
             th.join(60)
         dt = time.monotonic() - t0
@@ -612,6 +696,13 @@ def main() -> int:
               modbus_ok and bool(modbus_rtts) and modbus_rtts[len(modbus_rtts) // 2] < 50,
               f"{len(modbus_rtts)} requests during the downloads, median {modbus_rtts[len(modbus_rtts) // 2]:.1f} ms, "
               f"max {modbus_rtts[-1]:.1f} ms" if modbus_rtts else "no request during the downloads")
+        opcua_rtts.sort()
+        check("OPC UA Read under download load (fair scheduling)",
+              opcua_ok and bool(opcua_rtts) and opcua_rtts[len(opcua_rtts) // 2] < 50,
+              f"{len(opcua_rtts)} reads during the downloads, median {opcua_rtts[len(opcua_rtts) // 2]:.1f} ms, "
+              f"max {opcua_rtts[-1]:.1f} ms" if opcua_rtts else "no read during the downloads")
+        if ua_reader is not None:
+            ua_reader.disconnect()
         if mb is not None:
             mb.close()
         steps = [line for line in console.lines if "longest step" in line]
@@ -620,6 +711,13 @@ def main() -> int:
             ws.close()
         renewed = console.wait_for("dhcp: renewed 192.168.77.2", LEASE_S)
         check("DHCP renewal at T1 (unicast REQUEST)", renewed and "REQUEST (renew)" in dhcp_log, f"server saw {dhcp_log}")
+        # The stack is painted at boot; a report after the OPC UA handshakes (every 10 s).
+        stack_lines = [line for line in console.lines if "net: stack" in line]
+        if stack_lines:
+            used, size = (int(w) for w in stack_lines[-1].split()[2:5:2])
+            check("network thread stack (RSA steps included) below 85 %", used * 100 < size * 85, stack_lines[-1].strip())
+        else:
+            check("network thread stack report", False, "no report")
     finally:
         stop.set()
         proc.kill()

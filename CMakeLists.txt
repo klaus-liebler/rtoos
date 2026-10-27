@@ -53,6 +53,13 @@ target_compile_options(rtos_certs INTERFACE --embed-dir=${RTOS_CERT_DIR})
 add_library(rtos_tls STATIC src/net/tls.cpp src/net/websocket.cpp)
 target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
 
+# ---- OPC UA (the FCU's opcua_native library; crypto: wolfCrypt RSA-2048) ----------
+add_library(rtos_opcua STATIC
+    src/opcua/clock.cpp src/opcua/codec.cpp src/opcua/connection.cpp src/opcua/secure_channel.cpp
+    src/opcua/security_crypto.cpp src/opcua/service_header.cpp src/opcua/service_structs.cpp
+    src/opcua/services.cpp src/opcua/session.cpp src/opcua/tcp_message.cpp src/opcua/variant.cpp)
+target_link_libraries(rtos_opcua PUBLIC rtos_kernel rtos_wolfssl)
+
 enable_testing()
 if(CMAKE_CROSSCOMPILING)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall> $<$<COMPILE_LANGUAGE:CXX>:-Wextra>

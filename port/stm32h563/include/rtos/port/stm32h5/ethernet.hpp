@@ -79,6 +79,8 @@ inline constexpr std::uint32_t dmasbmr_aal = 1u << 12;
 inline constexpr std::uint32_t dma_st = 1u << 0;  // DMACTXCR.ST / DMACRXCR.SR
 inline constexpr std::uint32_t dmactxcr_osf = 1u << 4;
 inline constexpr std::uint32_t dma_pbl32 = 32u << 16;
+/// DMACRXCR.RBSZ, bits 14:1 (SVD): receive buffer size in bytes, a multiple of 4.
+constexpr std::uint32_t dmacrxcr_rbsz(std::size_t bytes) { return (static_cast<std::uint32_t>(bytes) & 0x3FFCu) << 1; }
 inline constexpr std::uint32_t dmacier_tie = 1u << 0, dmacier_rie = 1u << 6, dmacier_rbue = 1u << 7,
                                dmacier_nie = 1u << 15, dmacier_aie = 1u << 14, dmacier_fbee = 1u << 12;
 inline constexpr std::uint32_t dmacsr_ti = 1u << 0, dmacsr_ri = 1u << 6, dmacsr_rbu = 1u << 7;
@@ -158,7 +160,7 @@ public:
         DMASBMR::set(dmasbmr_aal);
         DMACCR::write(0);  // DSL = 0: descriptors contiguous
         DMACTXCR::write(dma_pbl32 | dmactxcr_osf);
-        DMACRXCR::write(dma_pbl32 | (static_cast<std::uint32_t>(net::PacketBuffer::capacity) & 0x7FFEu));
+        DMACRXCR::write(dma_pbl32 | dmacrxcr_rbsz(net::PacketBuffer::capacity));
 
         for (std::size_t i = 0; i < TxCount; ++i) {
             tx_[i] = {0, 0, 0, 0};

@@ -5,7 +5,7 @@
  * user_settings_stm32.h (wolfSSL 5.9.4).
  *
  *   key exchange   X25519, ECDHE P-256          (browsers offer X25519 first)
- *   certificate    ECDSA P-256 / SHA-256
+ *   certificate    ECDSA P-256 / SHA-256 (TLS); RSA-2048 only for OPC UA
  *   ciphers        TLS_CHACHA20_POLY1305_SHA256 (constant time, fast without AES HW)
  *                  TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384
  *                  (AES T-tables + 4-bit GHASH tables: lookup-table speed)
@@ -38,6 +38,8 @@ extern "C" {
 #define USER_TICKS                   /* LowResTimer() provided by rtoos */
 #define WOLFSSL_GENERAL_ALIGNMENT 4
 #define WOLFSSL_NOT_WINDOWS_API      /* host tests on Windows: bare platform, no Win32 API */
+#define NO_OLD_SHA_NAMES             /* no Sha256/SHA256_DIGEST_SIZE macros: they clash with */
+#define NO_OLD_WC_NAMES              /* the names of the OPC UA library (rtos/opcua/) */
 
 /* ---- memory: static pool, no malloc ---------------------------------------------- */
 #define WOLFSSL_STATIC_MEMORY
@@ -79,7 +81,11 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
 #define WOLFSSL_SHA512
 #define WOLFSSL_ASN_TEMPLATE
 #define WOLFSSL_BASE64_ENCODE        /* WebSocket handshake */
-#define NO_RSA                       /* the whole chain is ECDSA P-256 (tools/make_ca.py) */
+/* RSA-2048 only for OPC UA (SecurityPolicy Basic256Sha256: OAEP-SHA1, PKCS#1 v1.5 SHA-256;
+ * the only exception to the ECDSA-only rule, see CLAUDE.md). TLS stays ECDSA P-256: the
+ * HTTPS server presents its P-256 certificate and requests no client certificate. */
+#define WC_RSA_BLINDING              /* private-key operations resist timing attacks */
+#define WC_RSA_PSS                   /* required by wolfSSL's TLS 1.3 code once RSA exists */
 #define NO_DH
 #define NO_DSA
 #define NO_RC4
@@ -95,8 +101,10 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
 /* ---- math ------------------------------------------------------------------------------- */
 #define WOLFSSL_SP_MATH
 #define WOLFSSL_HAVE_SP_ECC
+#define WOLFSSL_HAVE_SP_RSA          /* RSA-2048 (OPC UA) */
+#define WOLFSSL_SP_NO_3072
 #define WOLFSSL_SP_NO_MALLOC
-#define SP_INT_BITS 256
+#define SP_INT_BITS 2048
 
 #if defined(__arm__)
     /* Cortex-M33 (ARMv8-M Mainline, Thumb-2, DSP) */

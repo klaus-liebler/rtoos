@@ -24,6 +24,12 @@
 //            input 2       WebSocket clients
 //            input 3       HTTPS requests (low 16 bits)
 //            input 4       Modbus requests (low 16 bits)
+//            input 5       OPC UA messages (low 16 bits)
+//   OPC UA   opc.tcp://fcu.local:4840 (2 clients), Objects/FCU: Led (UInt16, holding 0),
+//            Uptime (UInt32, input 0..1), WebSocketClients, HttpsRequests, ModbusRequests,
+//            OpcUaMessages (UInt16, inputs 2..5) - the same registers as Modbus.
+//            Basic256Sha256/Sign with a client certificate signed by the CA: read and
+//            write; SecurityPolicy None: read only. RSA-2048 (OPC UA only, see CLAUDE.md).
 //
 // One network thread owns the whole stack: it runs Stack::poll() whenever the ETH
 // interrupt signals it (notify_from_isr) or the next protocol timer is due.
@@ -47,11 +53,15 @@
 #include "rtos/modbus/register_bank.hpp"
 #include "rtos/net/https_server.hpp"
 #include "rtos/net/modbus_tcp_server.hpp"
+#include "rtos/net/opcua_server.hpp"
 #include "rtos/net/service.hpp"
 #include "rtos/net/mdns.hpp"
 #include "rtos/net/sntp.hpp"
 #include "rtos/net/stack.hpp"
 #include "rtos/net/tls.hpp"
+#include "rtos/opcua/clock.hpp"
+#include "rtos/opcua/ns0_base.hpp"
+#include "rtos/opcua/registers.hpp"
 #include "rtos/port/cm33/cycle_counter.hpp"
 #include "rtos/port/cm33/port.hpp"
 #include "rtos/port/stm32h5/cache.hpp"
@@ -94,6 +104,15 @@ constexpr unsigned char server_certificate[] = {
 constexpr unsigned char server_private_key[] = {
 #embed "server.key.der"
 };
+constexpr unsigned char opcua_certificate[] = {
+#embed "opcua.der"
+};
+constexpr unsigned char opcua_private_key[] = {
+#embed "opcua.key.der"
+};
+constexpr unsigned char ca_certificate[] = {
+#embed "ca.der"
+};
 
 template <std::size_t N>
 std::span<const std::byte> as_span(const unsigned char (&a)[N]) {
@@ -107,8 +126,9 @@ using Ethernet = h5::Ethernet<Pool, eth_rx_descriptors>;
 struct NetConfig : net::DefaultStackConfig {
     static constexpr std::size_t udp_sockets = 6;  // DHCP, mDNS, SNTP, 2 DNS queries, spare
     // Browsers open several connections per page (spare sockets, keep-alive, the
-    // WebSocket); closing ones linger in TIME_WAIT.
-    static constexpr std::size_t tcp_connections = 8;
+    // WebSocket); closing ones linger in TIME_WAIT. Plus Modbus and OPC UA clients.
+    static constexpr std::size_t tcp_connections = 10;
+    static constexpr std::size_t tcp_listeners = 3;  // HTTPS, Modbus TCP, OPC UA
     // At most 2 downloads (bulk connections) send at a time, holding at most 2 x 5
     // transmit buffers: with the RX ring (8) and the receive reserve (8) that leaves
     // 6 of the 32 buffers for the replies of interactive connections, however many
@@ -165,7 +185,65 @@ using Registers = rtos::modbus::RegisterBank<8, 8, Kernel::Lock>;
 Registers registers{rtos::modbus::WriteHook{nullptr, &on_registers_written}};
 net::ModbusTcpServer<Stack, 2> modbus{stack, registers};
 constexpr std::uint16_t reg_led = 0;
-constexpr std::uint16_t reg_uptime = 0, reg_ws_clients = 2, reg_https_requests = 3, reg_modbus_requests = 4;
+constexpr std::uint16_t reg_uptime = 0, reg_ws_clients = 2, reg_https_requests = 3, reg_modbus_requests = 4,
+                        reg_opcua_messages = 5;
+
+// ---- OPC UA ---------------------------------------------------------------------------
+// Objects/FCU: variables backed by the Modbus registers above (rtos/opcua/registers.hpp).
+namespace ua = rtos::opcua;
+using rtos::modbus::Table;
+constexpr ua::registers::Register ua_led{Table::Holding, reg_led}, ua_uptime{Table::Input, reg_uptime},
+    ua_ws_clients{Table::Input, reg_ws_clients}, ua_https_requests{Table::Input, reg_https_requests},
+    ua_modbus_requests{Table::Input, reg_modbus_requests}, ua_opcua_messages{Table::Input, reg_opcua_messages};
+constexpr ua::NodeId ua_fcu(1, 1000);
+
+constexpr ua::Node ua_variable(std::uint32_t id, const char* name, std::uint32_t type, const ua::registers::Register& r,
+                               bool writable = false) {
+    return ua::Node{
+        .nodeId = ua::NodeId(1, id),
+        .nodeClass = ua::NodeClass::Variable,
+        .browseName = ua::QualifiedName(1, name),
+        .displayName = ua::LocalizedText("en-US", name),
+        .dataType = ua::NodeId(0, type),
+        .accessLevel = static_cast<ua::Byte>(ua::ns0::ACCESS_LEVEL_CURRENT_READ |
+                                             (writable ? ua::ns0::ACCESS_LEVEL_CURRENT_WRITE : 0)),
+        .readCallback = type == ua::ns0::DataType_UInt32 ? &ua::registers::ReadUInt32 : &ua::registers::ReadUInt16,
+        .writeCallback = writable ? &ua::registers::WriteUInt16 : nullptr,
+        .userContext = ua::registers::Context(r)};
+}
+
+constexpr std::array ua_app_nodes = {
+    ua::Node{.nodeId = ua_fcu, .nodeClass = ua::NodeClass::Object, .browseName = ua::QualifiedName(1, "FCU"),
+             .displayName = ua::LocalizedText("en-US", "FCU")},
+    ua_variable(5000, "Led", ua::ns0::DataType_UInt16, ua_led, true),
+    ua_variable(5001, "Uptime", ua::ns0::DataType_UInt32, ua_uptime),
+    ua_variable(5002, "WebSocketClients", ua::ns0::DataType_UInt16, ua_ws_clients),
+    ua_variable(5003, "HttpsRequests", ua::ns0::DataType_UInt16, ua_https_requests),
+    ua_variable(5004, "ModbusRequests", ua::ns0::DataType_UInt16, ua_modbus_requests),
+    ua_variable(5005, "OpcUaMessages", ua::ns0::DataType_UInt16, ua_opcua_messages),
+};
+
+constexpr auto ua_app_references = [] {
+    std::array<ua::ReferenceEntry, 3 + 2 * (ua_app_nodes.size() - 1)> r{};
+    r[0] = {ua::NodeId(0, ua::ns0::ObjectsFolder), ua::NodeId(0, ua::ns0::Organizes), true, ua_fcu};
+    r[1] = {ua_fcu, ua::NodeId(0, ua::ns0::Organizes), false, ua::NodeId(0, ua::ns0::ObjectsFolder)};
+    r[2] = {ua_fcu, ua::NodeId(0, ua::ns0::HasTypeDefinition), true, ua::NodeId(0, ua::ns0::FolderType)};
+    for (std::size_t i = 1; i < ua_app_nodes.size(); ++i) {
+        r[1 + 2 * i] = {ua_fcu, ua::NodeId(0, ua::ns0::HasComponent), true, ua_app_nodes[i].nodeId};
+        r[2 + 2 * i] = {ua_app_nodes[i].nodeId, ua::NodeId(0, ua::ns0::HasComponent), false, ua_fcu};
+    }
+    return r;
+}();
+constexpr auto ua_nodes = ua::JoinNodes(ua::kBaseNodes, ua_app_nodes);
+constexpr auto ua_references = ua::JoinReferences(ua::kBaseReferences, ua_app_references);
+static_assert(ua::AllTypedNodesHaveDataType(ua_nodes));
+static_assert(ua::AllDataTypesResolve(ua_nodes));
+static_assert(ua::AllReferencesResolve(ua_nodes, ua_references));
+constexpr ua::AddressSpace ua_space(ua_nodes, ua_references);
+
+// The OpenSecureChannel's RSA-2048 work runs in background steps (opcua_server.hpp).
+alignas(16) std::array<std::byte, 48 * 1024> opcua_crypto_memory;  // wolfCrypt pool: keys, RNG, CA
+net::OpcUaServer<Stack, 2> opcua{stack, ua_space, "opc.tcp://fcu.local:4840"};
 
 void set_led(bool on, std::string_view source) noexcept {
     led_state = on;
@@ -177,16 +255,16 @@ void set_led(bool on, std::string_view source) noexcept {
 
 void on_registers_written(void*, std::uint16_t start, std::uint16_t count) noexcept {
     if (start <= reg_led && reg_led < start + count) {
-        set_led(registers.holding(reg_led) != 0, "modbus");
+        set_led(registers.holding(reg_led) != 0, "registers");
     }
 }
 
 void update_input_registers() noexcept {
     const std::uint32_t seconds = kernel.now() / 1000;
-    const std::array<std::uint16_t, 5> values{
-        static_cast<std::uint16_t>(seconds >> 16), static_cast<std::uint16_t>(seconds),
+    const std::array<std::uint16_t, 6> values{
+        static_cast<std::uint16_t>(seconds >> 16),         static_cast<std::uint16_t>(seconds),
         static_cast<std::uint16_t>(server.websocket_clients()), static_cast<std::uint16_t>(server.requests()),
-        static_cast<std::uint16_t>(modbus.stats().requests)};
+        static_cast<std::uint16_t>(modbus.stats().requests), static_cast<std::uint16_t>(opcua.stats().messages)};
     registers.set_inputs(reg_uptime, values);
 }
 
@@ -195,7 +273,18 @@ net::NetRuntime<Stack> runtime{stack};
 
 // ---- thread ---------------------------------------------------------------------------
 Kernel::Thread net_tcb;
-alignas(8) std::array<std::byte, 12 * 1024> net_stack;
+// Deepest path: an OPC UA OpenSecureChannel step with the RSA-2048 private key -
+// SecureChannel::HandleOpen (1.1 KB) -> wolfCrypt -> sp_RsaPrivate_2048 (1.4 KB) ->
+// sp_2048_mod_exp_32 (8.6 KB, window table) plus the runtime above it: ~13.5 KB.
+// The paint below does not see such frames reliably (they are not written densely), and
+// Renode does not enforce PSPLIM: size by the frames (arm-none-eabi-objdump, "sub sp").
+alignas(8) std::array<std::byte, 20 * 1024> net_stack;
+constexpr std::byte stack_paint{0xA5};  ///< untouched stack (main() paints it, report_latency() measures)
+
+std::size_t net_stack_used() noexcept {
+    const auto untouched = std::find_if(net_stack.begin(), net_stack.end(), [](std::byte b) { return b != stack_paint; });
+    return static_cast<std::size_t>(net_stack.end() - untouched);
+}
 constexpr std::size_t slot_wake = 0;
 constexpr rtos::Tick link_poll_ms = 500;
 constexpr rtos::Tick status_period_ms = 100;
@@ -450,6 +539,11 @@ struct AppTasks {
             board::print_dec(runtime.stats(worst_step).max_step_cycles / cycles_per_us);
             board::print(" us\n");
         }
+        board::print("net: stack ");
+        board::print_dec(static_cast<std::uint32_t>(net_stack_used()));
+        board::print(" of ");
+        board::print_dec(static_cast<std::uint32_t>(net_stack.size()));
+        board::print(" bytes\n");
         runtime.reset_stats();
     }
 
@@ -561,6 +655,18 @@ void net_main(void*) {
         return;
     }
 
+    // OPC UA: after the TLS library (wolfCrypt is initialised, the global heap hint set).
+    ua::SetClock([]() noexcept { return sntp.unix_ms(kernel.now()); }, []() noexcept { return kernel.now(); });
+    if (const auto r = opcua.init({as_span(opcua_certificate), as_span(opcua_private_key), as_span(ca_certificate)},
+                                  opcua_crypto_memory);
+        r != net::OpcUaInitResult::Ok) {
+        board::print("opcua: init failed, step ");
+        board::print_dec(static_cast<std::uint32_t>(r));
+        board::print("\n");
+        return;
+    }
+    ua::registers::Bind(registers);
+
     mdns.start(net::InterfaceSet::all(), &on_mdns_renamed);
     dhcp.start();
     sntp.start();
@@ -571,8 +677,8 @@ void net_main(void*) {
     board::print(mdns.name());
     board::print("/\n");
 
-    // Services run in the network thread ("in process"); a further server (Modbus
-    // TCP, OPC UA, ...) is one more add().
+    // Services run in the network thread ("in process"); a further server is one
+    // more add().
     runtime.add(app_tasks, "app");
     runtime.add(dhcp, "dhcp");
     runtime.add(dns, "dns");
@@ -583,6 +689,10 @@ void net_main(void*) {
         board::print("modbus: listen failed\n");
     }
     runtime.add(modbus, "modbus");
+    if (!opcua.start()) {
+        board::print("opcua: listen failed\n");
+    }
+    runtime.add(opcua, "opcua");
     runtime.set_cycle_counter([]() noexcept { return cm33::CycleCounter::now(); });
     for (;;) {
         const std::uint32_t wake = runtime.run_once(kernel.now());
@@ -605,6 +715,7 @@ int main() {
     board::print("\nrtoos net - STM32H563 / Factory Control Unit\n");
     cm33::CycleCounter::enable();
     Port::configure(board::sysclk_hz, 1000);
+    std::ranges::fill(net_stack, stack_paint);
     kernel.create_thread(net_tcb, {.name = "net", .entry = &net_main, .stack = net_stack, .priority = 8});
     kernel.start();
 }

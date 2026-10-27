@@ -167,7 +167,7 @@ python tools/make_ca.py C:\opt\msys64\ucrt64\bin\openssl.exe <Verzeichnis> --nam
 
 Ihr Profil:
 
-- **Schlüssel:** ECDSA P-256 mit SHA-256. Das ist dieselbe Kurve, die Gerät und TLS ohnehin nutzen; die ganze Kette kommt ohne RSA aus.
+- **Schlüssel:** ECDSA P-256 mit SHA-256. Das ist dieselbe Kurve, die Gerät und TLS ohnehin nutzen; die TLS-Kette kommt ohne RSA aus. Einzige Ausnahme ist das RSA-2048-Zertifikat von OPC UA (Basic256Sha256 verlangt RSA), ebenfalls von dieser CA signiert.
 - **Erweiterungen nach RFC 5280:** `basicConstraints` critical mit `CA:TRUE, pathlen:0`, `keyUsage` critical (keyCertSign, cRLSign) und ein Subject Key Identifier. Damit bestehen auch strenge Prüfer wie OpenSSL `-x509_strict` und Python ab 3.13.
 - **Name Constraints (critical):** Die CA signiert nur Namen unter `.local` und private IPv4-Netze (10/8, 172.16/12, 192.168/16). Selbst mit dem Schlüssel lässt sich kein Zertifikat für öffentliche Namen fälschen.
 
@@ -240,7 +240,7 @@ Alle Server teilen sich den Netz-Thread. Damit ein Download der WebApp die Antwo
 
 Der Runtime misst pro Dienst den längsten `service()`-Aufruf und den längsten Hintergrundschritt (`set_cycle_counter`, `stats()`). Die Firmware gibt beides alle 10 s aus (`net: longest service ..., longest step ...`).
 
-Nicht teilbar sind einzelne Krypto-Operationen. Ein TLS-Handshake-Flight (ECDHE und ECDSA-Signatur) ist der längste Schritt, später auch eine RSA-Operation von OPC UA. Sie bleiben im Netz-Thread und werden gemessen.
+Nicht teilbar sind einzelne Krypto-Operationen: ein TLS-Handshake-Flight (ECDHE und ECDSA-Signatur) und das OpenSecureChannel von OPC UA (zwei RSA-2048-Entschlüsselungen, eine Signatur). Beide sind Hintergrundschritte, bleiben im Netz-Thread und werden gemessen.
 
 Die Host-Tests ([tests/https_fairness_test.cpp](tests/https_fairness_test.cpp)) lassen echte wolfSSL-Clients über simulierte TCP-Peers herunterladen und prüfen die **Reihenfolge auf der Leitung**: Eine Anfrage, die im selben Empfangsstapel wie Download-ACKs oder ClientHellos ankommt, wird beantwortet, bevor der nächste Download-Record oder Handshake-Flight hinausgeht. Mit der früheren Inline-Verarbeitung schlagen beide Tests fehl. Der Renode-Test misst die WebSocket-Echozeit unter fünf parallelen Downloads.
 
@@ -264,7 +264,42 @@ runtime.add(modbus, "modbus");
 
 Tests: [modbus_test.cpp](tests/modbus_test.cpp) prüft die Beispiele der Spezifikation, die Ausnahmen, das RTU-Framing und Modbus TCP über den Stack. Der Fuzzer deckt PDU, RTU und Modbus TCP im Empfangspfad ab, der Fairness-Test die Modbus-Antwort unter Download-Last. `fcu_net` stellt die LED als Holding-Register 0 bereit, Laufzeit und Zähler als Input-Register. Der Renode-Test liest und schreibt die Register und misst die Antwortzeit während paralleler Downloads.
 
-### Eigenen Server einhängen (OPC UA, ...)
+### OPC UA
+
+Der OPC-UA-Server der FCU-Firmware (opcua_native) ist ein fester Baustein von rtoos ([include/rtos/opcua/](include/rtos/opcua/), [src/opcua/](src/opcua/)). [`OpcUaServer`](include/rtos/net/opcua_server.hpp) ist der Transport auf `TcpServer`, eine Session pro Client.
+
+| Thema | Umsetzung |
+|---|---|
+| Dienste | Hello/Acknowledge, OpenSecureChannel/CloseSecureChannel, Create/Activate/CloseSession, Read, Write, Browse, GetEndpoints |
+| Sicherheit | Basic256Sha256 im Modus Sign: Das Client-Zertifikat muss von der rtoosCA stammen und gültig sein (Datum gegen die SNTP-Zeit), dann voller Zugriff. SecurityPolicy None: nur lesen, Write liefert `BadSecurityModeInsufficient`. GetEndpoints bietet beide Endpunkte an. |
+| Krypto | wolfCrypt: RSA-2048 (OAEP-SHA1, PKCS#1 v1.5 mit SHA-256), HMAC-SHA256, P_SHA256; eigener statischer Speicherpool (`init(identity, crypto_memory)`), kein Heap |
+| Fairness | Ein OpenSecureChannel ist ein Hintergrundschritt (RSA), alle anderen Nachrichten werden sofort beantwortet. |
+| Adressraum | constexpr im Flash: `ns0_base.hpp` (Server-Objekt, Typen) plus Anwendungsknoten (`JoinNodes`/`JoinReferences`, Prüfungen per `static_assert`). [`registers.hpp`](include/rtos/opcua/registers.hpp) bindet Variablen an eine Modbus-`RegisterMap`: OPC UA und Modbus sehen dieselben Werte. |
+
+```cpp
+constexpr opcua::registers::Register led{modbus::Table::Holding, 0};
+// Node{..., .readCallback = &opcua::registers::ReadUInt16, .writeCallback = &opcua::registers::WriteUInt16,
+//       .userContext = opcua::registers::Context(led)}
+rtos::net::OpcUaServer<Stack, 2> opcua{stack, address_space, "opc.tcp://fcu.local:4840"};
+opcua.init({cert_der, key_der, ca_der}, crypto_memory);   // nach TlsServerContext::initialize_library
+opcua::SetClock(unix_ms_from_sntp, monotonic_ms);
+opcua::registers::Bind(registers);
+opcua.start();                     // Port 4840, alle Interfaces
+runtime.add(opcua, "opcua");
+```
+
+Nicht umgesetzt (wie im Original): TranslateBrowsePathsToNodeIds, die Filter von Browse (Referenztyp, NodeClass), SignAndEncrypt, Subscriptions. ActivateSession prüft die Client-Signatur nicht.
+
+Tests: [opcua_test.cpp](tests/opcua_test.cpp) enthält einen eigenen Client mit wolfCrypt. Geprüft werden:
+- Hello-Puffer, None nur lesend und GetEndpoints;
+- ein signierter Kanal mit Schreibzugriff, abgelehnte fremde Zertifikate und manipulierte Signaturen;
+- die Nachrichtengrenze und 32-Bit-Werte aus zwei Registern;
+- das OpenSecureChannel als Hintergrundschritt und ein Read, der beantwortet wird, während das RSA-Öffnen eines anderen Clients wartet;
+- die Statuscodes gegen die Spezifikation.
+
+Ein Mutations-Fuzzer variiert Nachrichten auf None- und signierten Kanälen. Der Renode-Test nutzt asyncua: Browse und Read über None, abgelehntes Write, Write mit dem Client-Zertifikat `certs/opcua_client.*` (LED und Modbus-Register), Ablehnung eines selbstsignierten Clients und Reads während paralleler Downloads.
+
+### Eigenen Server einhängen
 
 Ein TCP-Server besteht nur aus einer Session-Klasse; Annahme, Verdrängung ruhender Verbindungen, Fristen und Freigabe übernimmt [`TcpServer`](include/rtos/net/tcp_server.hpp). Vorbild ist [modbus_tcp_server.hpp](include/rtos/net/modbus_tcp_server.hpp):
 
