@@ -398,4 +398,34 @@ TEST_F(KernelTest, DeferredWorkRunsInPostingOrder) {
     EXPECT_EQ(order, (std::array<int, 3>{1, 2, 3}));
 }
 
+// now64() never wraps: the epoch counts the wraps of the 32-bit now().
+TEST_F(KernelWrapTest, Now64ContinuesAcrossTheWrapOfNow) {
+    create(a, 10);
+    start();
+    EXPECT_EQ(k.now64(), 0xFFFF'FFF0u);
+    std::uint64_t last = k.now64();
+    for (int i = 0; i < 40; ++i) {
+        tick();
+        EXPECT_EQ(k.now64(), last + 1);
+        last = k.now64();
+    }
+    EXPECT_EQ(k.now(), 0x18u) << "now() wrapped";
+    EXPECT_EQ(k.now64(), 0x1'0000'0018u);
+}
+
+// A timeout that spans the wrap of now() expires on time.
+TEST_F(KernelWrapTest, SleepAcrossTheWrapWakesOnTime) {
+    create(a, 5);
+    create(b, 10);
+    start();
+    k.sleep(20);  // wakes at 0xFFFFFFF0 + 20 = 0x4 after the wrap
+    run_pendsv();
+    ASSERT_EQ(k.current(), &b.tcb);
+    tick(19);
+    EXPECT_EQ(k.current(), &b.tcb);
+    tick(1);
+    EXPECT_EQ(k.current(), &a.tcb);
+    EXPECT_EQ(k.now(), 4u);
+}
+
 }  // namespace

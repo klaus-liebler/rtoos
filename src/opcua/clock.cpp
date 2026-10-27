@@ -68,7 +68,7 @@ DateTime Now() noexcept {
 }
 
 DateTime NowMonotonic() noexcept {
-    return g_monotonicMs != nullptr ? MsToHundredNs(g_monotonicMs()) : 0;
+    return g_monotonicMs != nullptr ? MsToHundredNs(static_cast<int64_t>(g_monotonicMs())) : 0;
 }
 
 }  // namespace rtos::opcua

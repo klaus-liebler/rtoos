@@ -249,6 +249,9 @@ public:
         Lock lock;
         const Tick now = now_.load(std::memory_order_relaxed) + 1;
         now_.store(now, std::memory_order_relaxed);
+        if (now == 0) {
+            epoch_.store(epoch_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        }
 
         run_pending_work();
         timers_.expire(now, [this](Thread& t) noexcept {
@@ -483,6 +486,18 @@ public:
 
     [[nodiscard]] Thread* current() const noexcept { return current_; }
     [[nodiscard]] Tick now() const noexcept { return now_.load(std::memory_order_relaxed); }
+    /// Ticks since start as 64 bits: never wraps (now() wraps after 2^32 ticks, 49.7 days
+    /// at 1 kHz). Lock-free: tick() updates both halves at kernel priority, so a reader that
+    /// sees the same epoch before and after reading now() has a consistent pair.
+    [[nodiscard]] std::uint64_t now64() const noexcept {
+        for (;;) {
+            const std::uint32_t epoch = epoch_.load(std::memory_order_acquire);
+            const Tick low = now_.load(std::memory_order_acquire);
+            if (epoch_.load(std::memory_order_acquire) == epoch) {
+                return (std::uint64_t{epoch} << 32) | low;
+            }
+        }
+    }
     [[nodiscard]] const Thread& idle_thread() const noexcept { return idle_; }
     [[nodiscard]] std::size_t thread_count() const noexcept { return registry_.size(); }
     [[nodiscard]] std::uint32_t context_switches() const noexcept { return context_switches_; }
@@ -692,7 +707,8 @@ private:
     PriorityBitmap preempted_map_{};
     std::array<std::atomic<std::uint32_t>, wake_words> wake_requests_{};
     std::atomic<Deferred*> deferred_{nullptr};
-    std::atomic<Tick> now_{0};
+    std::atomic<Tick> now_{initial_tick_of<Cfg>()};
+    std::atomic<std::uint32_t> epoch_{0};  ///< wraps of now_ (now64())
     Thread* current_ = nullptr;
     std::uint32_t context_switches_ = 0;
     bool started_ = false;

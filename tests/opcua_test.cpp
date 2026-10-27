@@ -779,6 +779,19 @@ TEST(OpcUaStatusCodes, HaveTheSpecificationValues) {
     static_assert(std::to_underlying(ua::StatusCode::UncertainInitialValue) == 0x40920000u);
 }
 
+// The monotonic clock is 64 bits: past 2^32 ms (49.7 days) it keeps counting forward.
+TEST(OpcUaClock, MonotonicClockDoesNotWrapAfter49Days) {
+    static std::uint64_t ms = 0;
+    ua::SetClock(nullptr, []() noexcept { return ms; });
+    ms = 0xFFFF'FFFFull;
+    const ua::DateTime before = ua::NowMonotonic();
+    ms = 0x1'0000'0005ull;
+    const ua::DateTime after = ua::NowMonotonic();
+    EXPECT_EQ(after - before, 6 * 10'000) << "6 ms in 100 ns units";
+    EXPECT_EQ(after, static_cast<ua::DateTime>(0x1'0000'0005ull) * 10'000);
+    ua::SetClock(nullptr, nullptr);
+}
+
 TEST_F(OpcUaTest, ClientCertificatesAreCheckedAgainstTheCa) {
     namespace sec = ua::security;
     std::array<Byte, 256> modulus{};

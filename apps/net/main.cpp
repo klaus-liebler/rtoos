@@ -656,7 +656,7 @@ void net_main(void*) {
     }
 
     // OPC UA: after the TLS library (wolfCrypt is initialised, the global heap hint set).
-    ua::SetClock([]() noexcept { return sntp.unix_ms(kernel.now()); }, []() noexcept { return kernel.now(); });
+    ua::SetClock([]() noexcept { return sntp.unix_ms(kernel.now()); }, []() noexcept { return kernel.now64(); });
     if (const auto r = opcua.init({as_span(opcua_certificate), as_span(opcua_private_key), as_span(ca_certificate)},
                                   opcua_crypto_memory);
         r != net::OpcUaInitResult::Ok) {

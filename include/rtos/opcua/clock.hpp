@@ -19,8 +19,8 @@ namespace rtos::opcua {
 
 /// Milliseconds since the Unix epoch, 0 while not synchronised (e.g. SntpClient::unix_ms).
 using UnixMsSource = std::uint64_t (*)() noexcept;
-/// Free-running milliseconds (e.g. the stack's now_ms()).
-using MonotonicMsSource = std::uint32_t (*)() noexcept;
+/// Free-running milliseconds that never wrap (e.g. Kernel::now64() at a 1 kHz tick).
+using MonotonicMsSource = std::uint64_t (*)() noexcept;
 
 void SetClock(UnixMsSource unixMs, MonotonicMsSource monotonicMs) noexcept;
 

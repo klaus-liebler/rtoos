@@ -28,6 +28,11 @@ struct TestConfig {
 
 using Kernel = rtos::Kernel<MockPort, TestConfig>;
 
+/// TestConfig starting 16 ticks before the 32-bit wrap of now().
+struct WrapConfig : TestConfig {
+    static constexpr rtos::Tick initial_tick = 0xFFFF'FFF0u;
+};
+
 inline void noop_entry(void*) {}
 
 struct TestThread {
@@ -57,8 +62,10 @@ struct MockReset {
     MockReset() { MockPort::reset(); }
 };
 
-class KernelTest : public ::testing::Test, private MockReset {
+template <class Config>
+class BasicKernelTest : public ::testing::Test, private MockReset {
 protected:
+    using Kernel = rtos::Kernel<MockPort, Config>;
     Kernel k;
     TestThread a, b, c;
 
@@ -96,5 +103,8 @@ protected:
 
     void TearDown() override { EXPECT_EQ(MockPort::lock_depth, 0u) << "unbalanced kernel lock"; }
 };
+
+using KernelTest = BasicKernelTest<TestConfig>;
+using KernelWrapTest = BasicKernelTest<WrapConfig>;
 
 }  // namespace test

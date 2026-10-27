@@ -31,7 +31,20 @@ struct DefaultConfig {
     static constexpr std::size_t timer_wheel_slots = 32;
     /// Stack of the kernel-owned idle thread in bytes.
     static constexpr std::size_t idle_stack_bytes = 512;
+    /// Value of now() at start (optional in a config, default 0). A value just below the
+    /// 32-bit wrap makes wrap-around bugs show up in tests within seconds.
+    static constexpr Tick initial_tick = 0;
 };
+
+/// C::initial_tick if the config has one, else 0.
+template <class C>
+constexpr Tick initial_tick_of() noexcept {
+    if constexpr (requires { C::initial_tick; }) {
+        return C::initial_tick;
+    } else {
+        return 0;
+    }
+}
 
 template <class C>
 concept KernelConfig = requires {
