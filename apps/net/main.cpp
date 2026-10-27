@@ -101,6 +101,11 @@ struct NetConfig : net::DefaultStackConfig {
     // Browsers open several connections per page (spare sockets, keep-alive, the
     // WebSocket); closing ones linger in TIME_WAIT.
     static constexpr std::size_t tcp_connections = 8;
+    // At most 2 downloads (bulk connections) send at a time, holding at most 2 x 5
+    // transmit buffers: with the RX ring (8) and the receive reserve (8) that leaves
+    // 6 of the 32 buffers for the replies of interactive connections, however many
+    // downloads run.
+    static constexpr std::size_t tcp_bulk_connections = 2;
 };
 using Stack = net::Stack<Pool, NetConfig>;
 // Buffer budget (stack.hpp): the receive ring keeps its buffers, the reserve is for
@@ -153,6 +158,7 @@ alignas(8) std::array<std::byte, 12 * 1024> net_stack;
 constexpr std::size_t slot_wake = 0;
 constexpr rtos::Tick link_poll_ms = 500;
 constexpr rtos::Tick status_period_ms = 100;
+constexpr rtos::Tick latency_report_ms = 10'000;
 
 // ---- console helpers -----------------------------------------------------------------
 
@@ -378,9 +384,42 @@ struct AppTasks {
     bool fallback_armed = false;
     bool synced = false;
     std::uint32_t handshakes = 0;
+    rtos::Tick next_latency_report = latency_report_ms;
+
+    /// Longest service() call and background step since the last report (service.hpp).
+    static void report_latency() noexcept {
+        std::size_t worst_service = 0, worst_step = 0;
+        for (std::size_t i = 0; i < runtime.size(); ++i) {
+            if (runtime.stats(i).max_service_cycles > runtime.stats(worst_service).max_service_cycles) {
+                worst_service = i;
+            }
+            if (runtime.stats(i).max_step_cycles > runtime.stats(worst_step).max_step_cycles) {
+                worst_step = i;
+            }
+        }
+        constexpr std::uint32_t cycles_per_us = board::sysclk_hz / 1'000'000;
+        board::print("net: longest service ");
+        board::print(runtime.name(worst_service));
+        board::print(" ");
+        board::print_dec(runtime.stats(worst_service).max_service_cycles / cycles_per_us);
+        board::print(" us, longest step ");
+        if (runtime.stats(worst_step).steps == 0) {
+            board::print("none\n");
+        } else {
+            board::print(runtime.name(worst_step));
+            board::print(" ");
+            board::print_dec(runtime.stats(worst_step).max_step_cycles / cycles_per_us);
+            board::print(" us\n");
+        }
+        runtime.reset_stats();
+    }
 
     void service() noexcept {
         const rtos::Tick now = stack.now_ms();
+        if (static_cast<std::int32_t>(now - next_latency_report) >= 0) {
+            next_latency_report = now + latency_report_ms;
+            report_latency();
+        }
         if (static_cast<std::int32_t>(now - next_link_poll) >= 0) {
             next_link_poll = now + link_poll_ms;
             if (ethernet.poll_link() != link) {  // the stack sees it at its next poll
@@ -431,7 +470,8 @@ struct AppTasks {
     }
 
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
-        return net::earliest(net::earliest(next_link_poll, next_status), fallback_at);
+        return net::earliest(net::earliest(net::earliest(next_link_poll, next_status), fallback_at),
+                             next_latency_report);
     }
 } app_tasks;
 
@@ -499,9 +539,12 @@ void net_main(void*) {
     runtime.add(mdns, "mdns");
     runtime.add(sntp, "sntp");
     runtime.add(server, "https");
+    runtime.set_cycle_counter([]() noexcept { return cm33::CycleCounter::now(); });
     for (;;) {
         const std::uint32_t wake = runtime.run_once(kernel.now());
-        (void)kernel.notify_wait(slot_wake, net::NetRuntime<Stack>::timeout(wake, kernel.now()));
+        // 0 while background work (downloads, handshakes) waits: no sleep, but every
+        // pass receives frames first (service.hpp).
+        (void)kernel.notify_wait(slot_wake, runtime.sleep_ms(wake, kernel.now()));
     }
 }
 

@@ -76,6 +76,9 @@ struct DefaultStackConfig {
     static constexpr std::size_t tcp_listeners = 2;
     static constexpr std::size_t tcp_tx_segments = 4;
     static constexpr std::size_t tcp_rx_segments = 4;
+    /// Bulk connections (TcpConnectionBase::set_bulk) sending at the same time;
+    /// 0 = no limit.
+    static constexpr std::size_t tcp_bulk_connections = 0;
     static constexpr std::uint16_t tcp_mss = 1460;
     static constexpr std::uint32_t tcp_time_wait_ms = 2000;
     /// Pool buffers only the receive path may take (see "Buffer budget").

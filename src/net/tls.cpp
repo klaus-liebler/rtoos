@@ -130,7 +130,10 @@ void TlsSession::fail_on(int error) noexcept {
         case WOLFSSL_ERROR_WANT_READ:
         case WOLFSSL_ERROR_WANT_WRITE: return;
         case WOLFSSL_ERROR_ZERO_RETURN: status_ = TlsStatus::Closed; return;
-        default: status_ = TlsStatus::Failed; return;
+        default:
+            status_ = TlsStatus::Failed;
+            last_error_ = error;
+            return;
     }
 }
 
@@ -223,6 +226,7 @@ void TlsSession::reset() noexcept {
     pending_data_ = nullptr;
     pending_size_ = 0;
     handshake_cycles_ = 0;
+    last_error_ = 0;
 }
 
 const char* TlsSession::cipher_suite() const noexcept {

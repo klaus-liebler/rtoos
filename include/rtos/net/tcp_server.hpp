@@ -24,6 +24,19 @@
 //   bool evictable() const                         idle: may be dropped for a newcomer
 //   std::uint32_t deadline() const                 absolute ms for pump() without
 //                                                  events, 0 = none
+//
+// Optionally (BackgroundSession), for sessions with expensive phases (a TLS handshake,
+// a large download):
+//
+//   bool background() const                        an expensive phase is running
+//   bool step(Connection& c, std::uint32_t now)    one bounded unit of that work;
+//                                                  true: another unit can follow now
+//
+// While background() is true, TCP events do not run the session's work inline: they
+// mark it ready, and NetRuntime runs one step() of one ready session per pass, round
+// robin over the sessions and servers. Between two steps the network thread receives
+// frames and serves the interactive sessions (Modbus, OPC UA, WebSocket), whose
+// requests therefore wait for at most one step instead of a whole download.
 #pragma once
 
 #include <array>
@@ -54,6 +67,12 @@ struct TcpServerStats {
     std::uint32_t evictions = 0;  ///< idle sessions dropped for a new connection
 };
 
+template <class S, class Connection>
+concept BackgroundSession = requires(S& s, const S& cs, Connection& c, std::uint32_t now) {
+    { cs.background() } noexcept -> std::same_as<bool>;
+    { s.step(c, now) } noexcept -> std::same_as<bool>;
+};
+
 template <class Stack, class Session, std::size_t MaxSessions>
     requires TcpSession<Session, typename Stack::TcpConnection>
 class TcpServer {
@@ -74,13 +93,53 @@ public:
 
     // ---- NetService ------------------------------------------------------------
 
-    /// Pump every active session (retries, deadlines) and free finished ones.
+    /// Pump every active session (retries, deadlines) and free finished ones. A
+    /// session in a background phase is only pumped for an expired deadline.
     void service() noexcept {
         const std::uint32_t now = stack_.now_ms();
         for (auto& slot : slots_) {
-            if (slot.connection != nullptr) {
-                slot.session.pump(*slot.connection, now, false);
+            if (slot.connection == nullptr) {
+                continue;
+            }
+            if (in_background(slot)) {
+                const std::uint32_t d = slot.session.deadline();
+                if (d == 0 || static_cast<std::int32_t>(now - d) < 0) {
+                    continue;
+                }
+            }
+            run(slot, now, false);
+        }
+    }
+
+    // ---- background work (NetRuntime) -------------------------------------------
+
+    [[nodiscard]] bool background_pending() const noexcept {
+        for (const auto& slot : slots_) {
+            if (slot.connection != nullptr && slot.ready) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// One step() of the next ready session (round robin).
+    void background_step() noexcept {
+        if constexpr (BackgroundSession<Session, Connection>) {
+            for (std::size_t k = 0; k < MaxSessions; ++k) {
+                Slot& slot = slots_[(next_ + k) % MaxSessions];
+                if (slot.connection == nullptr || !slot.ready) {
+                    continue;
+                }
+                next_ = (next_ + k + 1) % MaxSessions;
+                const std::uint32_t now = stack_.now_ms();
+                slot.ready = slot.session.step(*slot.connection, now);
+                if (slot.connection != nullptr && !slot.session.background()) {
+                    slot.ready = false;
+                    run(slot, now, false);  // back in an interactive phase: catch up inline
+                    return;
+                }
                 reap(slot);
+                return;
             }
         }
     }
@@ -116,8 +175,11 @@ public:
     void pump(SessionId id) noexcept {
         Slot& slot = slots_[id];
         if (slot.connection != nullptr) {
-            slot.session.pump(*slot.connection, stack_.now_ms(), false);
-            reap(slot);
+            if (in_background(slot)) {
+                slot.ready = true;
+                return;
+            }
+            run(slot, stack_.now_ms(), false);
         }
     }
 
@@ -126,13 +188,32 @@ private:
         Session session{};
         Connection* connection = nullptr;
         std::uint32_t last_event_ms = 0;
+        bool ready = false;  ///< background session with work to do
     };
+
+    [[nodiscard]] static bool in_background(const Slot& slot) noexcept {
+        if constexpr (BackgroundSession<Session, Connection>) {
+            return slot.session.background();
+        } else {
+            return false;
+        }
+    }
+
+    /// Pump inline; a session that enters a background phase continues as steps.
+    void run(Slot& slot, std::uint32_t now, bool event) noexcept {
+        slot.session.pump(*slot.connection, now, event);
+        if (slot.connection != nullptr && in_background(slot)) {
+            slot.ready = true;
+        }
+        reap(slot);
+    }
 
     /// Free the slot of a finished session; the connection completes its close alone.
     void reap(Slot& slot) noexcept {
         if (slot.connection != nullptr && slot.session.finished()) {
             slot.connection->user = nullptr;
             slot.connection = nullptr;
+            slot.ready = false;
             slot.session.closed();
         }
     }
@@ -141,6 +222,7 @@ private:
         if (slot.connection != nullptr) {
             slot.connection->user = nullptr;
             slot.connection = nullptr;
+            slot.ready = false;
             slot.session.closed();
         }
     }
@@ -184,6 +266,7 @@ private:
             return;
         }
         ++server.stats_.accepted;
+        slot->ready = in_background(*slot);
         server.reap(*slot);
     }
 
@@ -192,8 +275,11 @@ private:
         if (slot != nullptr && slot->connection != nullptr) {
             auto& server = *static_cast<TcpServer*>(self);
             slot->last_event_ms = server.stack_.now_ms();
-            slot->session.pump(*slot->connection, slot->last_event_ms, true);
-            server.reap(*slot);
+            if (in_background(*slot)) {
+                slot->ready = true;  // the work runs as a step, not inside Stack::poll()
+                return;
+            }
+            server.run(*slot, slot->last_event_ms, true);
         }
     }
 
@@ -207,6 +293,7 @@ private:
     Stack& stack_;
     std::array<Slot, MaxSessions> slots_{};
     TcpServerStats stats_{};
+    std::size_t next_ = 0;  ///< round robin of background_step()
     TcpHandler handler_{this, &TcpServer::on_accepted, &TcpServer::on_activity, &TcpServer::on_activity,
                         &TcpServer::on_closed};
 };

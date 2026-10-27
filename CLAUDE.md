@@ -40,6 +40,7 @@ A workaround is allowed only when it
 - Everything network runs in one thread: `NetRuntime` (stack poll, services, flush). New servers are services added to the runtime; TCP servers implement a `TcpSession` for `TcpServer` instead of their own connection handling.
 - Several interfaces: drivers satisfy `NetDriver` and are `attach`ed to the stack; services take an `InterfaceId` where it matters (DHCP, sending broadcasts) and react to `NetEventHandler` events instead of polling.
 - Which interfaces a server, listener or socket serves is an `InterfaceSet` parameter, default all; never hard-code one interface for a service that could run on several.
+- Fairness in the single network thread (service.hpp): foreground work (`service()`, TCP/UDP callbacks) must be short and bounded. Expensive work (TLS handshakes, large responses) is background work in bounded steps (`BackgroundSession`), and large downloads use `set_bulk()` connections. Every fairness rule is backed by a host test that checks the transmit order (`https_fairness_test.cpp`).
 
 ## Embedded rules
 - No heap at run time, no exceptions, no RTTI on the target. Contract semantic on the target: `quick_enforce`.

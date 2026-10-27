@@ -86,6 +86,16 @@ struct TcpHandler {
     void (*closed)(void* context, TcpConnectionBase& conn, TcpCloseReason reason) noexcept = nullptr;
 };
 
+/// Bulk connections that may have data in flight at the same time
+/// (Cfg::tcp_bulk_connections). Admission is per connection, not per buffer: an
+/// admitted connection uses its full window - a share of one or two segments would
+/// meet the peers' delayed ACK (200 ms per odd segment on Windows) and crawl.
+struct TcpBulkBudget {
+    std::uint32_t limit = 0;   ///< 0 = no limit
+    std::uint32_t active = 0;  ///< bulk connections with data in flight
+    [[nodiscard]] bool admits() const noexcept { return limit == 0 || active < limit; }
+};
+
 /// Application-facing part of a connection (independent of the stack type).
 class TcpConnectionBase {
 public:
@@ -131,8 +141,18 @@ public:
         }
         const std::uint32_t in_flight = snd_nxt_ - snd_una_;
         const std::uint32_t limit = std::min<std::uint32_t>(snd_wnd_, tx_window_limit_);
+        if (bulk_ && bulk_in_flight_ == 0 && bulk_budget_ != nullptr && !bulk_budget_->admits()) {
+            return 0;  // other bulk connections are sending: wait for a turn
+        }
         return limit > in_flight ? limit - in_flight : 0;
     }
+
+    /// Traffic class. At most Cfg::tcp_bulk_connections bulk connections (large
+    /// downloads) send at the same time, so however many downloads run, they hold at
+    /// most that many windows of transmit buffers and cannot take the packet pool
+    /// from the replies of interactive connections (Modbus, OPC UA, WebSocket).
+    void set_bulk(bool bulk) noexcept { bulk_ = bulk; }
+    [[nodiscard]] bool bulk() const noexcept { return bulk_; }
 
     /// Graceful close: FIN after all queued data.
     void close() noexcept { close_requested_ = true; }
@@ -188,6 +208,9 @@ protected:
     bool close_requested_ = false;
     bool ack_pending_ = false;
     bool window_update_pending_ = false;
+    bool bulk_ = false;
+    std::uint8_t bulk_in_flight_ = 0;  ///< segments queued while bulk
+    TcpBulkBudget* bulk_budget_ = nullptr;
 };
 
 /// TCP for stack `Ip`. `Ip` provides:
@@ -213,6 +236,7 @@ public:
     static constexpr std::uint8_t max_retries = 8;
     static constexpr std::uint32_t time_wait_ms = Cfg::tcp_time_wait_ms;
     static constexpr std::uint32_t fin_wait2_ms = Cfg::tcp_fin_wait2_ms;
+    static constexpr std::size_t bulk_connections = Cfg::tcp_bulk_connections;
 
     class Connection : public TcpConnectionBase {
     public:
@@ -263,15 +287,26 @@ public:
             std::uint16_t seq_length = 0;  ///< payload + SYN + FIN
             std::uint8_t flags = 0;
             bool retransmitted = false;
+            bool bulk = false;  ///< counted in the bulk budget
         };
+
+        /// Release a transmit segment (and its share of the bulk budget).
+        void drop(Segment& s) noexcept {
+            if (s.bulk && --bulk_in_flight_ == 0 && tcp_ != nullptr) {
+                --tcp_->bulk_.active;
+            }
+            s.bulk = false;
+            s.packet.reset();
+        }
 
         void reset_state() noexcept {
             clear_rx();
             for (auto& s : tx_) {
-                s.packet.reset();
+                drop(s);
             }
             tx_head_ = tx_count_ = 0;
             static_cast<TcpConnectionBase&>(*this) = TcpConnectionBase{};
+            bulk_budget_ = tcp_ != nullptr ? &tcp_->bulk_ : nullptr;
             rto_ms_ = rto_initial_ms;
             srtt_ms_ = rttvar_ms_ = 0;
             rtt_valid_ = false;
@@ -300,6 +335,7 @@ public:
     explicit Tcp(Ip& ip) noexcept : ip_(ip) {
         for (auto& c : connections_) {
             c.tcp_ = this;
+            c.bulk_budget_ = &bulk_;
         }
     }
 
@@ -378,6 +414,7 @@ public:
     /// Timers and deferred output; called once per poll pass.
     void service() noexcept {
         const std::uint32_t now = ip_.now_ms();
+        wake_bulk_waiters();
         for (auto& c : connections_) {
             if (c.state_ == TcpState::Closed) {
                 continue;
@@ -417,6 +454,8 @@ public:
     [[nodiscard]] std::uint32_t checksum_errors() const noexcept { return checksum_errors_; }
     /// Half-open connections dropped to make room for a new SYN.
     [[nodiscard]] std::uint32_t syn_recycled() const noexcept { return syn_recycled_; }
+    /// Bulk connections with data in flight right now (see set_bulk()).
+    [[nodiscard]] std::uint32_t bulk_active() const noexcept { return bulk_.active; }
 
     static std::uint32_t pseudo_header_sum(Ipv4Address src, Ipv4Address dst, std::size_t length) noexcept {
         return (src.value >> 16) + (src.value & 0xFFFF) + (dst.value >> 16) + (dst.value & 0xFFFF) +
@@ -686,7 +725,7 @@ private:
                 if (!s.retransmitted) {
                     update_rtt(c, now - s.sent_ms);
                 }
-                s.packet.reset();
+                c.drop(s);
                 c.tx_head_ = (c.tx_head_ + 1) % c.tx_.size();
                 --c.tx_count_;
             }
@@ -721,6 +760,21 @@ private:
             }
         }
         update_persist(c);
+    }
+
+    /// A bulk connection finished its turn since the last pass: tell the waiting ones
+    /// that can send now. They have nothing in flight - no ACK of their own would
+    /// ever wake them.
+    void wake_bulk_waiters() noexcept {
+        if (bulk_.active < bulk_reported_) {
+            for (auto& c : connections_) {
+                if (c.bulk_ && c.can_send() && c.writable() != 0 && c.listener_ != nullptr &&
+                    c.listener_->writable != nullptr) {
+                    c.listener_->writable(c.listener_->context, c);
+                }
+            }
+        }
+        bulk_reported_ = bulk_.active;
     }
 
     /// Start the persist timer when the peer's window is closed and nothing is in
@@ -803,6 +857,10 @@ private:
         c.snd_nxt_ += seq_len;
         s.sent_ms = ip_.now_ms();
         s.packet = p;
+        s.bulk = c.bulk_;
+        if (s.bulk && c.bulk_in_flight_++ == 0) {
+            ++bulk_.active;
+        }
         if (c.deadline_ms_ == 0) {
             c.deadline_ms_ = s.sent_ms + c.rto_ms_;
         }
@@ -877,7 +935,7 @@ private:
     void enter_time_wait(Connection& c) noexcept {
         c.state_ = TcpState::TimeWait;
         for (auto& s : c.tx_) {
-            s.packet.reset();
+            c.drop(s);
         }
         c.tx_count_ = 0;
         c.deadline_ms_ = ip_.now_ms() + time_wait_ms;
@@ -941,6 +999,8 @@ private:
     std::uint32_t checksum_errors_ = 0;
     std::uint32_t rx_overruns_ = 0;
     std::uint32_t syn_recycled_ = 0;
+    TcpBulkBudget bulk_{static_cast<std::uint32_t>(bulk_connections), 0};
+    std::uint32_t bulk_reported_ = 0;  ///< bulk_.active at the last wake_bulk_waiters()
 };
 
 }  // namespace rtos::net

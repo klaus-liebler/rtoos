@@ -212,13 +212,31 @@ Hinweise:
    NetRuntime::run_once(now)
      Stack::poll       Frames aller Interfaces, Link-Wechsel, ARP, Adressprüfung, TCP-Timer
      Dienste           AppTasks, DHCP, DNS, mDNS, SNTP, HTTPS ...  (service / next_deadline)
+     ein Hintergrundschritt   reihum: ein TLS-Handshake-Flight oder ein Download-Record
      Stack::flush      FINs, ACKs, Fenster, die die Dienste ausgelöst haben
-   -> Schlafen bis zur frühesten Frist oder bis ein Treiber-IRQ weckt
+   -> Hintergrundarbeit offen: sofort der nächste Durchlauf (ohne Schlafen),
+      sonst schlafen bis zur frühesten Frist oder bis ein Treiber-IRQ weckt
 
  Stack ── Interface 0: Ethernet (STM32H5 ETH)      eigene Adresse, ARP, Multicast, Link
        └─ Interface 1: z. B. USB CDC-NCM (später)  eigene Adresse, ARP, Multicast, Link
        gemeinsam: TCP, UDP, Paketpool, Routing (direktes Netz, sonst erstes Interface mit Gateway)
 ```
+
+### Fairness in einem Thread
+
+Alle Server teilen sich den Netz-Thread. Damit ein Download der WebApp die Antwort eines Modbus- oder OPC-UA-Servers nicht verzögert, gelten drei Mechanismen ([service.hpp](include/rtos/net/service.hpp)):
+
+| Mechanismus | Wirkung |
+|---|---|
+| **Hintergrundschritte** (`BackgroundSession`: `background()`, `step()`) | Teure Phasen arbeiten in begrenzten Einheiten: ein TLS-Handshake-Flight, ein Download-Record (`bulk_quantum_bytes`, Standard 2 KB). TCP-Ereignisse solcher Sessions werden nur vorgemerkt. Pro Durchlauf läuft genau ein Schritt, reihum über alle Server und Sessions. Dazwischen liest der Stack neue Frames ein: Eine Anfrage wartet höchstens einen Schritt. |
+| **Bulk-Zulassung** (`set_bulk()`, `tcp_bulk_connections`) | Höchstens N Downloads senden gleichzeitig, jeder mit vollem Fenster (ein Teilfenster käme in den 200-ms-Delayed-ACK des Clients). Dadurch bleiben dem Paketpool immer Puffer für interaktive Antworten, egal wie viele Downloads laufen. |
+| **Handshake-Begrenzung** (`max_handshakes`) | Höchstens zwei TLS-Handshakes gleichzeitig. Jeder hält zwischen seinen Flights mehrere KB des wolfSSL-Pools, und mehr Handshakes würden den Pool erschöpfen (`MEMORY_E`). |
+
+Der Runtime misst pro Dienst den längsten `service()`-Aufruf und den längsten Hintergrundschritt (`set_cycle_counter`, `stats()`). Die Firmware gibt beides alle 10 s aus (`net: longest service ..., longest step ...`).
+
+Nicht teilbar sind einzelne Krypto-Operationen. Ein TLS-Handshake-Flight (ECDHE und ECDSA-Signatur) ist der längste Schritt, später auch eine RSA-Operation von OPC UA. Sie bleiben im Netz-Thread und werden gemessen.
+
+Die Host-Tests ([tests/https_fairness_test.cpp](tests/https_fairness_test.cpp)) lassen echte wolfSSL-Clients über simulierte TCP-Peers herunterladen und prüfen die **Reihenfolge auf der Leitung**: Eine Anfrage, die im selben Empfangsstapel wie Download-ACKs oder ClientHellos ankommt, wird beantwortet, bevor der nächste Download-Record oder Handshake-Flight hinausgeht. Mit der früheren Inline-Verarbeitung schlagen beide Tests fehl. Der Renode-Test misst die WebSocket-Echozeit unter fünf parallelen Downloads.
 
 ### Eigenen Server einhängen (Modbus TCP, OPC UA, ...)
 

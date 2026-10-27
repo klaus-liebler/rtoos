@@ -171,6 +171,8 @@ public:
     void reset() noexcept;
 
     [[nodiscard]] TlsStatus status() const noexcept { return status_; }
+    /// wolfSSL error that made the session fail (0 if none).
+    [[nodiscard]] int last_error() const noexcept { return last_error_; }
     [[nodiscard]] const char* cipher_suite() const noexcept;
 
 private:
@@ -192,6 +194,7 @@ private:
     std::size_t pending_size_ = 0;
     std::uint32_t handshake_cycles_ = 0;
     std::uint32_t read_stamp_ = 0;
+    int last_error_ = 0;
 };
 
 }  // namespace rtos::net

@@ -516,19 +516,30 @@ def main() -> int:
         for th in threads:
             th.start()
         echo_ok = ws is not None
+        load_rtts: list[float] = []
         if ws:
             reader = WsReader(ws)
             for i in range(20):
                 payload = os.urandom(100 + i)
+                t_echo = time.monotonic()
                 ws_send(ws, b"\x20" + payload)
                 echo_ok = echo_ok and reader.message(0x21, 10)[1:] == payload
+                load_rtts.append((time.monotonic() - t_echo) * 1000)
         for th in threads:
             th.join(60)
         dt = time.monotonic() - t0
+        load_rtts.sort()
         check("5 parallel 100 KB downloads + WebSocket echo (buffer budget)",
               results_dl.count(True) == 5 and echo_ok,
               f"{sum(results_dl)}/5 downloads byte-exact, echo {'ok' if echo_ok else 'FAILED'}, "
               f"{500 / dt:.0f} KiB/s total")
+        # Fairness (service.hpp): the downloads are background steps of one TLS record,
+        # so an echo waits for at most one step, not for the downloads.
+        check("WebSocket echo under download load (fair scheduling)",
+              bool(load_rtts) and load_rtts[len(load_rtts) // 2] < 50,
+              f"median {load_rtts[len(load_rtts) // 2]:.1f} ms, max {load_rtts[-1]:.1f} ms" if load_rtts else "no echo")
+        steps = [line for line in console.lines if "longest step" in line]
+        check("firmware reports service/step latency", bool(steps), steps[-1].strip() if steps else "no report")
         if ws:
             ws.close()
         renewed = console.wait_for("dhcp: renewed 192.168.77.2", LEASE_S)
