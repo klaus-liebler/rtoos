@@ -199,6 +199,9 @@ public:
     static constexpr std::size_t tx_segments = Cfg::tcp_tx_segments;    ///< unacked segments per connection
     static constexpr std::size_t rx_segments = Cfg::tcp_rx_segments;    ///< queued RX buffers per connection
     static constexpr std::uint16_t local_mss = Cfg::tcp_mss;
+    /// Smallest peer MSS taken (like Linux tcp_min_snd_mss): an MSS option of 0 would
+    /// stall the connection, a tiny one makes it a cheap way to exhaust the buffers.
+    static constexpr std::uint16_t min_peer_mss = 48;
     static constexpr std::uint32_t rto_initial_ms = 1000;
     static constexpr std::uint32_t rto_min_ms = 200;
     static constexpr std::uint32_t rto_max_ms = 60000;
@@ -237,6 +240,11 @@ public:
 
         /// Immediate reset.
         void abort() noexcept { tcp_->abort(*this, TcpCloseReason::Aborted); }
+
+        Connection() noexcept = default;
+        Connection(const Connection&) = delete;
+        Connection& operator=(const Connection&) = delete;
+        ~Connection() { reset_state(); }  // the receive queue holds raw references
 
     private:
         friend class Tcp;
@@ -491,7 +499,7 @@ private:
         c.local_ip_ = seg.dst;
         c.remote_port_ = seg.src_port;
         c.local_port_ = seg.dst_port;
-        c.mss_ = std::min(seg.mss, local_mss);
+        c.mss_ = std::clamp(seg.mss, min_peer_mss, local_mss);
         c.tx_window_limit_ = static_cast<std::uint32_t>(tx_segments) * c.mss_;
         c.rcv_nxt_ = seg.seq + 1;
         c.iss_ = ip_.random32();
@@ -511,7 +519,7 @@ private:
         queue_segment(c, std::move(p), tcp_flag::syn | tcp_flag::ack, 1, 4);
     }
 
-    void process(Connection& c, const Incoming& seg, PacketRef segment) noexcept {
+    void process(Connection& c, Incoming seg, PacketRef segment) noexcept {
         if (c.state_ == TcpState::SynReceived) {
             if (seg.flags & tcp_flag::rst) {
                 c.reset_state();
@@ -538,11 +546,26 @@ private:
             }
         }
 
+        // A retransmission that starts in data we already have but carries new data
+        // too (peers repacketize, lwIP test_tcp_recv_inseq_trim): drop the old part.
+        if (seq_lt(seg.seq, c.rcv_nxt_) && !(seg.flags & (tcp_flag::syn | tcp_flag::rst))) {
+            const std::uint32_t old = c.rcv_nxt_ - seg.seq;
+            if (old < seg.payload_len || (old == seg.payload_len && (seg.flags & tcp_flag::fin))) {
+                segment->pull_front(old);
+                seg.payload_len -= old;
+                seg.seq = c.rcv_nxt_;
+            }
+        }
+
         // Sequence check (RFC 793 3.9, simplified to in-order acceptance).
         const std::uint32_t seq_len = seg.seq_length();
         if (seg.seq != c.rcv_nxt_) {
             if (seg.flags & tcp_flag::rst) {
-                return;  // RST outside the expected position: ignore (RFC 5961 spirit)
+                // RFC 5961 3.2: inside the window but not exact -> challenge ACK, else ignore.
+                if (seq_lt(c.rcv_nxt_, seg.seq) && seq_lt(seg.seq, c.rcv_nxt_ + receive_window(c))) {
+                    c.ack_pending_ = true;
+                }
+                return;
             }
             if (seq_len != 0 || seq_lt(seg.seq, c.rcv_nxt_)) {
                 c.ack_pending_ = true;  // duplicate or out of order: tell the peer where we are
@@ -561,6 +584,10 @@ private:
             return;
         }
         if (seg.flags & tcp_flag::ack) {
+            if (seq_lt(c.snd_nxt_, seg.ack)) {
+                c.ack_pending_ = true;  // acknowledges data never sent: ACK and drop (RFC 793, 5961 5.2)
+                return;
+            }
             acknowledge(c, seg);
             if (c.state_ == TcpState::Closed) {
                 return;

@@ -61,6 +61,12 @@ struct ServerReply {
     Ipv4Address server = server_ip;
     std::uint32_t lease_s = 3600;
     bool ntp = true;
+    // malformed or unusual replies
+    bool type_option = true;      ///< option 53
+    bool server_id = true;        ///< option 54
+    std::uint32_t t1_s = 0;       ///< option 58 (0: absent)
+    std::uint32_t t2_s = 0;       ///< option 59 (0: absent)
+    bool truncated = false;       ///< last option runs past the end, no end option
 };
 
 class DhcpTest : public NetTest {
@@ -109,8 +115,12 @@ protected:
             }
             return v;
         };
-        option(53, {std::byte{r.type}});
-        option(54, addr({r.server}));
+        if (r.type_option) {
+            option(53, {std::byte{r.type}});
+        }
+        if (r.server_id) {
+            option(54, addr({r.server}));
+        }
         option(1, addr({Ipv4Address::from(255, 255, 255, 0)}));
         option(3, addr({router_ip}));
         option(6, addr({server_ip, dns2_ip}));
@@ -120,7 +130,21 @@ protected:
         std::vector<std::byte> lease(4);
         store_be32(lease.data(), r.lease_s);
         option(51, lease);
-        m.push_back(std::byte{255});
+        for (auto [code, t] : {std::pair{58, r.t1_s}, std::pair{59, r.t2_s}}) {
+            if (t != 0) {
+                std::vector<std::byte> v(4);
+                store_be32(v.data(), t);
+                option(static_cast<std::uint8_t>(code), v);
+            }
+        }
+        if (r.truncated) {
+            m.push_back(std::byte{15});  // domain name, 40 bytes announced, 2 present
+            m.push_back(std::byte{40});
+            m.push_back(std::byte{'l'});
+            m.push_back(std::byte{'a'});
+        } else {
+            m.push_back(std::byte{255});
+        }
         deliver(udp(67, 68, m, dst, r.server));
     }
 
@@ -259,6 +283,60 @@ TEST_F(DhcpTest, RenewsAtT1WithUnicastToServer) {
     reply(r[0].xid(), {.type = 5, .lease_s = 100}, device_ip);
     EXPECT_EQ(renewals, 1);
     EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Bound);
+}
+
+// Malformed and unusual server replies (cases from the NetX Duo dhcp_test and the
+// FreeRTOS-Plus-TCP ProcessDHCPReplies proofs).
+
+TEST_F(DhcpTest, OfferWithoutTypeOrServerIdIsIgnored) {
+    client.start();
+    poll();
+    const std::uint32_t xid = dhcp_sent().at(0).xid();
+    reply(xid, {.type = 2, .type_option = false});
+    reply(xid, {.type = 2, .server_id = false});
+    EXPECT_TRUE(dhcp_sent().empty());
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Selecting);
+    reply(xid, {.type = 2});
+    EXPECT_EQ(dhcp_sent().size(), 1u);  // still answers a proper offer
+}
+
+TEST_F(DhcpTest, TruncatedOptionsAreRejected) {
+    client.start();
+    poll();
+    const std::uint32_t xid = dhcp_sent().at(0).xid();
+    reply(xid, {.type = 2, .truncated = true});
+    EXPECT_TRUE(dhcp_sent().empty());
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Selecting);
+}
+
+TEST_F(DhcpTest, InfiniteLeaseIsCappedNotOverflowed) {
+    const std::uint32_t t0 = acquire(0xFFFF'FFFFu);  // RFC 2131: infinite
+    prime_arp();
+    constexpr std::uint32_t t1_ms = 12u * 24 * 3600 * 1000;  // half of the 24-day cap
+    advance_to(t0 + t1_ms - 1);
+    EXPECT_TRUE(dhcp_sent().empty());
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Bound);
+    poll(1);
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Renewing);
+    (void)sent();  // ARP request: the server's entry expired during the 12 days
+    deliver(arp(2, peer_mac, server_ip, device_ip, device_mac));
+    EXPECT_EQ(dhcp_sent().size(), 1u);  // the parked REQUEST
+}
+
+TEST_F(DhcpTest, InconsistentT1T2FallBackToDefaults) {
+    client.start();
+    poll();
+    const std::uint32_t xid = dhcp_sent().at(0).xid();
+    reply(xid, {.type = 2, .lease_s = 100, .t1_s = 90, .t2_s = 30});  // T1 after T2
+    const std::uint32_t t0 = now;
+    (void)dhcp_sent();
+    reply(xid, {.type = 5, .lease_s = 100, .t1_s = 90, .t2_s = 30});
+    finish_check();
+    prime_arp();
+    advance_to(t0 + 50'000 - 1);  // default T1 = 0.5 x lease
+    EXPECT_TRUE(dhcp_sent().empty());
+    poll(1);
+    EXPECT_EQ(dhcp_sent().size(), 1u);
 }
 
 TEST_F(DhcpTest, LeaseExpiresWithoutAnswer) {

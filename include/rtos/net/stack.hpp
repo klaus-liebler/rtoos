@@ -398,7 +398,9 @@ public:
         h[0] = std::byte{0x45};  // version 4, IHL 5
         h[1] = std::byte{0};
         store_be16(h + 2, static_cast<std::uint16_t>(b.size()));
-        store_be16(h + 4, ip_id_++);
+        // Every datagram is atomic (DF, never fragmented): the ID has no use (RFC 6864)
+        // and stays 0 - a counter would let others count our traffic (idle scan).
+        store_be16(h + 4, 0);
         store_be16(h + 6, 0x4000);  // don't fragment
         h[8] = std::byte{destination.is_multicast() ? std::uint8_t{255} : std::uint8_t{64}};
         h[9] = std::byte{protocol};
@@ -591,10 +593,13 @@ private:
         }
         const Ipv4Address src = Ipv4Address::load(h + 12);
         const Ipv4Address dst = Ipv4Address::load(h + 16);
-        if (!accepts(id, dst)) {
+        if (!accepts(id, dst) || !valid_source(id, src)) {
             return;
         }
         const std::uint8_t protocol = std::to_integer<std::uint8_t>(h[9]);
+        if (src == Ipv4Address::any() && protocol != ip_proto_udp) {
+            return;  // 0.0.0.0 only from hosts still booting (DHCP); nothing to answer to
+        }
         b.truncate(total);  // strip Ethernet padding
         b.pull_front(header_len);
         switch (protocol) {
@@ -623,6 +628,17 @@ private:
             }
         }
         return false;
+    }
+
+    /// RFC 1122 3.2.1.3: never accept a broadcast or multicast source (and no packets
+    /// claiming to come from our own address).
+    [[nodiscard]] bool valid_source(InterfaceId id, Ipv4Address src) const noexcept {
+        const Interface& i = at(id);
+        if (src.is_broadcast() || src.is_multicast()) {
+            return false;
+        }
+        return i.config.address == Ipv4Address::any() ||
+               (src != i.config.address && src != i.config.subnet_broadcast());
     }
 
     void icmp_input(InterfaceId id, PacketRef packet, Ipv4Address src, Ipv4Address dst) noexcept {
@@ -855,7 +871,6 @@ private:
     std::array<const NetEventHandler*, Cfg::event_handlers> handlers_{};
     StackStats stats_{};
     std::uint32_t now_ms_ = 0;
-    std::uint16_t ip_id_ = 0;
     std::uint32_t (*random_)(void*) noexcept = nullptr;
     void* random_context_ = nullptr;
     std::uint32_t lcg_ = 0x12345678u;

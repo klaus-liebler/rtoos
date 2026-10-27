@@ -24,7 +24,12 @@ inline constexpr MacAddress peer_mac = MacAddress::from(0x02, 0x00, 0x00, 0x00, 
 inline constexpr Ipv4Address device_ip = Ipv4Address::from(192, 168, 77, 2);
 inline constexpr Ipv4Address peer_ip = Ipv4Address::from(192, 168, 77, 1);
 
-using TestPool = PacketPool<32>;
+/// Packet pool that checks on destruction - after the stack, drivers and servers
+/// declared behind it are gone - that every buffer came back (NetX Duo checks the
+/// same after each test): a reference-count leak fails the test that caused it.
+struct TestPool : PacketPool<32> {
+    ~TestPool() { EXPECT_EQ(available(), capacity()) << "packet buffers leaked"; }
+};
 
 struct MockDriver {
     std::deque<PacketRef> rx;          // frames the stack will receive

@@ -632,4 +632,307 @@ TEST_F(TcpTest, BuffersReturnToPoolAfterClose) {
     EXPECT_EQ(pool.available(), before);
 }
 
+// ---------------------------------------------------------------------------
+// Robustness (test ideas from lwIP, NetX Duo and FreeRTOS-Plus-TCP)
+// ---------------------------------------------------------------------------
+
+std::vector<std::byte> echo_request(std::uint16_t seq) {
+    std::vector<std::byte> echo(8 + 4);
+    echo[0] = std::byte{8};
+    store_be16(echo.data() + 4, 0x1234);
+    store_be16(echo.data() + 6, seq);
+    store_be16(echo.data() + 2, checksum(echo));
+    return echo;
+}
+
+void fix_ip_checksum(PacketBuffer& f) {
+    std::byte* ip = f.data() + ethernet_header_size;
+    store_be16(ip + 10, 0);
+    store_be16(ip + 10, checksum({ip, ipv4_header_size}));
+}
+
+/// TCP checksum over the segment of frame `f` (IP header without options).
+void fix_tcp_checksum(PacketBuffer& f) {
+    std::byte* ip = f.data() + ethernet_header_size;
+    std::byte* t = ip + ipv4_header_size;
+    const std::size_t len = load_be16(ip + 2) - ipv4_header_size;
+    store_be16(t + 16, 0);
+    const std::uint32_t pseudo =
+        TestStack::pseudo_sum(Ipv4Address::load(ip + 12), Ipv4Address::load(ip + 16), ip_proto_tcp, len);
+    store_be16(t + 16, checksum_finish(checksum_add({t, len}, pseudo)));
+}
+
+// NetX Duo netx_ip_malformed_packet_test, lwIP test_ip4: every broken header is
+// dropped without an answer.
+TEST_F(NetTest, MalformedIpv4HeadersAreDropped) {
+    struct Case {
+        const char* name;
+        void (*mutate)(PacketBuffer& f);
+        bool fix_checksum;
+    };
+    const Case cases[] = {
+        {"shorter than an Ethernet header", [](PacketBuffer& f) { f.truncate(10); }, false},
+        {"shorter than an IP header", [](PacketBuffer& f) { f.truncate(ethernet_header_size + 19); }, false},
+        {"version 6", [](PacketBuffer& f) { f.data()[14] = std::byte{0x65}; }, true},
+        {"IHL 4", [](PacketBuffer& f) { f.data()[14] = std::byte{0x44}; }, true},
+        {"IHL beyond the packet", [](PacketBuffer& f) { f.data()[14] = std::byte{0x4F}; }, true},
+        {"total length below the header", [](PacketBuffer& f) { store_be16(f.data() + 16, 19); }, true},
+        {"total length beyond the frame",
+         [](PacketBuffer& f) { store_be16(f.data() + 16, static_cast<std::uint16_t>(f.size() - 13)); }, true},
+        {"bad header checksum", [](PacketBuffer& f) { f.data()[24] ^= std::byte{1}; }, false},
+        {"more fragments", [](PacketBuffer& f) { f.data()[20] = std::byte{0x20}; }, true},
+        {"fragment offset", [](PacketBuffer& f) { f.data()[21] = std::byte{1}; }, true},
+    };
+    deliver(ipv4(ip_proto_icmp, echo_request(0)));
+    ASSERT_EQ(sent().size(), 1u);  // the unmodified request is answered
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        PacketRef f = ipv4(ip_proto_icmp, echo_request(1));
+        c.mutate(*f);
+        if (c.fix_checksum) {
+            fix_ip_checksum(*f);
+        }
+        deliver(std::move(f));
+        EXPECT_TRUE(sent().empty());
+    }
+}
+
+// RFC 1122 3.2.1.3: no answers to broadcast, multicast, own or (for anything but
+// DHCP) unspecified sources - else the stack reflects traffic to a whole network.
+TEST_F(NetTest, InvalidSourceAddressesAreIgnored) {
+    for (Ipv4Address src : {Ipv4Address::broadcast(), Ipv4Address::from(224, 0, 0, 251),
+                            Ipv4Address::from(192, 168, 77, 255), device_ip, Ipv4Address::any()}) {
+        SCOPED_TRACE(src.value);
+        deliver(ipv4(ip_proto_icmp, echo_request(1), device_ip, src));
+        deliver(tcp(50000, 9999, 1, 0, tcp_flag::syn, {}, 8192, std::nullopt, device_ip, src));  // closed port
+        EXPECT_TRUE(sent().empty());
+    }
+}
+
+// NetX Duo netx_ip_idle_scan_test: consecutive IP IDs let a third host count our
+// traffic (idle scan). All our datagrams are atomic (DF), RFC 6864 lets the ID be 0.
+TEST_F(NetTest, IpIdIsNoCounter) {
+    std::vector<std::uint16_t> ids;
+    for (std::uint16_t i = 0; i < 3; ++i) {
+        deliver(ipv4(ip_proto_icmp, echo_request(i)));
+        const auto f = sent();
+        ASSERT_EQ(f.size(), 1u);
+        EXPECT_EQ(load_be16(f[0].ip() + 6), 0x4000);  // DF
+        ids.push_back(load_be16(f[0].ip() + 4));
+    }
+    for (std::size_t i = 0; i + 1 < ids.size(); ++i) {
+        EXPECT_NE(static_cast<std::uint16_t>(ids[i] + 1), ids[i + 1]);
+    }
+}
+
+TEST_F(NetTest, MalformedUdpIsNotDelivered) {
+    int received = 0;
+    const UdpHandler handler{&received, [](void* n, const UdpDatagram&) noexcept { ++*static_cast<int*>(n); }};
+    ASSERT_TRUE(stack.udp_bind(7777, handler));
+    const std::string payload = "data";
+    struct Case {
+        const char* name;
+        void (*mutate)(PacketBuffer& f);
+    };
+    constexpr std::size_t u = ethernet_header_size + ipv4_header_size;
+    const Case cases[] = {
+        {"length below the header", [](PacketBuffer& f) { store_be16(f.data() + u + 4, 7); }},
+        {"length beyond the datagram", [](PacketBuffer& f) { store_be16(f.data() + u + 4, 13); }},
+        {"bad checksum", [](PacketBuffer& f) { f.data()[u + 8] ^= std::byte{1}; }},
+    };
+    deliver(udp(5000, 7777, as_bytes(payload)));
+    ASSERT_EQ(received, 1);
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        PacketRef f = udp(5000, 7777, as_bytes(payload));
+        c.mutate(*f);
+        deliver(std::move(f));
+        EXPECT_EQ(received, 1);
+    }
+    stack.udp_unbind(7777, handler);
+}
+
+// lwIP test_tcp_malformed_header, FreeRTOS-Plus-TCP CheckOptions proofs.
+TEST_F(TcpTest, MalformedTcpHeadersAreIgnored) {
+    connect();
+    server.echo = false;
+    struct Case {
+        const char* name;
+        void (*mutate)(PacketBuffer& f);
+        bool fix_checksum;
+    };
+    constexpr std::size_t t = ethernet_header_size + ipv4_header_size;
+    const Case cases[] = {
+        {"data offset 4", [](PacketBuffer& f) { f.data()[t + 12] = std::byte{0x40}; }, true},
+        {"data offset beyond the segment", [](PacketBuffer& f) { f.data()[t + 12] = std::byte{0xF0}; }, true},
+        {"bad checksum", [](PacketBuffer& f) { f.data()[t + 20] ^= std::byte{1}; }, false},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        PacketRef f = tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "evil");
+        c.mutate(*f);
+        if (c.fix_checksum) {
+            fix_tcp_checksum(*f);
+        }
+        deliver(std::move(f));
+        EXPECT_TRUE(sent().empty());
+        EXPECT_EQ(server.received, "");
+    }
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "good"));
+    EXPECT_EQ(server.received, "good");
+}
+
+TEST_F(TcpTest, OptionRunningPastTheHeaderIsSafe) {
+    // SYN with a 24-byte header whose MSS option claims 8 bytes: default MSS.
+    PacketRef f = tcp(peer_port, port, peer_seq, 0, tcp_flag::syn, {}, 8192, 1460);
+    f->data()[ethernet_header_size + ipv4_header_size + 21] = std::byte{8};
+    fix_tcp_checksum(*f);
+    deliver(std::move(f));
+    iss = sent().at(0).seq();  // SYN-ACK
+    ++peer_seq;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack));
+    ASSERT_NE(server.connection, nullptr);
+    EXPECT_EQ(server.connection->mss(), 536);  // RFC 1122 default
+}
+
+TEST_F(TcpTest, ZeroMssIsRaisedToTheMinimum) {
+    deliver(tcp(peer_port, port, peer_seq, 0, tcp_flag::syn, {}, 8192, 0));
+    iss = sent().at(0).seq();
+    ++peer_seq;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack));
+    ASSERT_NE(server.connection, nullptr);
+    EXPECT_EQ(server.connection->mss(), TestStack::TcpLayer::min_peer_mss);
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack | tcp_flag::psh, "ping"));
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].tcp_payload(), "ping");  // the connection still moves data
+}
+
+// lwIP test_tcp_*_wraparound, NetX Duo netx_tcp_wrapping_sequence_test_*: both
+// sequence spaces cross 2^32 during the transfer and the close.
+TEST_F(TcpTest, SequenceNumbersWrapAround) {
+    stack.set_random([](void*) noexcept -> std::uint32_t { return 0xFFFF'FFF8u; }, nullptr);
+    peer_seq = 0xFFFF'FFFAu;
+    connect();
+    ASSERT_EQ(iss, 0xFFFF'FFF8u);
+
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack | tcp_flag::psh, "0123456789"));
+    peer_seq += 10;  // wrapped
+    auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].seq(), iss + 1);
+    EXPECT_EQ(f[0].ack(), peer_seq);
+    EXPECT_EQ(f[0].tcp_payload(), "0123456789");  // our side wraps too
+
+    deliver(tcp(peer_port, port, peer_seq, iss + 11, tcp_flag::ack | tcp_flag::psh, "abcdef"));
+    peer_seq += 6;
+    f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].seq(), iss + 11);
+    EXPECT_EQ(f[0].tcp_payload(), "abcdef");
+    EXPECT_EQ(server.received, "0123456789abcdef");
+
+    deliver(tcp(peer_port, port, peer_seq, iss + 17, tcp_flag::ack));
+    poll(10'000);
+    EXPECT_TRUE(sent().empty());  // everything acknowledged across the wrap
+
+    deliver(tcp(peer_port, port, peer_seq, iss + 17, tcp_flag::ack | tcp_flag::fin));
+    ++peer_seq;
+    poll();
+    f = sent();
+    ASSERT_FALSE(f.empty());
+    ASSERT_TRUE(f.back().flags() & tcp_flag::fin);
+    deliver(tcp(peer_port, port, peer_seq, f.back().seq() + 1, tcp_flag::ack));
+    EXPECT_EQ(server.closed, 1);
+    EXPECT_EQ(server.reason, TcpCloseReason::Normal);
+}
+
+// lwIP test_tcp_recv_inseq_trim, NetX Duo netx_tcp_overlapping_packet_test_*: a
+// repacketized retransmission starts in data we already have.
+TEST_F(TcpTest, RetransmissionOverlappingReceivedDataIsTrimmed) {
+    connect();
+    server.echo = false;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "hello"));
+    (void)sent();
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "hello world"));
+    EXPECT_EQ(server.received, "hello world");
+    auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].ack(), peer_seq + 11);
+
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "hello"));  // pure duplicate
+    EXPECT_EQ(server.received, "hello world");
+    f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].ack(), peer_seq + 11);
+}
+
+TEST_F(TcpTest, RetransmittedDataWithNewFinIsTrimmed) {
+    connect();
+    server.echo = false;
+    server.close_on_eof = false;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "hello"));
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack | tcp_flag::fin, "hello"));
+    EXPECT_EQ(server.received, "hello");
+    EXPECT_TRUE(server.connection->eof());
+    EXPECT_EQ(server.connection->state(), TcpState::CloseWait);
+}
+
+// lwIP test_tcp_recv_ooseq_FIN_OOSEQ: a FIN behind a gap must not end the stream.
+TEST_F(TcpTest, FinAfterGapIsNotAccepted) {
+    connect();
+    server.echo = false;
+    server.close_on_eof = false;
+    deliver(tcp(peer_port, port, peer_seq + 5, iss + 1, tcp_flag::ack | tcp_flag::fin, "world"));
+    auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].ack(), peer_seq);  // duplicate ACK: the gap
+    EXPECT_EQ(server.connection->state(), TcpState::Established);
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "hello"));
+    EXPECT_EQ(server.received, "hello");
+    EXPECT_FALSE(server.connection->eof());
+    deliver(tcp(peer_port, port, peer_seq + 5, iss + 1, tcp_flag::ack | tcp_flag::fin, "world"));
+    EXPECT_EQ(server.received, "helloworld");
+    EXPECT_TRUE(server.connection->eof());
+}
+
+// RFC 5961, NetX Duo netx_tcp_out_of_window_control_packet_test: a blind attacker
+// guessing sequence numbers must not reset the connection or inject data.
+TEST_F(TcpTest, ResetInsideTheWindowGetsChallengeAck) {
+    connect();
+    deliver(tcp(peer_port, port, peer_seq + 10, iss + 1, tcp_flag::rst));
+    EXPECT_EQ(server.closed, 0);
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].flags(), tcp_flag::ack);
+    EXPECT_EQ(f[0].ack(), peer_seq);
+
+    deliver(tcp(peer_port, port, peer_seq + 1'000'000, iss + 1, tcp_flag::rst));  // outside: silence
+    EXPECT_EQ(server.closed, 0);
+    EXPECT_TRUE(sent().empty());
+    EXPECT_EQ(server.connection->state(), TcpState::Established);
+}
+
+TEST_F(TcpTest, SynOnEstablishedConnectionGetsChallengeAck) {
+    connect();
+    deliver(tcp(peer_port, port, peer_seq, 0, tcp_flag::syn, {}, 8192, 1460));
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].flags(), tcp_flag::ack);
+    EXPECT_EQ(server.closed, 0);
+    EXPECT_EQ(server.connection->state(), TcpState::Established);
+}
+
+TEST_F(TcpTest, AckOfUnsentDataIsChallengedAndDropped) {
+    connect();
+    server.echo = false;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1000, tcp_flag::ack, "evil"));
+    EXPECT_EQ(server.received, "");
+    const auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].ack(), peer_seq);
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, "good"));
+    EXPECT_EQ(server.received, "good");
+}
+
 }  // namespace
