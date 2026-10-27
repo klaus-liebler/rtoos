@@ -2,12 +2,13 @@
 // SecureChannel layer (Part 6 7.1.2/7.2, Part 4 5.5): OPN/MSG/CLO message framing plus the
 // OpenSecureChannel/CloseSecureChannel service handlers.
 //
-// SecurityPolicy#Basic256Sha256, SecurityMode Sign only (project decision, 2026-08-19 -- see
-// libs/opcua_native/README or project memory for the discussion): every OPN message is BOTH
+// SecurityPolicy#Basic256Sha256, SecurityMode Sign or SignAndEncrypt: every OPN message is BOTH
 // signed (RSASSA-PKCS1-v1_5-SHA256) and encrypted (RSAES-OAEP-SHA1) with asymmetric keys,
 // regardless of the negotiated MessageSecurityMode -- Part 6 6.7.4 mandates this for the channel
-// handshake itself, independent of what mode later MSG traffic uses. MSG/CLO messages are only
-// HMAC-SHA256 signed (never AES-encrypted) -- SecurityMode Sign, not SignAndEncrypt.
+// handshake itself. MSG/CLO messages are HMAC-SHA256 signed (Sign) and, with SignAndEncrypt,
+// AES-256-CBC encrypted from the sequence header on (Part 6 6.7.2): padding to the block size,
+// signature over the plaintext, then encryption -- keys and IVs derived per direction with
+// P_SHA256 from the nonces (6.7.5).
 //
 // rtoos: client certificates must chain to the trusted CA (rtoosCA) and be valid now
 // (security::CheckClientCertificate) -- only such clients get a signed channel. A channel may
@@ -28,6 +29,7 @@ constexpr char SECURITY_POLICY_BASIC256SHA256_URI[] = "http://opcfoundation.org/
 constexpr char SECURITY_POLICY_NONE_URI[] = "http://opcfoundation.org/UA/SecurityPolicy#None";
 constexpr Int32 SECURITY_MODE_NONE = 1; // MessageSecurityMode, Part 4 7.15
 constexpr Int32 SECURITY_MODE_SIGN = 2;
+constexpr Int32 SECURITY_MODE_SIGN_AND_ENCRYPT = 3;
 
 // This server's own certificate + private key -- set ONCE at startup (OpcUaServer) and shared by
 // every Connection/SecureChannel. rtoos: an RSA-2048 application instance certificate of its
@@ -136,10 +138,16 @@ private:
     size_t clientModulusSize_ = 0;
     size_t clientExponentSize_ = 0;
 
-    // HMAC-SHA256 signing keys derived from the OPN nonce exchange (Part 6 6.7.5) -- Sign mode
-    // only needs these (no AES encrypting key/IV derived; see the file header comment).
-    Byte clientSigningKey_[security::SHA256_DIGEST_SIZE] = {};
-    Byte serverSigningKey_[security::SHA256_DIGEST_SIZE] = {};
+    // Keys derived from the OPN nonce exchange (Part 6 6.7.5): per direction the HMAC-SHA256
+    // signing key, the AES-256 encrypting key and the IV (the latter two: SignAndEncrypt).
+    struct Keys {
+        Byte signing[security::SHA256_DIGEST_SIZE] = {};
+        Byte encrypting[security::AES_KEY_SIZE] = {};
+        Byte iv[security::AES_BLOCK_SIZE] = {};
+    };
+    Keys client_{};  // what the client sends: verify, decrypt
+    Keys server_{};  // what this server sends: sign, encrypt
+    bool Encrypted() const { return securityMode_ == SECURITY_MODE_SIGN_AND_ENCRYPT; }
 };
 
 }  // namespace rtos::opcua

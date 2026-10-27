@@ -63,7 +63,34 @@ check_securechannel.c	OPEN SecureChannel
 check_securechannel_unit.c	OPEN SecureChannel unit
 
 # ---- encryption ------------------------------------------------------------------------------------
-encryption/*	OPEN encryption
+encryption/check_encryption_aes128sha256rsaoaep.c	SecurityPolicy Aes128_Sha256_RsaOaep: rtoos bietet nur Basic256Sha256 (Sign, SignAndEncrypt) und None.
+encryption/check_encryption_aes256sha256rsapss.c	SecurityPolicy Aes256_Sha256_RsaPss: rtoos bietet nur Basic256Sha256 (Sign, SignAndEncrypt) und None.
+encryption/check_encryption_basic128rsa15.c	SecurityPolicy Basic128Rsa15 (veraltet, unsicher): rtoos bietet nur Basic256Sha256 und None.
+encryption/check_encryption_basic256.c	SecurityPolicy Basic256 (veraltet, SHA-1): rtoos bietet nur Basic256Sha256 und None.
+encryption/check_encryption_ecc*.c	ECC-SecurityPolicies (nistP256 u. a.): rtoos bietet für OPC UA nur Basic256Sha256 (RSA-2048) und None.
+encryption/check_ecc_config.c	ECC-SecurityPolicies (Konfiguration): rtoos bietet für OPC UA nur Basic256Sha256 und None.
+encryption/check_openssl_aead.c	AEAD-Verfahren (AES-GCM/ChaCha20-Poly1305) der ECC-Policies im OpenSSL-Plugin von open62541; nicht Teil von Basic256Sha256.
+encryption/check_pubsub_securitypolicy_crypto.c	PubSub-Sicherheit (Part 14); PubSub ist nicht Teil von rtoos.
+encryption/check_certificategroup.c	Zertifikatsgruppen und Trustlist-Verwaltung von open62541; rtoos vertraut genau einer einkompilierten CA (rtoosCA).
+encryption/check_certificategroup_none.c	Zertifikatsgruppen und Trustlist-Verwaltung von open62541; rtoos vertraut genau einer einkompilierten CA (rtoosCA).
+encryption/check_update_certificate.c	Austausch des Server-Zertifikats zur Laufzeit (Push-Modell, Part 12); das rtoos-Zertifikat ist einkompiliert.
+encryption/check_update_trustlist.c	Änderung der Trustlist zur Laufzeit (Part 12); rtoos vertraut einer einkompilierten CA.
+encryption/check_gds_*.c	Global Discovery Server und Zertifikatsverwaltung (Part 12); nicht Teil von rtoos.
+encryption/check_csr_generation.c	Erzeugen eines Certificate Signing Request auf dem Gerät (Part 12); rtoos-Zertifikate entstehen bei der Übersetzung (tools/make_certs.py).
+encryption/check_cert_generation.c	Erzeugen selbstsignierter Zertifikate durch die open62541-Bibliothek; rtoos-Zertifikate entstehen bei der Übersetzung (tools/make_certs.py, von rtoosCA signiert).
+encryption/check_crl_validation.c	Sperrlisten (CRL): rtoos prüft Client-Zertifikate gegen die CA-Signatur und das Gültigkeitsdatum, ohne Sperrlisten.
+encryption/check_encryptedsecret.c	Verschlüsselte Benutzer-Geheimnisse (UserName-/IssuedToken, Part 4 7.36.2.3); rtoos bietet nur das Anonymous-Token an.
+encryption/check_username_connect_none.c	UserName-Token über einen None-Kanal; rtoos bietet nur das Anonymous-Token an.
+encryption/check_encryption_key_password.c	Passwortgeschützte private Schlüssel beim Laden; der rtoos-Schlüssel ist als DER einkompiliert.
+encryption/check_server_config_default.c	Default-Konfiguration eines open62541-Servers mit Verschlüsselung; rtoos konfiguriert zur Übersetzungszeit.
+encryption/check_crypto_coverage.c	Abdeckungstests der Krypto-Plugin-API von open62541 (Hilfsfunktionen, Fehlerpfade der Plugins); die rtoos-Krypto prüft Basic256Sha256Primitives gegen Referenzwerte.
+encryption/check_encryption_basic256sha256.c::encryption_connect_pem	Laden von Zertifikat und Schlüssel im PEM-Format durch den Client; rtoos-Schlüssel sind DER und einkompiliert.
+encryption/check_encryption_basic256sha256.c::securitypolicy_basic256sha256_null_cert_no_underflow	Interne Funktion der open62541-SecurityPolicy (Blockgröße ohne Zertifikat); rtoos lehnt ein OPN ohne Client-Zertifikat ab, bevor gerechnet wird.
+encryption/check_encryption_basic256sha256.c::transfer_detached_subscription_anonymous	OPEN subscriptions
+encryption/check_hmac_verify_constanttime.c::*Sha1*	HMAC-SHA1 gehört zu den veralteten Policies Basic128Rsa15/Basic256; Basic256Sha256 nutzt HMAC-SHA256 (portiert).
+encryption/check_hmac_verify_constanttime.c::*Sha384*	HMAC-SHA384 gehört zu den ECC-Policies; Basic256Sha256 nutzt HMAC-SHA256 (portiert).
+encryption/check_securitypolicy_crypto.c	Andere SecurityPolicies als Basic256Sha256; rtoos bietet nur Basic256Sha256 und None.
+encryption/check_cert_validation_client_response.c::testCreateSession*	Prüfungen der open62541-Client-Bibliothek an der CreateSession-Antwort des Servers; rtoos enthält keinen Client (die Antwort selbst prüft CreateSessionOnASignedChannelNeedsItsClientAndANonce).
 
 # ---- server ----------------------------------------------------------------------------------------
 server/*	OPEN server

@@ -5,7 +5,7 @@
 // GetEndpoints), this file is the transport - one Session per client connection.
 //
 // Security (rtos/opcua/secure_channel.hpp):
-//   * Basic256Sha256, mode Sign: the client certificate must chain to the trusted CA
+//   * Basic256Sha256, mode Sign or SignAndEncrypt: the client certificate must chain to the trusted CA
 //     (rtoosCA) and be valid now; full access
 //   * None: read-only (GetEndpoints, sessions, Read, Browse)
 //   * this server's identity: an RSA-2048 application instance certificate (OpcUaIdentity)

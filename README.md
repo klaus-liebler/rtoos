@@ -271,7 +271,9 @@ Der OPC-UA-Server der FCU-Firmware (opcua_native) ist ein fester Baustein von rt
 | Thema | Umsetzung |
 |---|---|
 | Dienste | Hello/Acknowledge, OpenSecureChannel/CloseSecureChannel, Create/Activate/CloseSession, Read, Write, Browse, GetEndpoints |
-| Sicherheit | Basic256Sha256 im Modus Sign: Das Client-Zertifikat muss von der rtoosCA stammen und gültig sein (Datum gegen die SNTP-Zeit), dann voller Zugriff. SecurityPolicy None: nur lesen, Write liefert `BadSecurityModeInsufficient`. GetEndpoints bietet beide Endpunkte an. |
+| Sicherheit | Basic256Sha256 in den Modi Sign und SignAndEncrypt (AES-256-CBC): Das Client-Zertifikat muss von der rtoosCA stammen und gültig sein (Datum gegen die SNTP-Zeit), dann voller Zugriff. CreateSession verlangt dasselbe Zertifikat, ActivateSession dessen Signatur über Server-Zertifikat und Nonce. SecurityPolicy None: nur lesen, Write liefert `BadSecurityModeInsufficient`. GetEndpoints bietet alle drei Endpunkte an. |
+| Sessions | Eine Session je Verbindung; jeder Dienst prüft das AuthenticationToken und den Session-Timeout (64-Bit-Uhr). Nur das Anonymous-Token wird angeboten. |
+| View | Browse mit Referenztyp (samt Subtypen), NodeClassMask, ResultMask und Continuation Points (BrowseNext), TranslateBrowsePathsToNodeIds, Register-/UnregisterNodes, FindServers |
 | Krypto | wolfCrypt: RSA-2048 (OAEP-SHA1, PKCS#1 v1.5 mit SHA-256), HMAC-SHA256, P_SHA256; eigener statischer Speicherpool (`init(identity, crypto_memory)`), kein Heap |
 | Fairness | Ein OpenSecureChannel ist ein Hintergrundschritt (RSA), alle anderen Nachrichten werden sofort beantwortet. |
 | Adressraum | constexpr im Flash: `ns0_base.hpp` (Server-Objekt, Typen) plus Anwendungsknoten (`JoinNodes`/`JoinReferences`, Prüfungen per `static_assert`). [`registers.hpp`](include/rtos/opcua/registers.hpp) bindet Variablen an eine Modbus-`RegisterMap`: OPC UA und Modbus sehen dieselben Werte. |
@@ -288,7 +290,7 @@ opcua.start();                     // Port 4840, alle Interfaces
 runtime.add(opcua, "opcua");
 ```
 
-Nicht umgesetzt (wie im Original): TranslateBrowsePathsToNodeIds, die Filter von Browse (Referenztyp, NodeClass), SignAndEncrypt, Subscriptions. ActivateSession prüft die Client-Signatur nicht.
+Nicht umgesetzt: Subscriptions (folgen), Methoden (Call), Historie, Events, Benutzer-Tokens außer Anonymous, weitere SecurityPolicies, Arrays als Anwendungsvariablen.
 
 Tests: [opcua_test.cpp](tests/opcua_test.cpp) enthält einen eigenen Client mit wolfCrypt. Geprüft werden:
 - Hello-Puffer, None nur lesend und GetEndpoints;

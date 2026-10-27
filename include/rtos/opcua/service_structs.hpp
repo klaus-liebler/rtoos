@@ -60,7 +60,8 @@ bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v);
 // endpoint list as GetEndpoints would).
 // secure: Basic256Sha256 / Sign (security level 1); else None / None (0, read-only, see
 // secure_channel.hpp).
-EndpointDescription BuildEndpoint(std::string_view endpointUrl, bool secure);
+/// The endpoint of SecurityPolicy None (mode 1) or Basic256Sha256 Sign (2) / SignAndEncrypt (3).
+EndpointDescription BuildEndpoint(std::string_view endpointUrl, Int32 securityMode);
 // Both endpoints of this server (GetEndpoints, CreateSession's ServerEndpoints).
 bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl);
 

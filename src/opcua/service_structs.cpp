@@ -58,26 +58,29 @@ bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v) {
     return w.WriteByte(v.securityLevel);
 }
 
-EndpointDescription BuildEndpoint(std::string_view endpointUrl, bool secure) {
+EndpointDescription BuildEndpoint(std::string_view endpointUrl, Int32 securityMode) {
+    const bool secure = securityMode != SECURITY_MODE_NONE;
     EndpointDescription ep;
     ep.endpointUrl = String(endpointUrl);
     ep.server.applicationUri = String(APPLICATION_URI);
     ep.server.productUri = String(PRODUCT_URI);
     ep.server.applicationName = LocalizedText("en-US", APPLICATION_NAME);
     ep.server.applicationType = APPLICATION_TYPE_SERVER;
-    ep.securityMode = secure ? SECURITY_MODE_SIGN : SECURITY_MODE_NONE;
+    ep.securityMode = securityMode;
     ep.securityPolicyUri = String(secure ? SECURITY_POLICY_BASIC256SHA256_URI : SECURITY_POLICY_NONE_URI);
     ep.userIdentityToken.policyId = String(ANONYMOUS_POLICY_ID);
     ep.userIdentityToken.tokenType = 0; // Anonymous
     ep.userIdentityToken.securityPolicyUri = String::Null();
     ep.transportProfileUri = String(TRANSPORT_PROFILE_URI);
-    ep.securityLevel = secure ? 1 : 0;
+    // higher is more secure (Part 4 7.14): SignAndEncrypt 2, Sign 1, None 0
+    ep.securityLevel = static_cast<Byte>(securityMode - SECURITY_MODE_NONE);
     return ep;
 }
 
 bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl) {
-    return w.WriteInt32(2) && EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, true)) &&
-           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, false));
+    return w.WriteInt32(3) && EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN_AND_ENCRYPT)) &&
+           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN)) &&
+           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_NONE));
 }
 
 bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std::string_view endpointUrl,
@@ -97,7 +100,7 @@ bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std
     if(!EncodeNodeId(w, NodeId(0, ns0::FindServersResponse))) return false;
     if(!EncodeResponseHeader(w, MakeResponseHeader(header, StatusCode::Good))) return false;
     if(uris > 0 && !ours) return w.WriteInt32(0);
-    ApplicationDescription self = BuildEndpoint(endpointUrl, false).server;
+    ApplicationDescription self = BuildEndpoint(endpointUrl, SECURITY_MODE_NONE).server;
     self.discoveryUrl = (!requestedUrl.isNull && !requestedUrl.value.empty()) ? requestedUrl.value : endpointUrl;
     return w.WriteInt32(1) && EncodeApplicationDescription(w, self);
 }

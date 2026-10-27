@@ -28,7 +28,7 @@
 //   OPC UA   opc.tcp://fcu.local:4840 (2 clients), Objects/FCU: Led (UInt16, holding 0),
 //            Uptime (UInt32, input 0..1), WebSocketClients, HttpsRequests, ModbusRequests,
 //            OpcUaMessages (UInt16, inputs 2..5) - the same registers as Modbus.
-//            Basic256Sha256/Sign with a client certificate signed by the CA: read and
+//            Basic256Sha256 Sign or SignAndEncrypt with a client certificate signed by the CA: read and
 //            write; SecurityPolicy None: read only. RSA-2048 (OPC UA only, see CLAUDE.md).
 //
 // One network thread owns the whole stack: it runs Stack::poll() whenever the ETH

@@ -36,6 +36,13 @@ struct OpenScratch {
 };
 OpenScratch g_scratch;
 
+// SignAndEncrypt: decrypted copy of the message being handled (one at a time).
+Byte g_decrypted[8192];
+// MSG/CLO: message header (8), SecureChannelId (4), TokenId (4) stay in clear text
+constexpr size_t SYMMETRIC_CLEAR_HEADER = 16;
+// derived key material per direction: signing key, encrypting key, IV (Part 6 6.7.5)
+constexpr size_t KEY_MATERIAL = security::SHA256_DIGEST_SIZE + security::AES_KEY_SIZE + security::AES_BLOCK_SIZE;
+
 // The client's certificate (SenderCertificate) must chain to the trusted CA and be valid
 // now (security_crypto.hpp); yields its RSA-2048 public key.
 security::CertificateCheck CheckClientCertificate(std::string_view certDer, RsaPublicKey &outKey) {
@@ -94,6 +101,16 @@ bool SecureChannel::SignAndFinishSymmetric(ByteWriter &w, size_t startPos) {
         UInt32 totalSize = static_cast<UInt32>(w.Position() - startPos);
         return w.PatchUInt32(startPos + 4, totalSize);
     }
+    // SignAndEncrypt: padding first (Part 6 6.7.2) -- PaddingSize byte plus that many bytes of
+    // the same value, so that sequence header + body + padding + signature fill whole AES blocks.
+    if(Encrypted()) {
+        const size_t plain = w.Position() - (startPos + SYMMETRIC_CLEAR_HEADER);
+        const size_t pad = (security::AES_BLOCK_SIZE -
+                            (plain + 1 + security::SHA256_DIGEST_SIZE) % security::AES_BLOCK_SIZE) %
+                           security::AES_BLOCK_SIZE;
+        for(size_t i = 0; i <= pad; i++)
+            if(!w.WriteByte(static_cast<Byte>(pad))) return false;
+    }
     // The signature must cover the EXACT bytes actually sent, including the final messageSize
     // field -- so messageSize must be patched in BEFORE signing, not after (same bug/fix as
     // HandleOpen's response construction above; here it's simpler since the signature is always
@@ -104,10 +121,15 @@ bool SecureChannel::SignAndFinishSymmetric(ByteWriter &w, size_t startPos) {
     // FINAL size already in place) -- the signature covers the whole on-wire message except
     // itself, per Part 6 6.7.3.
     Byte signature[security::SHA256_DIGEST_SIZE];
-    if(!SignSymmetric(std::span<const Byte>(serverSigningKey_, sizeof(serverSigningKey_)),
-                      w.Written().subspan(startPos), signature))
+    if(!SignSymmetric(server_.signing, w.Written().subspan(startPos), signature))
         return false;
-    return w.WriteRaw(signature, sizeof(signature));
+    if(!w.WriteRaw(signature, sizeof(signature))) return false;
+    if(!Encrypted()) return true;
+    // encrypt in place: everything after the cleartext header (sequence header on)
+    const auto written = w.Written();
+    const std::span<Byte> encrypted(const_cast<Byte *>(written.data()) + startPos + SYMMETRIC_CLEAR_HEADER,
+                                    written.size() - startPos - SYMMETRIC_CLEAR_HEADER);
+    return security::AesCbcEncrypt(server_.encrypting, server_.iv, encrypted);
 }
 
 bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSecureMessage &out) {
@@ -119,25 +141,49 @@ bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSe
     if(out.header.messageSize != msg.size()) return false;
     if(!r.ReadUInt32(out.channelId)) return false;
     if(!r.ReadUInt32(out.tokenId)) return false;
-    if(!r.ReadUInt32(out.sequenceNumber)) return false;
-    if(!r.ReadUInt32(out.requestId)) return false;
     if(!r.Ok()) return false;
+
+    // SignAndEncrypt: everything after the cleartext header is encrypted -- decrypt into the
+    // scratch buffer (the network thread handles one message at a time) and go on from there.
+    std::span<const Byte> plain = msg;
+    if(Encrypted()) {
+        if(msg.size() > sizeof g_decrypted || msg.size() <= SYMMETRIC_CLEAR_HEADER ||
+           (msg.size() - SYMMETRIC_CLEAR_HEADER) % security::AES_BLOCK_SIZE != 0)
+            return false;
+        std::memcpy(g_decrypted, msg.data(), msg.size());
+        if(!security::AesCbcDecrypt(client_.encrypting, client_.iv,
+                                    std::span<Byte>(g_decrypted + SYMMETRIC_CLEAR_HEADER, msg.size() - SYMMETRIC_CLEAR_HEADER)))
+            return false;
+        plain = std::span<const Byte>(g_decrypted, msg.size());
+    }
+    ByteReader seq(plain.subspan(SYMMETRIC_CLEAR_HEADER));
+    if(!seq.ReadUInt32(out.sequenceNumber)) return false;
+    if(!seq.ReadUInt32(out.requestId)) return false;
+    const size_t bodyStart = SYMMETRIC_CLEAR_HEADER + 8;
 
     if(isDiscoveryOnly_) {
         // No signature to strip -- see SignAndFinishSymmetric's mirror-image comment.
-        out.body = msg.subspan(r.Position());
+        out.body = plain.subspan(bodyStart);
         return true;
     }
 
-    if(msg.size() < security::SHA256_DIGEST_SIZE) return false;
-    size_t signatureStart = msg.size() - security::SHA256_DIGEST_SIZE;
-    if(r.Position() > signatureStart) return false;
-    std::span<const Byte> signedPart = msg.subspan(0, signatureStart);
-    std::span<const Byte> signature = msg.subspan(signatureStart);
-    if(!VerifySymmetric(std::span<const Byte>(clientSigningKey_, sizeof(clientSigningKey_)), signedPart, signature))
+    if(plain.size() < bodyStart + security::SHA256_DIGEST_SIZE) return false;
+    size_t signatureStart = plain.size() - security::SHA256_DIGEST_SIZE;
+    std::span<const Byte> signedPart = plain.subspan(0, signatureStart);
+    std::span<const Byte> signature = plain.subspan(signatureStart);
+    if(!VerifySymmetric(client_.signing, signedPart, signature))
         return false;
 
-    out.body = msg.subspan(r.Position(), signatureStart - r.Position());
+    size_t bodyEnd = signatureStart;
+    if(Encrypted()) {
+        // padding is checked only after the signature: no padding oracle (the signature covers it)
+        const size_t pad = plain[signatureStart - 1];
+        if(bodyStart + pad + 1 > signatureStart) return false;
+        for(size_t i = signatureStart - 1 - pad; i < signatureStart; i++)
+            if(plain[i] != pad) return false;
+        bodyEnd = signatureStart - 1 - pad;
+    }
+    out.body = plain.subspan(bodyStart, bodyEnd - bodyStart);
     return true;
 }
 
@@ -319,7 +365,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     (void)clientProtocolVersion;
     (void)requestType; // Issue vs. Renew handled identically, see the header comment
 
-    StatusCode result = (securityMode == SECURITY_MODE_SIGN)
+    StatusCode result = (securityMode == SECURITY_MODE_SIGN || securityMode == SECURITY_MODE_SIGN_AND_ENCRYPT)
         ? StatusCode::Good : StatusCode::BadSecurityModeRejected;
     if(IsGood(result) && (clientNonceIsNull || clientNonce.size() != NONCE_SIZE))
         result = StatusCode::BadSecurityChecksFailed;
@@ -343,14 +389,19 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
             return false;
         std::span<const Byte> clientNonceSpan((const Byte *)clientNonce.data(), clientNonce.size());
         std::span<const Byte> serverNonceSpan(serverNonce, NONCE_SIZE);
-        // Part 6 6.7.5: "Client*" keys (this server uses to VERIFY what the client sends) are
-        // derived with ServerNonce as secret, ClientNonce as seed; "Server*" keys (this server
-        // uses to SIGN what it sends) the other way around.
-        if(!security::PSha256(serverNonceSpan, clientNonceSpan,
-                              std::span<Byte>(clientSigningKey_, sizeof(clientSigningKey_))))
-            return false;
-        if(!security::PSha256(clientNonceSpan, serverNonceSpan,
-                              std::span<Byte>(serverSigningKey_, sizeof(serverSigningKey_))))
+        // Part 6 6.7.5: "Client*" keys (this server uses to VERIFY/DECRYPT what the client sends)
+        // are derived with ServerNonce as secret, ClientNonce as seed; "Server*" keys (this server
+        // uses to SIGN/ENCRYPT what it sends) the other way around. Each block: signing key,
+        // encrypting key, initialization vector.
+        const auto derive = [](std::span<const Byte> secret, std::span<const Byte> seed, Keys &keys) {
+            Byte material[KEY_MATERIAL];
+            if(!security::PSha256(secret, seed, material)) return false;
+            std::memcpy(keys.signing, material, sizeof keys.signing);
+            std::memcpy(keys.encrypting, material + sizeof keys.signing, sizeof keys.encrypting);
+            std::memcpy(keys.iv, material + sizeof keys.signing + sizeof keys.encrypting, sizeof keys.iv);
+            return true;
+        };
+        if(!derive(serverNonceSpan, clientNonceSpan, client_) || !derive(clientNonceSpan, serverNonceSpan, server_))
             return false;
     }
 

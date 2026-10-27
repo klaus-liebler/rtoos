@@ -364,7 +364,8 @@ protected:
         UaBytes rx;
         bool closed = false, secured = false;
         ua::UInt32 channel = 0, token = 0, sequence = 0, request = 0;
-        std::array<Byte, 32> client_signing{}, server_signing{};
+        std::array<Byte, 80> client_keys{}, server_keys{};
+        bool encrypted = false;
         ua::NodeId auth_token;
     };
     void swap(Peer& o) {
@@ -380,8 +381,9 @@ protected:
         swap(o.token, token);
         swap(o.sequence, sequence);
         swap(o.request, request);
-        swap(o.client_signing, client_signing);
-        swap(o.server_signing, server_signing);
+        swap(o.client_keys, client_keys);
+        swap(o.server_keys, server_keys);
+        swap(o.encrypted, encrypted);
         swap(o.auth_token, auth_token);
     }
 
@@ -389,7 +391,10 @@ protected:
     std::array<Byte, 16384> buffer{};
     ua::UInt32 channel = 0, token = 0, sequence = 0, request = 0;
     bool secured = false;
-    std::array<Byte, 32> client_signing{}, server_signing{};
+    // signing key (32) | encrypting key (32) | IV (16) per direction (Part 6 6.7.5)
+    std::array<Byte, 80> client_keys{}, server_keys{};
+    bool encrypted = false;  // SignAndEncrypt
+    ua::StatusCode last_error = ua::StatusCode::Good;  // of an ERR answer to open_basic
     ua::NodeId auth_token;
     // the identity of the last signed channel (open_basic): CreateSession sends the
     // certificate, ActivateSession signs with the key
@@ -469,13 +474,14 @@ protected:
         b.ReadUInt32(channel);
         b.ReadUInt32(token);
         secured = false;
+        encrypted = false;
         return b.Ok();
     }
 
     /// Basic256Sha256 / Sign with `cert`/`key` as the client identity.
     /// `after_send` runs between sending the OPN and receiving the answer.
     bool open_basic(std::span<const unsigned char> cert, std::span<const unsigned char> key_der,
-                    const std::function<void()>& after_send = {}) {
+                    const std::function<void()>& after_send = {}, ua::Int32 mode = 2) {
         identity_cert = cert;
         identity_key = key_der;
         auto& cc = ClientCrypto::instance();
@@ -504,7 +510,7 @@ protected:
         ua::ByteWriter b(body_buf);
         b.WriteUInt32(++sequence);
         b.WriteUInt32(++request);
-        open_body(b, 2, client_nonce);
+        open_body(b, mode, client_nonce);
         const std::size_t plain_block = 256 - 42;
         const std::size_t base = b.Position() + 1 + 256;
         const std::size_t pad = (plain_block - base % plain_block) % plain_block;
@@ -534,6 +540,11 @@ protected:
             after_send();
         }
         const auto reply = receive();
+        if (reply && is_message(*reply, "ERR")) {
+            ua::ByteReader e(*reply);
+            e.Skip(8);
+            e.ReadStatusCode(last_error);
+        }
         if (!reply || !is_message(*reply, "OPN")) {
             return false;
         }
@@ -595,8 +606,9 @@ protected:
             return false;
         }
         const auto sn = std::span<const Byte>(reinterpret_cast<const Byte*>(server_nonce.data()), 32);
-        ua::security::PSha256(sn, client_nonce, client_signing);
-        ua::security::PSha256(client_nonce, sn, server_signing);
+        ua::security::PSha256(sn, client_nonce, client_keys);
+        ua::security::PSha256(client_nonce, sn, server_keys);
+        encrypted = mode == 3;
         wc_FreeRsaKey(&server_pub);
         wc_FreeRsaKey(&client_priv);
         wc_FreeRsaKey(&client_pub);
@@ -621,11 +633,20 @@ protected:
                 fuzz(msg);
                 msg.resize(std::max<std::size_t>(msg.size(), 24));
             }
+            if (encrypted) {  // padding to whole AES blocks (with the signature)
+                const std::size_t pad = (16 - (msg.size() - 16 + 1 + 32) % 16) % 16;
+                msg.insert(msg.end(), pad + 1, static_cast<Byte>(pad));
+            }
             ua::ByteWriter size{std::span(msg).subspan(4, 4)};
             size.WriteUInt32(static_cast<ua::UInt32>(msg.size() + 32));
             std::array<Byte, 32> mac{};
-            ua::security::HmacSha256(client_signing, msg, mac.data());
+            ua::security::HmacSha256(std::span(client_keys).first(32), msg, mac.data());
             msg.insert(msg.end(), mac.begin(), mac.end());
+            if (encrypted) {
+                EXPECT_TRUE(ua::security::AesCbcEncrypt(std::span(client_keys).subspan<32, 32>(),
+                                                        std::span(client_keys).subspan<64, 16>(),
+                                                        std::span(msg).subspan(16)));
+            }
         } else {
             ua::ByteWriter size{std::span(msg).subspan(4, 4)};
             size.WriteUInt32(static_cast<ua::UInt32>(msg.size()));
@@ -641,15 +662,29 @@ protected:
         if (!reply || !is_message(*reply, "MSG")) {
             return std::nullopt;
         }
-        std::size_t end = reply->size();
+        UaBytes plain = *reply;
+        if (secured && encrypted) {
+            EXPECT_EQ((plain.size() - 16) % 16, 0u) << "whole AES blocks";
+            EXPECT_TRUE(ua::security::AesCbcDecrypt(std::span(server_keys).subspan<32, 32>(),
+                                                    std::span(server_keys).subspan<64, 16>(),
+                                                    std::span(plain).subspan(16)));
+        }
+        std::size_t end = plain.size();
         if (secured) {
             end -= 32;
             std::array<Byte, 32> mac{};
-            ua::security::HmacSha256(server_signing, std::span(*reply).first(end), mac.data());
-            EXPECT_EQ(std::memcmp(mac.data(), reply->data() + end, 32), 0) << "server signature";
+            ua::security::HmacSha256(std::span(server_keys).first(32), std::span(plain).first(end), mac.data());
+            EXPECT_EQ(std::memcmp(mac.data(), plain.data() + end, 32), 0) << "server signature";
+            if (encrypted) {
+                const std::size_t pad = plain[end - 1];
+                for (std::size_t i = end - 1 - pad; i < end; i++) {
+                    EXPECT_EQ(plain[i], pad) << "padding";
+                }
+                end -= pad + 1;
+            }
         }
         Response resp;
-        if (!parse_response(UaBytes(reply->begin() + 24, reply->begin() + static_cast<std::ptrdiff_t>(end)), resp)) {
+        if (!parse_response(UaBytes(plain.begin() + 24, plain.begin() + static_cast<std::ptrdiff_t>(end)), resp)) {
             return std::nullopt;
         }
         return resp;
@@ -995,10 +1030,39 @@ TEST_F(OpcUaTest, GetEndpointsOffersBasic256Sha256AndNone) {
         w.WriteInt32(0);
     });
     ASSERT_TRUE(r.has_value());
-    const std::string text(reinterpret_cast<const char*>(r->bytes.data()), r->bytes.size());
-    EXPECT_NE(text.find(kBasic256Sha256), std::string::npos);
-    EXPECT_NE(text.find(kNone), std::string::npos);
-    EXPECT_NE(text.find("urn:factory-control-unit:opcua-native"), std::string::npos);
+    // SignAndEncrypt, Sign (Basic256Sha256) and None, the most secure first
+    ua::ByteReader b = r->reader();
+    ua::Int32 count = 0;
+    ASSERT_TRUE(b.ReadInt32(count));
+    ASSERT_EQ(count, 3);
+    const ua::Int32 modes[] = {3, 2, 1};
+    const ua::Byte levels[] = {2, 1, 0};
+    for (ua::Int32 i = 0; i < count; i++) {
+        ua::String url, policy, transport;
+        ua::ApplicationDescription app;
+        std::string_view certificate;
+        bool certificate_null = true;
+        ua::Int32 mode = 0, tokens = 0;
+        ua::Byte level = 0;
+        ASSERT_TRUE(b.ReadString(url) && ua::DecodeApplicationDescription(b, app) &&
+                    b.ReadByteString(certificate, certificate_null) && b.ReadInt32(mode) && b.ReadString(policy) &&
+                    b.ReadInt32(tokens));
+        for (ua::Int32 t = 0; t < tokens; t++) {
+            ua::String id, issued, issuer, token_policy;
+            ua::Int32 type = -1;
+            ASSERT_TRUE(b.ReadString(id) && b.ReadInt32(type) && b.ReadString(issued) && b.ReadString(issuer) &&
+                        b.ReadString(token_policy));
+            EXPECT_EQ(id.value, "anonymous");
+            EXPECT_EQ(type, 0);
+        }
+        ASSERT_TRUE(b.ReadString(transport) && b.ReadByte(level));
+        EXPECT_EQ(url.value, kEndpoint);
+        EXPECT_EQ(app.applicationUri.value, "urn:factory-control-unit:opcua-native");
+        EXPECT_FALSE(certificate_null);
+        EXPECT_EQ(mode, modes[i]);
+        EXPECT_EQ(policy.value, i < 2 ? std::string_view(kBasic256Sha256) : std::string_view(kNone));
+        EXPECT_EQ(level, levels[i]);
+    }
 }
 
 TEST_F(OpcUaTest, TrustedClientOnASignedChannelWrites) {
@@ -1407,6 +1471,113 @@ TEST_F(OpcUaTest, CreateSessionOnASignedChannelNeedsItsClientAndANonce) {
     created = create_session(std::nullopt, 16);
     ASSERT_TRUE(created.response);
     EXPECT_EQ(created.response->result, ua::StatusCode::BadNonceInvalid);
+}
+
+// ---- SignAndEncrypt, crypto (ported from open62541 tests/encryption) ------------------------------
+
+// open62541: encryption/check_encryption_basic256sha256.c encryption_connect
+// open62541: encryption/check_encryption_basic256sha256_with_config.c encryption_connect
+// open62541: encryption/check_ca_chain.c encryption_connect_Basic256Sha256_ca
+TEST_F(OpcUaTest, TrustedClientOnASignAndEncryptChannel) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key, {}, 3));
+    ASSERT_TRUE(session());
+    EXPECT_TRUE(ua::IsGood(write(kLed, 7)));
+    EXPECT_EQ(bank.holding(0), 7);
+    const auto [status, value] = read(kLed);
+    EXPECT_TRUE(ua::IsGood(status));
+    ASSERT_NE(value.GetIf<ua::UInt16>(), nullptr);
+    EXPECT_EQ(*value.GetIf<ua::UInt16>(), 7);
+    // many sizes: the padding to whole AES blocks
+    for (int i = 0; i < 20; i++) {
+        EXPECT_TRUE(ua::IsGood(read(i % 2 ? kLed : kUptime).first)) << i;
+    }
+}
+
+// The client learns that the channel was refused, not why (no certificate oracle).
+// open62541: encryption/check_cert_validation_client_response.c testOpenSecureChannelCertificateFailuresHidden
+TEST_F(OpcUaTest, testOpenSecureChannelCertificateFailuresHidden) {
+    ASSERT_TRUE(hello());
+    EXPECT_FALSE(open_basic(rogue_cert, rogue_key, {}, 3));
+    EXPECT_EQ(last_error, ua::StatusCode::BadSecurityChecksFailed);
+    EXPECT_TRUE(closed);
+}
+
+TEST_F(OpcUaTest, TamperedEncryptedMessageClosesTheChannel) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key, {}, 3));
+    ASSERT_TRUE(session());
+    const auto r = call(
+        [&](ua::ByteWriter& w) {
+            ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::ReadRequest));
+            request_header(w, auth_token, 4);
+            w.WriteDouble(0);
+            w.WriteInt32(0);
+            w.WriteInt32(1);
+            ua::EncodeNodeId(w, kLed);
+            w.WriteUInt32(13);
+            w.WriteString(ua::String::Null());
+            ua::EncodeQualifiedName(w, ua::QualifiedName(0, ""));
+        },
+        true);
+    EXPECT_FALSE(r.has_value());
+    (void)receive();
+    EXPECT_TRUE(closed);
+}
+
+// open62541: encryption/check_hmac_verify_constanttime.c opensslHmacSha256VerifyRejectsTamperedAndShortSignatures
+// open62541: encryption/check_hmac_verify_constanttime.c mbedtlsHmacSha256VerifyRejectsTamperedAndShortSignatures
+TEST(OpcUaCrypto, HmacSha256VerifyRejectsTamperedAndShortSignatures) {
+    const std::array<Byte, 32> key{1, 2, 3};
+    const std::string_view text = "message to sign";
+    const std::span<const Byte> message(reinterpret_cast<const Byte*>(text.data()), text.size());
+    std::array<Byte, 32> mac{}, again{};
+    ASSERT_TRUE(ua::security::HmacSha256(key, message, mac.data()));
+    ASSERT_TRUE(ua::security::HmacSha256(key, message, again.data()));
+    EXPECT_TRUE(ua::security::ConstantTimeEqual(mac, again));
+    for (std::size_t i : {0u, 15u, 31u}) {
+        auto tampered = again;
+        tampered[i] ^= 0x80;
+        EXPECT_FALSE(ua::security::ConstantTimeEqual(mac, tampered)) << i;
+    }
+    EXPECT_FALSE(ua::security::ConstantTimeEqual(mac, std::span(again).first(31))) << "short signature";
+    EXPECT_FALSE(ua::security::ConstantTimeEqual(mac, std::span<const Byte>())) << "empty signature";
+}
+
+// The building blocks of Basic256Sha256, each against an independent reference.
+// open62541: encryption/check_securitypolicy_crypto.c securitypolicy_basic256sha256
+TEST(OpcUaCrypto, Basic256Sha256Primitives) {
+    // AES-256-CBC: NIST SP 800-38A F.2.5
+    std::array<Byte, 32> key{};
+    const char* hex = "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4";
+    for (std::size_t i = 0; i < 32; i++) key[i] = static_cast<Byte>(std::stoi(std::string(hex + 2 * i, 2), nullptr, 16));
+    std::array<Byte, 16> iv{};
+    for (std::size_t i = 0; i < 16; i++) iv[i] = static_cast<Byte>(i);
+    std::array<Byte, 16> block = {0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96,
+                                  0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a};
+    const std::array<Byte, 16> plain = block;
+    ASSERT_TRUE(ua::security::AesCbcEncrypt(key, iv, block));
+    EXPECT_EQ(block, (std::array<Byte, 16>{0xf5, 0x8c, 0x4c, 0x04, 0xd6, 0xe5, 0xf1, 0xba, 0x77, 0x9e, 0xab, 0xfb,
+                                           0x5f, 0x7b, 0xfb, 0xd6}));
+    ASSERT_TRUE(ua::security::AesCbcDecrypt(key, iv, block));
+    EXPECT_EQ(block, plain);
+    std::array<Byte, 15> partial{};
+    EXPECT_FALSE(ua::security::AesCbcEncrypt(key, iv, partial)) << "whole blocks only";
+
+    // P_SHA256 (Part 6 6.7.5 / RFC 5246 5): reference computed with Python's hmac
+    std::array<Byte, 32> secret{};
+    for (std::size_t i = 0; i < 32; i++) secret[i] = static_cast<Byte>(i + 1);
+    const std::string_view seed = "rtoos P_SHA256 known answer";
+    std::array<Byte, 80> material{};
+    ASSERT_TRUE(ua::security::PSha256(secret, std::span<const Byte>(reinterpret_cast<const Byte*>(seed.data()), seed.size()),
+                                      material));
+    const std::array<Byte, 80> expected = {
+        0x8c, 0x14, 0x7f, 0xb6, 0xb2, 0xef, 0x63, 0xa9, 0x6c, 0x8f, 0x9d, 0xf5, 0xf7, 0x18, 0x02, 0xad,
+        0x29, 0xa4, 0x6c, 0x1d, 0x90, 0x79, 0x48, 0xf8, 0x25, 0x04, 0x2c, 0x15, 0x35, 0x27, 0x59, 0xc3,
+        0xde, 0x16, 0xa6, 0x5a, 0xd0, 0x16, 0xc1, 0xcd, 0x46, 0x87, 0xf0, 0x8f, 0x45, 0x1a, 0xcf, 0xf6,
+        0xc3, 0x10, 0xa3, 0x39, 0x48, 0xe9, 0xcd, 0x87, 0x04, 0x3c, 0xf8, 0x6c, 0xe4, 0xd1, 0xd3, 0xda,
+        0xce, 0x7f, 0x1e, 0x35, 0x4e, 0x76, 0xe5, 0x1b, 0xf9, 0xed, 0xb8, 0xa8, 0x28, 0xbe, 0x1d, 0x12};
+    EXPECT_EQ(material, expected);
 }
 
 TEST_F(OpcUaTest, ReadIsAnsweredWhileAnRsaOpenWaits) {

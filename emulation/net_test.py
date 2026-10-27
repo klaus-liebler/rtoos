@@ -274,15 +274,15 @@ OPCUA_URL = f"opc.tcp://{DEVICE_IP}:4840"
 OPCUA_LED, OPCUA_UPTIME = "ns=1;i=5000", "ns=1;i=5001"
 
 
-def opcua_connect(certs: Path, identity: str | None = None):
+def opcua_connect(certs: Path, identity: str | None = None, mode: str = "Sign"):
     """asyncua client (sync API); `identity`: certs/<identity>.der/.key.der for
-    Basic256Sha256/Sign, None: SecurityPolicy None."""
+    Basic256Sha256 with `mode` (Sign or SignAndEncrypt), None: SecurityPolicy None."""
     from asyncua.sync import Client
 
     client = Client(OPCUA_URL, timeout=10)
     client.application_uri = "urn:rtoos:test-client"
     if identity is not None:
-        client.set_security_string(f"Basic256Sha256,Sign,{certs / (identity + '.der')},"
+        client.set_security_string(f"Basic256Sha256,{mode},{certs / (identity + '.der')},"
                                    f"{certs / (identity + '.key.der')},{certs / 'opcua.der'}")
     try:
         client.connect()
@@ -621,6 +621,15 @@ def main() -> int:
                   f"connect incl. RSA-2048 handshake {open_ms:.0f} ms")
             signed.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(0, ua_types.VariantType.UInt16)))
             signed.disconnect()
+
+            encrypted = opcua_connect(certs, "opcua_client", "SignAndEncrypt")
+            encrypted.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(1, ua_types.VariantType.UInt16)))
+            led = encrypted.get_node(OPCUA_LED).read_value()
+            uptime_enc = encrypted.get_node(OPCUA_UPTIME).read_value()
+            encrypted.get_node(OPCUA_LED).write_value(ua_types.DataValue(ua_types.Variant(0, ua_types.VariantType.UInt16)))
+            encrypted.disconnect()
+            check("OPC UA Basic256Sha256/SignAndEncrypt: write and read back", led == 1 and uptime_enc > 0,
+                  f"Led {led}, Uptime {uptime_enc} s")
 
             try:
                 rogue = opcua_connect(certs, "opcua_rogue")
