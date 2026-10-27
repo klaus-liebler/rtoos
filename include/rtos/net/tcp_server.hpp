@@ -82,6 +82,8 @@ public:
     static_assert(MaxSessions <= 255);
 
     explicit TcpServer(Stack& stack) noexcept : stack_(stack) {}
+    /// Stops listening and resets the connections of this server.
+    ~TcpServer() { stack_.tcp().unlisten(handler_); }
 
     TcpServer(const TcpServer&) = delete;
     TcpServer& operator=(const TcpServer&) = delete;

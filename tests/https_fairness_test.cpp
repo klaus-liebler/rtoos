@@ -2,7 +2,7 @@
 //
 // HttpsServer + NetRuntime end to end on the host: real wolfSSL clients over simulated
 // TCP peers (a minimal client-side TCP in this file) download a 100 KB resource while
-// an interactive TCP service (an echo, standing in for Modbus TCP / OPC UA) answers
+// a Modbus TCP server (the interactive service, as OPC UA later) answers
 // requests. Checks the fairness rules of service.hpp:
 //   * downloads and handshakes are background steps: a request that arrives in the
 //     same receive batch as download ACKs or ClientHellos is answered BEFORE the next
@@ -26,7 +26,9 @@
 #include <vector>
 
 #include "net_fixture.hpp"
+#include "rtos/modbus/register_bank.hpp"
 #include "rtos/net/https_server.hpp"
+#include "rtos/net/modbus_tcp_server.hpp"
 #include "rtos/net/service.hpp"
 #include "rtos/net/tcp_server.hpp"
 
@@ -58,29 +60,9 @@ struct FairPool : PacketPool<48> {
 using FStack = Stack<FairPool, FairCfg>;
 using Server = HttpsServer<FStack, 6>;
 constexpr std::uint16_t https_port = 443;
-constexpr std::uint16_t echo_port = 502;
+constexpr std::uint16_t echo_port = 502;  ///< the interactive service: Modbus TCP
 
-/// Interactive service: echoes every chunk at once (a Modbus request/response).
-struct EchoSession {
-    FStack::TcpConnection* conn = nullptr;
-    std::uint32_t* replies = nullptr;
-
-    bool open(FStack::TcpConnection& c, std::uint32_t) noexcept {
-        conn = &c;
-        return true;
-    }
-    void pump(FStack::TcpConnection& c, std::uint32_t, bool) noexcept {
-        std::array<std::byte, 256> buf{};
-        if (const std::size_t n = c.read(buf); n != 0) {
-            c.write({buf.data(), n});
-        }
-    }
-    void closed() noexcept { conn = nullptr; }
-    [[nodiscard]] bool finished() const noexcept { return false; }
-    [[nodiscard]] bool evictable() const noexcept { return false; }
-    [[nodiscard]] std::uint32_t deadline() const noexcept { return 0; }
-};
-using EchoServer = TcpServer<FStack, EchoSession, 1>;
+using ModbusServer = ModbusTcpServer<FStack, 2>;
 
 /// Client side of one TCP connection, loss-free, every segment acknowledged at once.
 struct TcpPeer {
@@ -166,9 +148,9 @@ protected:
         wolfSSL_CTX_SetIOSend(client_ctx, &client_send);
         stack.set_random([](void*) noexcept -> std::uint32_t { return 100000; }, nullptr);
         ASSERT_TRUE(server.start(https_port));
-        ASSERT_TRUE(echo.listen(echo_port));
+        ASSERT_TRUE(echo.start(echo_port));
         runtime.add(server, "https");
-        runtime.add(echo, "echo");
+        runtime.add(echo, "modbus");
         // The device knows the peer's MAC.
         std::array<std::byte, 28> a{};
         store_be16(a.data(), 1);
@@ -399,7 +381,8 @@ protected:
     /// Echo request in the same receive batch as whatever the peers queued (ACKs,
     /// ClientHellos); returns the frames sent in the pass that handles it.
     std::vector<Sent> echo_round_trip() {
-        static constexpr std::string_view ping = "ping";
+        // Modbus TCP: read holding registers 0..9 (transaction 7, unit 1)
+        static constexpr std::string_view ping{"\x00\x07\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0A", 12};
         wire.clear();
         send(echo_peer, std::as_bytes(std::span(ping.data(), ping.size())));
         now += 1;
@@ -423,7 +406,8 @@ protected:
         HttpResource{"/blob", "application/octet-stream", "", std::span<const std::byte>(blob)}};
     Server::WebSocketHandler ws{};
     Server server{stack, tls, resources, "/ws", ws};
-    EchoServer echo{stack};
+    rtos::modbus::RegisterBank<32, 0> registers;
+    ModbusServer echo{stack, registers};
     NetRuntime<FStack> runtime{stack};
     std::uint32_t now = 1000;
 
@@ -555,7 +539,7 @@ TEST_F(HttpsFairness, RuntimeMeasuresStepsAndSleepsOnlyWhenIdle) {
     EXPECT_TRUE(was_busy);
     EXPECT_GT(runtime.stats(0).steps, 0u);           // https
     EXPECT_GT(runtime.stats(0).max_step_cycles, 0u);
-    EXPECT_EQ(runtime.stats(1).steps, 0u);           // the echo has no background work
+    EXPECT_EQ(runtime.stats(1).steps, 0u);           // Modbus has no background work
     for (int i = 0; i < 100; ++i) {
         pass();
     }

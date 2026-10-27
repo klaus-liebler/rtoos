@@ -31,6 +31,9 @@
 #include "rtos/net/mdns.hpp"
 #include "rtos/net/sntp.hpp"
 #include "rtos/net/websocket.hpp"
+#include "rtos/modbus/register_bank.hpp"
+#include "rtos/modbus/rtu.hpp"
+#include "rtos/net/modbus_tcp_server.hpp"
 
 namespace {
 
@@ -181,6 +184,7 @@ struct Echo {
 };
 
 constexpr std::uint16_t echo_port = 7;
+constexpr std::uint16_t modbus_port = 502;
 constexpr std::uint16_t sntp_local_port = 12'300;
 constexpr std::uint16_t dns_query_port = 49152 + 100000 % 16384;  // fixture random32() == 100000
 constexpr std::uint16_t dns_query_id = static_cast<std::uint16_t>(100000);
@@ -192,11 +196,16 @@ protected:
     DnsResolver<TestStack> resolver{stack};
     DhcpServer<TestStack> dhcp_server{stack, eth, {.first = Ipv4Address::from(192, 168, 77, 100), .count = 4}};
     Echo echo;
+    rtos::modbus::RegisterBank<64, 16> registers;
+    ModbusTcpServer<TestStack, 2> modbus{stack, registers};
     Mutator m{seed(0x5EED'0001u)};
 
     std::uint16_t tcp_peer_port = 40'000;
     std::uint32_t tcp_peer_seq = 0;
     std::uint32_t tcp_iss = 0;
+    std::uint16_t modbus_peer_port = 50'000;
+    std::uint32_t modbus_peer_seq = 0;
+    std::uint32_t modbus_iss = 0;
     std::string query_name = "q0.example";
     int queries = 0;
 
@@ -206,6 +215,7 @@ protected:
         ASSERT_TRUE(mdns.start());
         ASSERT_TRUE(sntp.start());
         ASSERT_TRUE(dhcp_server.start());
+        ASSERT_TRUE(modbus.start(modbus_port));
         const std::array servers{peer_ip};
         resolver.set_servers(servers);
         for (int i = 0; i < 100 && !mdns.ready(eth); ++i) {
@@ -219,7 +229,26 @@ protected:
         sntp.service();
         resolver.service();
         dhcp_server.service();
+        modbus.service();
         stack.flush();
+    }
+
+    /// Fresh Modbus TCP connection (an idle older one is evicted when the slots are full).
+    void connect_modbus() {
+        ++modbus_peer_port;
+        modbus_peer_seq = m.below(0xFFFF'FFFFu);
+        deliver(tcp(modbus_peer_port, modbus_port, modbus_peer_seq, 0, tcp_flag::syn, {}, 8192, 1460));
+        services();
+        for (const Frame& f : sent()) {
+            if (f.ethertype() == ethertype_ipv4 && f.ip_protocol() == ip_proto_tcp &&
+                f.flags() == (tcp_flag::syn | tcp_flag::ack)) {
+                modbus_iss = f.seq();
+                ++modbus_peer_seq;
+                deliver(tcp(modbus_peer_port, modbus_port, modbus_peer_seq, modbus_iss + 1, tcp_flag::ack));
+                services();
+                (void)sent();
+            }
+        }
     }
 
     void step(std::uint32_t ms) {
@@ -243,6 +272,7 @@ protected:
             // (RFC 5227 2.4). The application takes it again - so do we.
             stack.set_config(eth, {device_ip, Ipv4Address::from(255, 255, 255, 0), Ipv4Address::from(192, 168, 77, 254)});
         }
+        connect_modbus();
         if (echo.connection != nullptr) {
             // A fresh connection, so the data seeds hit its exact sequence number again.
             static_cast<TestStack::TcpConnection*>(echo.connection)->abort();
@@ -360,6 +390,18 @@ protected:
                 return bytes_of(tcp(tcp_peer_port, echo_port, tcp_peer_seq, tcp_iss + 1, tcp_flag::ack | tcp_flag::fin));
             },
             [&] { return bytes_of(tcp(tcp_peer_port, echo_port, tcp_peer_seq, tcp_iss + 1, tcp_flag::rst)); },
+            [&] {  // Modbus TCP: read holding registers 0..9, then write register 3
+                const std::string req("\x00\x01\x00\x00\x00\x06\x01\x03\x00\x00\x00\x0A"
+                                      "\x00\x02\x00\x00\x00\x06\x01\x06\x00\x03\x12\x34",
+                                      24);
+                return bytes_of(tcp(modbus_peer_port, modbus_port, modbus_peer_seq, modbus_iss + 1,
+                                    tcp_flag::ack | tcp_flag::psh, req));
+            },
+            [&] {  // Modbus TCP: write multiple registers
+                const std::string req("\x00\x03\x00\x00\x00\x0B\x01\x10\x00\x00\x00\x02\x04\x00\x0A\x01\x02", 17);
+                return bytes_of(tcp(modbus_peer_port, modbus_port, modbus_peer_seq, modbus_iss + 1,
+                                    tcp_flag::ack | tcp_flag::psh, req));
+            },
         };
     }
 };
@@ -505,6 +547,66 @@ TEST(ParserFuzz, DnsNames) {
             ASSERT_LE(*len, out.size());
         }
     }
+}
+
+TEST(ParserFuzz, ModbusPdu) {
+    rtos::modbus::RegisterBank<100, 50> bank;
+    Mutator m{seed(0x5EED'0006u)};
+    const std::vector<Bytes> seeds = {
+        {std::byte{0x03}, std::byte{0x00}, std::byte{0x10}, std::byte{0x00}, std::byte{0x05}},
+        {std::byte{0x04}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x32}},
+        {std::byte{0x06}, std::byte{0x00}, std::byte{0x63}, std::byte{0xAB}, std::byte{0xCD}},
+        {std::byte{0x10}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02}, std::byte{0x04},
+         std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x02}},
+    };
+    const std::size_t n = iterations(20'000) * 2;
+    for (std::size_t i = 0; i < n; ++i) {
+        Bytes b = seeds[m.below(static_cast<std::uint32_t>(seeds.size()))];
+        m.mutate(b, 0, 260);
+        std::array<std::byte, rtos::modbus::max_pdu> response{};
+        const std::size_t len = rtos::modbus::process_pdu(bank, b, response);
+        ASSERT_LE(len, rtos::modbus::max_pdu);
+        if (!b.empty()) {
+            ASSERT_GE(len, 2u);  // every request gets an answer, an exception at least
+        }
+    }
+}
+
+TEST(ParserFuzz, ModbusRtuFraming) {
+    rtos::modbus::RegisterBank<100, 50> bank;
+    rtos::modbus::RtuServer rtu{bank, 1};
+    Mutator m{seed(0x5EED'0007u)};
+    const auto frame = [](Bytes body) {
+        const std::uint16_t crc = rtos::modbus::crc16(body);
+        body.push_back(static_cast<std::byte>(crc & 0xFF));
+        body.push_back(static_cast<std::byte>(crc >> 8));
+        return body;
+    };
+    const std::vector<Bytes> seeds = {
+        frame({std::byte{1}, std::byte{0x03}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{10}}),
+        frame({std::byte{1}, std::byte{0x10}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1}, std::byte{2},
+               std::byte{0x12}, std::byte{0x34}}),
+        frame({std::byte{0}, std::byte{0x06}, std::byte{0}, std::byte{5}, std::byte{0}, std::byte{7}}),
+    };
+    const std::size_t n = iterations(20'000) * 2;
+    for (std::size_t i = 0; i < n; ++i) {
+        Bytes b = seeds[m.below(static_cast<std::uint32_t>(seeds.size()))];
+        m.mutate(b, 0, 300);
+        for (std::size_t pos = 0; pos < b.size();) {
+            const std::size_t chunk = std::min<std::size_t>(b.size() - pos, 1 + m.below(16));
+            ASSERT_LE(rtu.receive({b.data() + pos, chunk}).size(), rtos::modbus::RtuServer::max_adu);
+            pos += chunk;
+        }
+        while (!rtu.receive({}).empty()) {
+        }
+        ASSERT_LE(rtu.buffered(), rtos::modbus::RtuServer::max_adu);
+        if (m.chance(2)) {
+            ASSERT_LE(rtu.silence().size(), rtos::modbus::RtuServer::max_adu);
+        }
+    }
+    // Still in sync after all that: a clean frame after silence is answered.
+    (void)rtu.silence();
+    EXPECT_FALSE(rtu.receive(seeds[0]).empty());
 }
 
 TEST(ParserFuzz, DhcpOptions) {

@@ -238,12 +238,32 @@ Nicht teilbar sind einzelne Krypto-Operationen. Ein TLS-Handshake-Flight (ECDHE 
 
 Die Host-Tests ([tests/https_fairness_test.cpp](tests/https_fairness_test.cpp)) lassen echte wolfSSL-Clients über simulierte TCP-Peers herunterladen und prüfen die **Reihenfolge auf der Leitung**: Eine Anfrage, die im selben Empfangsstapel wie Download-ACKs oder ClientHellos ankommt, wird beantwortet, bevor der nächste Download-Record oder Handshake-Flight hinausgeht. Mit der früheren Inline-Verarbeitung schlagen beide Tests fehl. Der Renode-Test misst die WebSocket-Echozeit unter fünf parallelen Downloads.
 
-### Eigenen Server einhängen (Modbus TCP, OPC UA, ...)
+### Modbus (TCP und RTU)
 
-Ein TCP-Server besteht nur aus einer Session-Klasse; Annahme, Verdrängung ruhender Verbindungen, Fristen und Freigabe übernimmt [`TcpServer`](include/rtos/net/tcp_server.hpp):
+Modbus ist ein fester Baustein von rtoos:
+
+| Teil | Datei | Inhalt |
+|---|---|---|
+| PDU | [modbus.hpp](include/rtos/modbus/modbus.hpp) | FC 03/04/06/16 nach Modbus Application Protocol V1.1b3, Ausnahmen in der Reihenfolge der Spezifikation (Menge → 03, Adresse → 02), Schnittstelle `RegisterMap`, CRC-16 |
+| Register | [register_bank.hpp](include/rtos/modbus/register_bank.hpp) | `RegisterBank<Holding, Input, Guard>`: eine Sperre pro Anfrageblock (Ziel: `Kernel::Lock`), Schreib-Hook für die Anwendung |
+| RTU | [rtu.hpp](include/rtos/modbus/rtu.hpp) | Framing für UART oder USB CDC-ACM: Frame-Länge aus dem Funktionscode, Ende durch Stille für Unbekanntes, Broadcast (Adresse 0), CRC-Prüfung |
+| TCP | [modbus_tcp_server.hpp](include/rtos/net/modbus_tcp_server.hpp) | `ModbusTcpServer` auf `TcpServer`: MBAP-Prüfung, über Segmente verteilte und mehrere Anfragen pro Segment, Unit-Id-Filter, Leerlauf-Timeout, mehrere Clients, `InterfaceSet` |
 
 ```cpp
-struct ModbusSession {                        // eine Verbindung
+rtos::modbus::RegisterBank<64, 32, Kernel::Lock> registers{{nullptr, &on_written}};
+rtos::net::ModbusTcpServer<Stack, 2> modbus{stack, registers};
+modbus.start(502);                 // alle Interfaces
+runtime.add(modbus, "modbus");
+```
+
+Tests: [modbus_test.cpp](tests/modbus_test.cpp) prüft die Beispiele der Spezifikation, die Ausnahmen, das RTU-Framing und Modbus TCP über den Stack. Der Fuzzer deckt PDU, RTU und Modbus TCP im Empfangspfad ab, der Fairness-Test die Modbus-Antwort unter Download-Last. `fcu_net` stellt die LED als Holding-Register 0 bereit, Laufzeit und Zähler als Input-Register. Der Renode-Test liest und schreibt die Register und misst die Antwortzeit während paralleler Downloads.
+
+### Eigenen Server einhängen (OPC UA, ...)
+
+Ein TCP-Server besteht nur aus einer Session-Klasse; Annahme, Verdrängung ruhender Verbindungen, Fristen und Freigabe übernimmt [`TcpServer`](include/rtos/net/tcp_server.hpp). Vorbild ist [modbus_tcp_server.hpp](include/rtos/net/modbus_tcp_server.hpp):
+
+```cpp
+struct MySession {                            // eine Verbindung
     bool open(Connection& c, std::uint32_t now) noexcept;              // angenommen
     void pump(Connection& c, std::uint32_t now, bool event) noexcept;  // lesen, antworten
     void closed() noexcept;                   // Verbindung weg
@@ -251,9 +271,9 @@ struct ModbusSession {                        // eine Verbindung
     bool evictable() const noexcept;          // ruht: darf verdrängt werden
     std::uint32_t deadline() const noexcept;  // nächste Frist (0: keine)
 };
-rtos::net::TcpServer<Stack, ModbusSession, 4> modbus{stack};
-modbus.listen(502, rtos::net::InterfaceSet::of({eth}));  // nur Ethernet; ohne Angabe: alle
-runtime.add(modbus, "modbus");                // läuft im Netz-Thread
+rtos::net::TcpServer<Stack, MySession, 4> my{stack};
+my.listen(4840, rtos::net::InterfaceSet::of({eth}));  // nur Ethernet; ohne Angabe: alle
+runtime.add(my, "my");                        // läuft im Netz-Thread
 ```
 
 **Welche Interfaces ein Dienst bedient**, legt eine `InterfaceSet` fest ([interface.hpp](include/rtos/net/interface.hpp)). Die Vorgabe ist überall „alle“, sonst eine Liste:

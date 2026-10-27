@@ -364,6 +364,22 @@ public:
         return false;
     }
 
+    /// Stop serving `handler`: remove its listeners and reset its connections (the
+    /// handler is not called any more; e.g. a server object being destroyed).
+    void unlisten(const TcpHandler& handler) noexcept {
+        for (auto& l : listeners_) {
+            if (l.handler == &handler) {
+                l = Listener{};
+            }
+        }
+        for (auto& c : connections_) {
+            if (c.state_ != TcpState::Closed && c.listener_ == &handler) {
+                c.listener_ = nullptr;
+                abort(c, TcpCloseReason::Aborted);
+            }
+        }
+    }
+
     [[nodiscard]] std::size_t active_connections() const noexcept {
         std::size_t n = 0;
         for (const auto& c : connections_) {

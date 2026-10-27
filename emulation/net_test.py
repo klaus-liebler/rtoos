@@ -229,6 +229,44 @@ def start_servers(stop: threading.Event, dhcp_log: list[str], dns_log: list[str]
 
 # ---- HTTPS ------------------------------------------------------------------------------
 
+class ModbusClient:
+    """Minimal Modbus TCP client (raw socket): read/write holding and input registers."""
+
+    def __init__(self) -> None:
+        self.sock = socket.create_connection((DEVICE_IP, 502), timeout=5)
+        self.tid = 0
+
+    def request(self, pdu: bytes) -> bytes:
+        self.tid = (self.tid + 1) & 0xFFFF
+        self.sock.sendall(struct.pack(">HHHB", self.tid, 0, len(pdu) + 1, 1) + pdu)
+        header = self._exactly(7)
+        tid, protocol, length, unit = struct.unpack(">HHHB", header)
+        if tid != self.tid or protocol != 0 or unit != 1:
+            raise ValueError(f"bad MBAP {header.hex()}")
+        return self._exactly(length - 1)
+
+    def read(self, fc: int, start: int, count: int) -> list[int]:
+        r = self.request(struct.pack(">BHH", fc, start, count))
+        if r[0] != fc:
+            raise ValueError(f"exception {r.hex()}")
+        return list(struct.unpack(f">{count}H", r[2:]))
+
+    def write(self, address: int, value: int) -> bytes:
+        return self.request(struct.pack(">BHH", 0x06, address, value))
+
+    def _exactly(self, n: int) -> bytes:
+        data = b""
+        while len(data) < n:
+            chunk = self.sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("closed")
+            data += chunk
+        return data
+
+    def close(self) -> None:
+        self.sock.close()
+
+
 def tls_connect(ca: Path) -> ssl.SSLSocket:
     ctx = ssl.create_default_context(cafile=str(ca))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -497,6 +535,29 @@ def main() -> int:
         check("silent WebSocket client closed by ping timeout", gone and closed_after > closed_before,
               f"closed after {time.monotonic() - t0:.1f} s")
 
+        # Modbus TCP (port 502): input registers, the LED as holding register 0,
+        # exceptions, two clients.
+        modbus_ok = False
+        try:
+            mb = ModbusClient()
+            uptime_hi, uptime_lo, _, _, _ = mb.read(0x04, 0, 5)
+            uptime = (uptime_hi << 16) | uptime_lo
+            check("Modbus TCP: read input registers (uptime)", uptime > 0, f"uptime {uptime} s")
+            echo_write = mb.write(0, 1)
+            check("Modbus TCP: write holding register 0 -> LED",
+                  echo_write == struct.pack(">BHH", 0x06, 0, 1) and console.wait_for("modbus: led on", 5)
+                  and mb.read(0x03, 0, 1) == [1])
+            mb.write(0, 0)
+            exception = mb.request(struct.pack(">BHH", 0x03, 7, 2))  # registers 7..8: 8 is beyond
+            check("Modbus TCP: exception 02 for an address beyond the map", exception == bytes([0x83, 0x02]))
+            second = ModbusClient()
+            check("Modbus TCP: two clients at the same time", second.read(0x03, 0, 1) == [0] and mb.read(0x03, 0, 1) == [0])
+            second.close()
+            modbus_ok = True
+        except (OSError, ValueError) as e:
+            check("Modbus TCP", False, repr(e))
+            mb = None
+
         # Buffer budget under load: 5 parallel 100 KB downloads (5 x 4 segments in
         # flight) while a WebSocket echoes - nothing may stall (receive reserve).
         ws, _ = ws_open(ca, "https://fcu.local")
@@ -517,6 +578,7 @@ def main() -> int:
             th.start()
         echo_ok = ws is not None
         load_rtts: list[float] = []
+        modbus_rtts: list[float] = []
         if ws:
             reader = WsReader(ws)
             for i in range(20):
@@ -525,6 +587,13 @@ def main() -> int:
                 ws_send(ws, b"\x20" + payload)
                 echo_ok = echo_ok and reader.message(0x21, 10)[1:] == payload
                 load_rtts.append((time.monotonic() - t_echo) * 1000)
+                if mb is not None and any(th.is_alive() for th in threads):
+                    t_mb = time.monotonic()
+                    try:
+                        mb.read(0x04, 0, 5)
+                        modbus_rtts.append((time.monotonic() - t_mb) * 1000)
+                    except (OSError, ValueError):
+                        modbus_ok = False
         for th in threads:
             th.join(60)
         dt = time.monotonic() - t0
@@ -538,6 +607,13 @@ def main() -> int:
         check("WebSocket echo under download load (fair scheduling)",
               bool(load_rtts) and load_rtts[len(load_rtts) // 2] < 50,
               f"median {load_rtts[len(load_rtts) // 2]:.1f} ms, max {load_rtts[-1]:.1f} ms" if load_rtts else "no echo")
+        modbus_rtts.sort()
+        check("Modbus TCP request under download load (fair scheduling)",
+              modbus_ok and bool(modbus_rtts) and modbus_rtts[len(modbus_rtts) // 2] < 50,
+              f"{len(modbus_rtts)} requests during the downloads, median {modbus_rtts[len(modbus_rtts) // 2]:.1f} ms, "
+              f"max {modbus_rtts[-1]:.1f} ms" if modbus_rtts else "no request during the downloads")
+        if mb is not None:
+            mb.close()
         steps = [line for line in console.lines if "longest step" in line]
         check("firmware reports service/step latency", bool(steps), steps[-1].strip() if steps else "no report")
         if ws:

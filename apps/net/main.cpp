@@ -18,6 +18,12 @@
 //                               0x21 echo reply (payload of the request)
 //            browser -> device  0x10 set LED (1 byte: 0/1)
 //                               0x20 echo request (up to 511 bytes)
+//   Modbus TCP  port 502 (2 clients), unit id: any
+//            holding 0     LED (0/1), the same LED as the WebSocket command
+//            input 0..1    uptime in s (u32, high word first)
+//            input 2       WebSocket clients
+//            input 3       HTTPS requests (low 16 bits)
+//            input 4       Modbus requests (low 16 bits)
 //
 // One network thread owns the whole stack: it runs Stack::poll() whenever the ETH
 // interrupt signals it (notify_from_isr) or the next protocol timer is due.
@@ -38,7 +44,9 @@
 #include "fcu_net_config.hpp"
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/dns_resolver.hpp"
+#include "rtos/modbus/register_bank.hpp"
 #include "rtos/net/https_server.hpp"
+#include "rtos/net/modbus_tcp_server.hpp"
 #include "rtos/net/service.hpp"
 #include "rtos/net/mdns.hpp"
 #include "rtos/net/sntp.hpp"
@@ -148,6 +156,39 @@ const Server::WebSocketHandler ws_handler{nullptr, &on_ws_opened, &on_ws_message
 constexpr net::HttpsServerConfig https_config{.ws_ping_interval_ms = fcu_net_config::ws_ping_interval_ms,
                                               .ws_pong_timeout_ms = fcu_net_config::ws_pong_timeout_ms};
 Server server{stack, tls_context, resources, "/ws", ws_handler, https_config};
+
+// ---- Modbus TCP -----------------------------------------------------------------------
+// The register bank is shared with application threads: every access takes the
+// kernel lock (one BASEPRI section per request block, register_bank.hpp).
+void on_registers_written(void*, std::uint16_t start, std::uint16_t count) noexcept;
+using Registers = rtos::modbus::RegisterBank<8, 8, Kernel::Lock>;
+Registers registers{rtos::modbus::WriteHook{nullptr, &on_registers_written}};
+net::ModbusTcpServer<Stack, 2> modbus{stack, registers};
+constexpr std::uint16_t reg_led = 0;
+constexpr std::uint16_t reg_uptime = 0, reg_ws_clients = 2, reg_https_requests = 3, reg_modbus_requests = 4;
+
+void set_led(bool on, std::string_view source) noexcept {
+    led_state = on;
+    registers.set_holding(reg_led, on ? 1 : 0);
+    board::led_info(on);
+    board::print(source);
+    board::print(on ? ": led on\n" : ": led off\n");
+}
+
+void on_registers_written(void*, std::uint16_t start, std::uint16_t count) noexcept {
+    if (start <= reg_led && reg_led < start + count) {
+        set_led(registers.holding(reg_led) != 0, "modbus");
+    }
+}
+
+void update_input_registers() noexcept {
+    const std::uint32_t seconds = kernel.now() / 1000;
+    const std::array<std::uint16_t, 5> values{
+        static_cast<std::uint16_t>(seconds >> 16), static_cast<std::uint16_t>(seconds),
+        static_cast<std::uint16_t>(server.websocket_clients()), static_cast<std::uint16_t>(server.requests()),
+        static_cast<std::uint16_t>(modbus.stats().requests)};
+    registers.set_inputs(reg_uptime, values);
+}
 
 // Everything the network thread runs: the stack, then the services in this order.
 net::NetRuntime<Stack> runtime{stack};
@@ -354,9 +395,7 @@ void on_ws_message(void*, Server::SessionId id, std::span<const std::byte> data,
     switch (std::to_integer<std::uint8_t>(data[0])) {
         case msg_set_led:
             if (data.size() >= 2) {
-                led_state = data[1] != std::byte{0};
-                board::led_info(led_state);
-                board::print(led_state ? "app: led on\n" : "app: led off\n");
+                set_led(data[1] != std::byte{0}, "app");
             }
             break;
         case msg_echo: {
@@ -449,6 +488,7 @@ struct AppTasks {
         }
         if (static_cast<std::int32_t>(now - next_status) >= 0) {
             next_status = now + status_period_ms;
+            update_input_registers();
             if (server.websocket_clients() != 0) {
                 send_status();
             }
@@ -539,6 +579,10 @@ void net_main(void*) {
     runtime.add(mdns, "mdns");
     runtime.add(sntp, "sntp");
     runtime.add(server, "https");
+    if (!modbus.start()) {
+        board::print("modbus: listen failed\n");
+    }
+    runtime.add(modbus, "modbus");
     runtime.set_cycle_counter([]() noexcept { return cm33::CycleCounter::now(); });
     for (;;) {
         const std::uint32_t wake = runtime.run_once(kernel.now());
