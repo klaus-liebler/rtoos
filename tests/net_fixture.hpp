@@ -30,8 +30,9 @@ struct MockDriver {
     std::deque<PacketRef> rx;          // frames the stack will receive
     std::vector<PacketRef> tx;         // frames the stack sent (driver keeps a reference = "DMA busy")
     bool link = true;
+    MacAddress address = device_mac;
 
-    MacAddress mac() const noexcept { return device_mac; }
+    MacAddress mac() const noexcept { return address; }
     bool link_up() const noexcept { return link; }
     bool transmit(PacketRef frame) noexcept {
         tx.push_back(frame);
@@ -77,14 +78,15 @@ struct Frame {
     }
 };
 
-using TestStack = Stack<MockDriver, TestPool>;
+using TestStack = Stack<TestPool>;
 
 class NetTest : public ::testing::Test {
 protected:
     TestPool pool;
     MockDriver driver;
-    TestStack stack{driver, pool,
-                    Ipv4Config{device_ip, Ipv4Address::from(255, 255, 255, 0), Ipv4Address::from(192, 168, 77, 254)}};
+    TestStack stack{pool};
+    InterfaceId eth = stack.attach(
+        driver, Ipv4Config{device_ip, Ipv4Address::from(255, 255, 255, 0), Ipv4Address::from(192, 168, 77, 254)});
     std::uint32_t now = 1000;
     std::uint32_t peer_seq = 5000;
 
@@ -174,19 +176,28 @@ protected:
         poll();
     }
 
-    /// Teach the stack the peer's MAC so outgoing frames are not parked for ARP.
-    void prime_arp() {
+    /// ARP packet (op 1 request, 2 reply) as received from `sender_mac`.
+    PacketRef arp(std::uint16_t op, MacAddress sender_mac, Ipv4Address sender_ip, Ipv4Address target_ip,
+                  MacAddress target_mac = {}) {
         std::array<std::byte, 28> a{};
         store_be16(a.data(), 1);
         store_be16(a.data() + 2, ethertype_ipv4);
         a[4] = std::byte{6};
         a[5] = std::byte{4};
-        store_be16(a.data() + 6, 2);  // reply
-        peer_mac.store(a.data() + 8);
-        peer_ip.store(a.data() + 14);
-        device_mac.store(a.data() + 18);
-        device_ip.store(a.data() + 24);
-        deliver(frame(ethertype_arp, a));
+        store_be16(a.data() + 6, op);
+        sender_mac.store(a.data() + 8);
+        sender_ip.store(a.data() + 14);
+        target_mac.store(a.data() + 18);
+        target_ip.store(a.data() + 24);
+        PacketRef p = frame(ethertype_arp, a, MacAddress::broadcast());
+        // frame() writes the peer as Ethernet source; use the ARP sender
+        sender_mac.store(p->data() + 6);
+        return p;
+    }
+
+    /// Teach the stack the peer's MAC so outgoing frames are not parked for ARP.
+    void prime_arp() {
+        deliver(arp(2, peer_mac, peer_ip, device_ip, device_mac));
         (void)sent();
     }
 };

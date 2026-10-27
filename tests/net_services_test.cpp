@@ -68,13 +68,67 @@ std::vector<std::byte> mdns_query(std::string_view name, std::uint16_t id = 0, s
     return q;
 }
 
+/// mDNS message with one A record for `name` in the answer (response) or authority
+/// (probe) section.
+std::vector<std::byte> mdns_record_message(std::string_view name, Ipv4Address address, bool response) {
+    std::vector<std::byte> m(12);
+    store_be16(m.data() + 2, response ? dns::flag_qr | dns::flag_aa : 0);
+    const auto n = encode(name);
+    if (!response) {
+        store_be16(m.data() + 4, 1);  // question: name ANY
+        m.insert(m.end(), n.begin(), n.end());
+        m.resize(m.size() + 4);
+        store_be16(m.data() + m.size() - 4, dns::type_any);
+        store_be16(m.data() + m.size() - 2, dns::class_in);
+    }
+    store_be16(m.data() + (response ? 6 : 8), 1);
+    m.insert(m.end(), n.begin(), n.end());
+    m.resize(m.size() + 14);
+    std::byte* rr = m.data() + m.size() - 14;
+    store_be16(rr, dns::type_a);
+    store_be16(rr + 2, dns::class_in);
+    store_be32(rr + 4, 120);
+    store_be16(rr + 8, 4);
+    address.store(rr + 10);
+    return m;
+}
+
 class MdnsTest : public NetTest {
 protected:
     MdnsResponder<TestStack> mdns{stack, "fcu"};
+    static constexpr Ipv4Address other_ip = Ipv4Address::from(192, 168, 77, 200);
 
     void SetUp() override {
         NetTest::SetUp();
         ASSERT_TRUE(mdns.start());
+    }
+
+    void step(std::uint32_t ms) {
+        poll(ms);
+        mdns.service();
+    }
+
+    /// Run probing and announcing to the end; returns what was sent.
+    std::vector<Frame> until_ready() {
+        std::vector<Frame> out;
+        for (int i = 0; i < 100 && !mdns.ready(eth); ++i) {
+            step(50);
+            for (auto& f : sent()) {
+                out.push_back(f);
+            }
+        }
+        EXPECT_TRUE(mdns.ready(eth));
+        return out;
+    }
+
+    void deliver_mdns(const std::vector<std::byte>& m, Ipv4Address from = other_ip) {
+        deliver(udp(mdns_port, mdns_port, m, mdns_group, from));
+        mdns.service();
+    }
+
+    static bool is_probe(const Frame& f) {
+        const auto p = f.udp_payload();
+        return (load_be16(reinterpret_cast<const std::byte*>(p.data()) + 2) & dns::flag_qr) == 0;
     }
 
     /// The A record at the end of a response: address and class field.
@@ -85,25 +139,81 @@ protected:
     }
 };
 
-TEST_F(MdnsTest, AnnouncesTwiceAtStartup) {
-    mdns.service();
-    auto f = sent();
-    ASSERT_EQ(f.size(), 1u);
-    EXPECT_EQ(f[0].ip_dst(), mdns_group);
-    EXPECT_EQ(f[0].dst_mac(), mdns_group.multicast_mac());
-    EXPECT_EQ(answer(f[0]).first, device_ip);
-    poll(999);
-    mdns.service();
-    EXPECT_TRUE(sent().empty());
-    poll(1);
-    mdns.service();
-    EXPECT_EQ(sent().size(), 1u);
-    poll(5000);
-    mdns.service();
+TEST_F(MdnsTest, ProbesThreeTimesThenAnnouncesTwice) {
+    std::vector<std::uint32_t> probes, announcements;
+    for (int i = 0; i < 100 && !mdns.ready(eth); ++i) {
+        step(50);
+        for (const Frame& f : sent()) {
+            EXPECT_EQ(f.ip_dst(), mdns_group);
+            EXPECT_EQ(f.dst_mac(), mdns_group.multicast_mac());
+            EXPECT_EQ(answer(f).first, device_ip);
+            (is_probe(f) ? probes : announcements).push_back(now);
+        }
+    }
+    ASSERT_EQ(probes.size(), 3u);
+    EXPECT_EQ(probes[1] - probes[0], MdnsResponder<TestStack>::probe_interval_ms);
+    ASSERT_EQ(announcements.size(), 2u);
+    EXPECT_GE(announcements[0], probes[2] + MdnsResponder<TestStack>::probe_interval_ms);
+    EXPECT_EQ(announcements[1] - announcements[0], MdnsResponder<TestStack>::announce_interval_ms);
+    step(5000);
     EXPECT_TRUE(sent().empty());  // exactly two
 }
 
+TEST_F(MdnsTest, NoAnswersWhileProbing) {
+    deliver_mdns(mdns_query("fcu.local"));
+    for (const Frame& f : sent()) {
+        EXPECT_TRUE(is_probe(f));
+    }
+}
+
+TEST_F(MdnsTest, ResponseDuringProbingRenames) {
+    step(0);
+    (void)sent();
+    deliver_mdns(mdns_record_message("fcu.local", other_ip, true));
+    EXPECT_EQ(mdns.name(), "fcu-2.local");
+    EXPECT_EQ(mdns.conflicts(), 1u);
+    (void)until_ready();
+}
+
+TEST_F(MdnsTest, ResponseWithOtherAddressAfterProbingRenames) {
+    (void)until_ready();
+    deliver_mdns(mdns_record_message("fcu.local", device_ip, true));  // our own record: fine
+    EXPECT_EQ(mdns.name(), "fcu.local");
+    deliver_mdns(mdns_record_message("fcu.local", other_ip, true));
+    EXPECT_EQ(mdns.name(), "fcu-2.local");
+    EXPECT_FALSE(mdns.ready(eth));  // probes again under the new name
+}
+
+TEST_F(MdnsTest, LostSimultaneousProbeDefersOneSecond) {
+    step(0);
+    (void)sent();
+    // Another host probes for the same name; its address sorts after ours: it wins.
+    deliver_mdns(mdns_record_message("fcu.local", other_ip, false));
+    EXPECT_EQ(mdns.name(), "fcu.local");
+    step(MdnsResponder<TestStack>::defer_ms - 1);
+    EXPECT_TRUE(sent().empty());
+    (void)until_ready();
+}
+
+TEST_F(MdnsTest, WonSimultaneousProbeContinues) {
+    step(0);
+    (void)sent();
+    deliver_mdns(mdns_record_message("fcu.local", Ipv4Address::from(192, 168, 77, 1), false));
+    step(MdnsResponder<TestStack>::probe_interval_ms);
+    EXPECT_EQ(sent().size(), 1u);  // next probe on schedule
+}
+
+TEST_F(MdnsTest, AddressChangeProbesAgain) {
+    (void)until_ready();
+    stack.set_config(eth, {Ipv4Address::from(192, 168, 77, 3), Ipv4Address::from(255, 255, 255, 0), {}});
+    EXPECT_FALSE(mdns.ready(eth));
+    const auto f = until_ready();
+    ASSERT_FALSE(f.empty());
+    EXPECT_EQ(answer(f.back()).first, Ipv4Address::from(192, 168, 77, 3));
+}
+
 TEST_F(MdnsTest, AnswersMulticastQueryOnTheGroup) {
+    (void)until_ready();
     deliver(udp(mdns_port, mdns_port, mdns_query("fcu.local"), mdns_group));
     const auto f = sent();
     ASSERT_EQ(f.size(), 1u);
@@ -116,6 +226,7 @@ TEST_F(MdnsTest, AnswersMulticastQueryOnTheGroup) {
 }
 
 TEST_F(MdnsTest, LegacyUnicastQueryGetsUnicastAnswerWithIdAndQuestion) {
+    (void)until_ready();
     deliver(udp(54321, mdns_port, mdns_query("FCU.local", 0xBEEF), mdns_group));
     const auto f = sent();
     ASSERT_EQ(f.size(), 1u);
@@ -128,6 +239,7 @@ TEST_F(MdnsTest, LegacyUnicastQueryGetsUnicastAnswerWithIdAndQuestion) {
 }
 
 TEST_F(MdnsTest, QuQuestionIsAnsweredByUnicast) {
+    (void)until_ready();
     deliver(udp(mdns_port, mdns_port, mdns_query("fcu.local", 0, dns::class_in | 0x8000), mdns_group));
     const auto f = sent();
     ASSERT_EQ(f.size(), 1u);

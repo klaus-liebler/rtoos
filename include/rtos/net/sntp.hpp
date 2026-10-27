@@ -55,7 +55,7 @@ public:
         send_request();
     }
 
-    /// 0 while there is nothing to do (no server yet, stack unconfigured).
+    /// 0 while there is nothing to do (no server yet, no route to it).
     [[nodiscard]] std::uint32_t next_deadline() const noexcept { return active() ? next_ms_ : 0; }
 
     /// Use another server (e.g. from DHCP option 42 or a DNS lookup); asks it at once.
@@ -75,7 +75,7 @@ public:
     }
 
 private:
-    [[nodiscard]] bool active() const noexcept { return server_ != Ipv4Address::any() && stack_.configured(); }
+    [[nodiscard]] bool active() const noexcept { return server_ != Ipv4Address::any() && stack_.routable(server_); }
 
     /// 64-bit NTP timestamp <-> milliseconds (unix epoch)
     static std::uint64_t ntp_to_unix_ms(std::uint32_t seconds, std::uint32_t fraction) noexcept {

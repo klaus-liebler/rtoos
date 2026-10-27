@@ -80,7 +80,7 @@ public:
             callback(context, name, e->address == Ipv4Address::any() ? std::nullopt : std::optional(e->address));
             return true;
         }
-        if (server_count_ == 0 || !stack_.configured()) {
+        if (server_count_ == 0 || !stack_.routable(servers_[0])) {
             return false;
         }
         for (auto& q : queries_) {

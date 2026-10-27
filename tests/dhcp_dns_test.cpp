@@ -67,7 +67,7 @@ class DhcpTest : public NetTest {
 protected:
     void SetUp() override {
         NetTest::SetUp();
-        stack.set_config({});  // DHCP starts unconfigured
+        stack.set_config(eth, {});  // DHCP starts unconfigured
     }
 
     void poll(std::uint32_t advance_ms = 0) {
@@ -124,18 +124,33 @@ protected:
         deliver(udp(67, 68, m, dst, r.server));
     }
 
-    /// DISCOVER -> OFFER -> REQUEST -> ACK.
+    /// ACKed address probed with ARP (RFC 5227) until the client is bound.
+    void finish_check() {
+        for (int i = 0; i < 200 && client.state() == DhcpClient<TestStack>::State::Checking; ++i) {
+            poll(100);
+        }
+        EXPECT_TRUE(client.bound());
+    }
+
+    /// DISCOVER -> OFFER -> REQUEST -> ACK -> probe. Returns the time of the REQUEST
+    /// (lease timers count from it).
     std::uint32_t acquire(std::uint32_t lease_s = 3600) {
         client.start();
         poll();
         auto d = dhcp_sent();
         EXPECT_EQ(d.size(), 1u);
         reply(d.at(0).xid(), {.type = 2, .lease_s = lease_s});
+        const std::uint32_t requested_at = now;
         auto r = dhcp_sent();
         EXPECT_EQ(r.size(), 1u);
         reply(r.at(0).xid(), {.type = 5, .lease_s = lease_s});
-        return r.at(0).xid();
+        finish_check();
+        (void)sent();
+        return requested_at;
     }
+
+    /// Advance the clock to `t` (polling once at t).
+    void advance_to(std::uint32_t t) { poll(t - now); }
 
     static void on_bound(void* self, const DhcpLease& lease, bool renewed) noexcept {
         auto& t = *static_cast<DhcpTest*>(self);
@@ -143,11 +158,12 @@ protected:
         renewed ? ++t.renewals : ++t.bindings;
     }
     static void on_lost(void* self) noexcept { ++static_cast<DhcpTest*>(self)->losses; }
+    static void on_declined(void* self, Ipv4Address) noexcept { ++static_cast<DhcpTest*>(self)->declines; }
 
-    DhcpClient<TestStack>::Handler handler{this, &on_bound, &on_lost};
-    DhcpClient<TestStack> client{stack, "fcu", handler};
+    DhcpClient<TestStack>::Handler handler{this, &on_bound, &on_lost, &on_declined};
+    DhcpClient<TestStack> client{stack, eth, "fcu", handler};
     std::optional<DhcpLease> last_lease;
-    int bindings = 0, renewals = 0, losses = 0;
+    int bindings = 0, renewals = 0, losses = 0, declines = 0;
 };
 
 TEST_F(DhcpTest, DiscoverIsBroadcastFromUnconfiguredStack) {
@@ -187,13 +203,15 @@ TEST_F(DhcpTest, OfferRequestAckConfiguresStack) {
     server_ip.store(server.data());
     EXPECT_EQ(r[0].option(50), requested);
     EXPECT_EQ(r[0].option(54), server);
-    EXPECT_FALSE(stack.configured());
+    EXPECT_FALSE(stack.configured(eth));
 
     reply(xid, {.type = 5});
-    EXPECT_TRUE(client.bound());
-    EXPECT_EQ(stack.local_address(), device_ip);
-    EXPECT_EQ(stack.config().netmask, Ipv4Address::from(255, 255, 255, 0));
-    EXPECT_EQ(stack.config().gateway, router_ip);
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Checking);
+    EXPECT_FALSE(stack.configured(eth));  // probing (RFC 5227) before use
+    finish_check();
+    EXPECT_EQ(stack.local_address(eth), device_ip);
+    EXPECT_EQ(stack.config(eth).netmask, Ipv4Address::from(255, 255, 255, 0));
+    EXPECT_EQ(stack.config(eth).gateway, router_ip);
     ASSERT_TRUE(last_lease);
     EXPECT_EQ(bindings, 1);
     EXPECT_EQ(last_lease->dns[0], server_ip);
@@ -226,9 +244,9 @@ TEST_F(DhcpTest, DiscoverIsRetransmittedWithBackoff) {
 }
 
 TEST_F(DhcpTest, RenewsAtT1WithUnicastToServer) {
-    acquire(100);  // T1 = 50 s
-    prime_arp();   // the new address flushed the ARP cache: the unicast needs the server's MAC
-    poll(50'000 - 1);
+    const std::uint32_t t0 = acquire(100);  // T1 = 50 s after the request
+    prime_arp();  // the new address flushed the ARP cache: the unicast needs the server's MAC
+    advance_to(t0 + 50'000 - 1);
     EXPECT_TRUE(dhcp_sent().empty());
     poll(1);
     const auto r = dhcp_sent();
@@ -250,9 +268,91 @@ TEST_F(DhcpTest, LeaseExpiresWithoutAnswer) {
         (void)sent();
     }
     EXPECT_EQ(losses, 1);
-    EXPECT_FALSE(stack.configured());
+    EXPECT_FALSE(stack.configured(eth));
     EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Selecting);
     EXPECT_GE(now, 1000u + 100'000u);
+}
+
+TEST_F(DhcpTest, AddressInUseIsDeclined) {
+    client.start();
+    poll();
+    const std::uint32_t xid = dhcp_sent().at(0).xid();
+    reply(xid, {.type = 2});
+    (void)dhcp_sent();
+    reply(xid, {.type = 5});
+    ASSERT_EQ(client.state(), DhcpClient<TestStack>::State::Checking);
+    poll(1500);
+    deliver(arp(2, MacAddress::from(0x02, 0, 0, 0, 0, 0x99), device_ip, Ipv4Address::any()));  // in use
+    const auto d = dhcp_sent();
+    ASSERT_EQ(d.size(), 1u);
+    EXPECT_EQ(d[0].type(), 4);  // DHCPDECLINE
+    std::vector<std::byte> requested(4);
+    device_ip.store(requested.data());
+    EXPECT_EQ(d[0].option(50), requested);
+    EXPECT_EQ(declines, 1);
+    EXPECT_FALSE(stack.configured(eth));
+    poll(DhcpClient<TestStack>::decline_wait_ms - 1);
+    EXPECT_TRUE(dhcp_sent().empty());  // wait 10 s (RFC 2131 3.1.5)
+    poll(1);
+    EXPECT_EQ(dhcp_sent().at(0).type(), 1);
+}
+
+TEST_F(DhcpTest, LinkBackVerifiesLeaseWithInitReboot) {
+    (void)acquire();
+    driver.link = false;
+    poll();
+    driver.link = true;
+    poll();
+    const auto r = dhcp_sent();
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].type(), 3);
+    EXPECT_EQ(r[0].ciaddr(), Ipv4Address::any());
+    EXPECT_EQ(r[0].flags(), 0x8000);
+    EXPECT_FALSE(r[0].option(54).has_value());
+    std::vector<std::byte> requested(4);
+    device_ip.store(requested.data());
+    EXPECT_EQ(r[0].option(50), requested);
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Rebooting);
+    reply(r[0].xid(), {.type = 5});
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Bound);
+    EXPECT_EQ(renewals, 1);
+}
+
+TEST_F(DhcpTest, InitRebootNakStartsOver) {
+    (void)acquire();
+    driver.link = false;
+    poll();
+    driver.link = true;
+    poll();
+    reply(dhcp_sent().at(0).xid(), {.type = 6});
+    EXPECT_EQ(losses, 1);
+    EXPECT_FALSE(stack.configured(eth));
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Selecting);
+}
+
+TEST_F(DhcpTest, InitRebootWithoutAnswerKeepsLease) {
+    (void)acquire();
+    driver.link = false;
+    poll();
+    driver.link = true;
+    for (int i = 0; i < 40 && client.state() == DhcpClient<TestStack>::State::Rebooting; ++i) {
+        poll(1000);
+        (void)sent();
+    }
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Bound);
+    EXPECT_TRUE(stack.configured(eth));
+    EXPECT_EQ(losses, 0);
+}
+
+TEST_F(DhcpTest, LostAddressDefenceDeclinesAndStartsOver) {
+    (void)acquire();
+    const auto intruder = MacAddress::from(0x02, 0, 0, 0, 0, 0x99);
+    deliver(arp(1, intruder, device_ip, server_ip));
+    deliver(arp(1, intruder, device_ip, server_ip));  // second within 10 s: give up
+    EXPECT_EQ(losses, 1);
+    EXPECT_EQ(declines, 1);
+    EXPECT_FALSE(stack.configured(eth));
+    EXPECT_EQ(client.state(), DhcpClient<TestStack>::State::Selecting);
 }
 
 TEST_F(DhcpTest, NakRestartsDiscovery) {

@@ -26,6 +26,7 @@
 // real; in the emulators (Renode, QEMU -icount) they count instructions (CPI 1).
 #include <algorithm>
 #include <array>
+#include <contracts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -100,7 +101,7 @@ struct NetConfig : net::DefaultStackConfig {
     // WebSocket); closing ones linger in TIME_WAIT.
     static constexpr std::size_t tcp_connections = 8;
 };
-using Stack = net::Stack<Ethernet, Pool, NetConfig>;
+using Stack = net::Stack<Pool, NetConfig>;
 // Buffer budget (stack.hpp): the receive ring keeps its buffers, the reserve is for
 // receiving only, and every connection must still get at least one segment out.
 static_assert(Pool::capacity() >= eth_rx_descriptors + NetConfig::rx_reserve + NetConfig::tcp_connections,
@@ -114,7 +115,8 @@ constexpr rtos::Tick dhcp_fallback_ms = 10'000;
 
 RTOS_DMA_BUFFER Pool packet_pool;
 RTOS_DMA_BUFFER Ethernet ethernet{packet_pool, board::mac_address(), board::phy_address};
-Stack stack{ethernet, packet_pool, {}};  // unconfigured until DHCP (or the fallback)
+Stack stack{packet_pool};
+constexpr net::InterfaceId eth_if = 0;  // first attach(): Ethernet, unconfigured until DHCP
 net::MdnsResponder<Stack> mdns{stack, "fcu"};
 net::SntpClient<Stack> sntp{stack, net::Ipv4Address::any(), sntp_port, 60'000};
 net::DnsResolver<Stack> dns{stack};
@@ -245,15 +247,26 @@ void on_dhcp_bound(void*, const net::DhcpLease& lease, bool renewed) noexcept {
     board::print(" s\n");
     if (!renewed) {
         dns.set_servers(lease.dns);
-        mdns.announce();
-        use_time_server(lease.ntp[0]);
+        use_time_server(lease.ntp[0]);  // mDNS re-probes and announces by itself (stack event)
     }
 }
 
 void on_dhcp_lost(void*) noexcept { board::print("dhcp: lease lost\n"); }
 
-const net::DhcpClient<Stack>::Handler dhcp_handler{nullptr, &on_dhcp_bound, &on_dhcp_lost};
-net::DhcpClient<Stack> dhcp{stack, "fcu", dhcp_handler};
+void on_dhcp_declined(void*, net::Ipv4Address address) noexcept {
+    board::print("dhcp: ");
+    print_ip(address);
+    board::print(" is in use by another station, declined\n");
+}
+
+void on_mdns_renamed(void*, std::string_view name) noexcept {
+    board::print("mdns: name conflict, now ");
+    board::print(name);
+    board::print("\n");
+}
+
+const net::DhcpClient<Stack>::Handler dhcp_handler{nullptr, &on_dhcp_bound, &on_dhcp_lost, &on_dhcp_declined};
+net::DhcpClient<Stack> dhcp{stack, eth_if, "fcu", dhcp_handler};
 
 // ---- application ---------------------------------------------------------------------
 
@@ -376,6 +389,8 @@ void net_main(void*) {
         return;
     }
     h5::Rng::init();
+    const net::InterfaceId attached = stack.attach(ethernet);
+    contract_assert(attached == eth_if);
     stack.set_random([](void*) noexcept { return h5::Rng::next(); }, nullptr);
 
     constexpr unsigned eth_irq = 106;
@@ -402,7 +417,8 @@ void net_main(void*) {
     }
 
     stack.poll(kernel.now());
-    mdns.start();
+    mdns.start(&on_mdns_renamed);
+    dhcp.start();
     sntp.start();
     server.start(443);
     board::print("net: mdns ");
@@ -413,7 +429,7 @@ void net_main(void*) {
 
     bool link = false;
     bool synced = false;
-    bool addressing_started = false;
+    bool fallback_armed = false;
     rtos::Tick fallback_at = 0;
     std::uint32_t handshakes = 0;
     rtos::Tick next_link_poll = 0;
@@ -425,12 +441,9 @@ void net_main(void*) {
             if (ethernet.poll_link() != link) {
                 link = !link;
                 board::print(link ? "net: link up\n" : "net: link down\n");
-                if (link && !addressing_started) {
-                    addressing_started = true;
-                    dhcp.start();
-                    if constexpr (fcu_net_config::static_fallback) {
-                        fallback_at = now + dhcp_fallback_ms;
-                    }
+                if (link && !fallback_armed && fcu_net_config::static_fallback) {
+                    fallback_armed = true;  // DHCP restarts by itself on link changes
+                    fallback_at = now + dhcp_fallback_ms;
                 }
             }
         }
@@ -438,11 +451,10 @@ void net_main(void*) {
             fallback_at = 0;
             if (!dhcp.bound()) {
                 dhcp.stop();
-                stack.set_config(fcu_net_config::fallback);
+                stack.claim_address(eth_if, fcu_net_config::fallback);  // probed like a lease (RFC 5227)
                 board::print("dhcp: no server, static ");
                 print_ip(fcu_net_config::fallback.address);
                 board::print("\n");
-                mdns.announce();
                 sntp.set_server(fcu_net_config::fallback.gateway, sntp_port);
             }
         }

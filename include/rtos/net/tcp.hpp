@@ -87,6 +87,8 @@ public:
 
     [[nodiscard]] TcpState state() const noexcept { return state_; }
     [[nodiscard]] Ipv4Address remote_address() const noexcept { return remote_ip_; }
+    /// Our address of this connection (the destination of the SYN).
+    [[nodiscard]] Ipv4Address local_address() const noexcept { return local_ip_; }
     [[nodiscard]] std::uint16_t remote_port() const noexcept { return remote_port_; }
     [[nodiscard]] std::uint16_t local_port() const noexcept { return local_port_; }
     [[nodiscard]] std::uint16_t mss() const noexcept { return mss_; }
@@ -154,6 +156,7 @@ protected:
 
     TcpState state_ = TcpState::Closed;
     Ipv4Address remote_ip_{};
+    Ipv4Address local_ip_{};
     std::uint16_t remote_port_ = 0;
     std::uint16_t local_port_ = 0;
     std::uint16_t mss_ = 536;
@@ -183,8 +186,8 @@ protected:
 
 /// TCP for stack `Ip`. `Ip` provides:
 ///   PacketRef allocate()                       buffer with full TX headroom
-///   bool send_ipv4(PacketRef, Ipv4Address dst, std::uint8_t protocol)
-///   Ipv4Address local_address()
+///   bool send_ipv4(PacketRef, Ipv4Address dst, std::uint8_t protocol, Ipv4Address src)
+///                                              (through the interface owning src)
 ///   std::uint32_t now_ms()
 ///   std::uint32_t random32()
 template <class Ip, class Cfg>
@@ -323,6 +326,7 @@ public:
         }
         Incoming seg{};
         seg.src = src;
+        seg.dst = dst;
         seg.src_port = load_be16(h);
         seg.dst_port = load_be16(h + 2);
         seg.seq = load_be32(h + 4);
@@ -390,6 +394,7 @@ private:
 
     struct Incoming {
         Ipv4Address src;
+        Ipv4Address dst;
         std::uint16_t src_port, dst_port;
         std::uint32_t seq, ack;
         std::uint8_t flags;
@@ -468,6 +473,7 @@ private:
         c.listener_ = handler;
         c.state_ = TcpState::SynReceived;
         c.remote_ip_ = seg.src;
+        c.local_ip_ = seg.dst;
         c.remote_port_ = seg.src_port;
         c.local_port_ = seg.dst_port;
         c.mss_ = std::min(seg.mss, local_mss);
@@ -690,7 +696,7 @@ private:
         }
         c.ack_pending_ = false;  // piggybacked
         c.window_update_pending_ = false;
-        ip_.send_ipv4(std::move(p), c.remote_ip_, ip_proto_tcp);
+        ip_.send_ipv4(std::move(p), c.remote_ip_, ip_proto_tcp, c.local_ip_);
     }
 
     std::uint16_t receive_window(const Connection& c) const noexcept {
@@ -711,7 +717,7 @@ private:
         store_be16(h + 16, 0);
         store_be16(h + 18, 0);
         const std::uint16_t sum =
-            checksum_finish(checksum_add(b.bytes(), pseudo_header_sum(ip_.local_address(), c.remote_ip_, b.size())));
+            checksum_finish(checksum_add(b.bytes(), pseudo_header_sum(c.local_ip_, c.remote_ip_, b.size())));
         store_be16(h + 16, sum);
     }
 
@@ -731,7 +737,7 @@ private:
         s.retransmitted = true;
         s.sent_ms = ip_.now_ms();
         c.ack_pending_ = false;
-        ip_.send_ipv4(s.packet, c.remote_ip_, ip_proto_tcp);
+        ip_.send_ipv4(s.packet, c.remote_ip_, ip_proto_tcp, c.local_ip_);
     }
 
     void expire(Connection& c) noexcept {
@@ -793,7 +799,7 @@ private:
         write_header(c, *p, c.snd_nxt_, flags, tcp_header_size);
         c.ack_pending_ = false;
         c.window_update_pending_ = false;
-        ip_.send_ipv4(std::move(p), c.remote_ip_, ip_proto_tcp);
+        ip_.send_ipv4(std::move(p), c.remote_ip_, ip_proto_tcp, c.local_ip_);
     }
 
     /// RST for a segment without connection (RFC 793 "reset generation").
@@ -813,8 +819,8 @@ private:
         store_be16(h + 14, 0);
         store_be16(h + 16, 0);
         store_be16(h + 18, 0);
-        store_be16(h + 16, checksum_finish(checksum_add(p->bytes(), pseudo_header_sum(ip_.local_address(), seg.src, p->size()))));
-        ip_.send_ipv4(std::move(p), seg.src, ip_proto_tcp);
+        store_be16(h + 16, checksum_finish(checksum_add(p->bytes(), pseudo_header_sum(seg.dst, seg.src, p->size()))));
+        ip_.send_ipv4(std::move(p), seg.src, ip_proto_tcp, seg.dst);
     }
 
     Ip& ip_;
