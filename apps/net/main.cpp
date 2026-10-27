@@ -394,7 +394,12 @@ struct AppTasks {
         }
         if (fallback_at != 0 && static_cast<std::int32_t>(now - fallback_at) >= 0) {
             fallback_at = 0;
-            if (!dhcp.bound()) {
+            using DhcpState = net::DhcpClient<Stack>::State;
+            if (dhcp.state() == DhcpState::Requesting || dhcp.state() == DhcpState::Checking) {
+                // A server answered and DHCP is still at work (the RFC 5227 check of the
+                // offered address alone takes up to 7 s): don't take its address away.
+                fallback_at = now + dhcp_fallback_ms;
+            } else if (!dhcp.bound()) {
                 dhcp.stop();
                 stack.claim_address(eth_if, fcu_net_config::fallback);  // probed like a lease (RFC 5227)
                 board::print("dhcp: no server, static ");
