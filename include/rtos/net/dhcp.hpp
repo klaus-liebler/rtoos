@@ -185,8 +185,9 @@ public:
     }
 
     void service() noexcept {
-        if (state_ == State::Stopped || state_ == State::Checking || !reached(next_ms_)) {
-            return;
+        if (state_ == State::Stopped || state_ == State::Checking || !reached(next_ms_) ||
+            !stack_.link_up(interface_)) {
+            return;  // nothing to do yet; without a link messages would go nowhere
         }
         switch (state_) {
             case State::Selecting: send(dhcp::discover); break;
@@ -229,7 +230,8 @@ public:
     }
 
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
-        return state_ == State::Stopped || state_ == State::Checking ? 0 : next_ms_;
+        // Without a link the link-up event wakes the client.
+        return state_ == State::Stopped || state_ == State::Checking || !stack_.link_up(interface_) ? 0 : next_ms_;
     }
     [[nodiscard]] State state() const noexcept { return state_; }
     [[nodiscard]] bool bound() const noexcept {
@@ -462,7 +464,7 @@ private:
             c.new_transaction();
             c.next_ms_ = c.stack_.now_ms();
         } else if (c.state_ == State::Selecting || c.state_ == State::Requesting) {
-            c.restart(0);  // retry at once instead of waiting for the back-off
+            c.next_ms_ = c.stack_.now_ms();  // send at once, same transaction (offers in flight stay valid)
         }
     }
 

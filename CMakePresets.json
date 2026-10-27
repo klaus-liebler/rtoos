@@ -43,7 +43,9 @@
         "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
         "RTOS_RENODE": "C:/opt/renode/renode.exe",
         "RTOS_NET_SNTP_PORT": "12300",
-        "RTOS_NET_STATIC_FALLBACK": "192.168.77.2/24,192.168.77.1"
+        "RTOS_NET_STATIC_FALLBACK": "192.168.77.2/24,192.168.77.1",
+        "RTOS_NET_WS_PING_MS": "4000",
+        "RTOS_NET_WS_PONG_TIMEOUT_MS": "3000"
       }
     },
     {

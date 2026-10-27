@@ -313,6 +313,8 @@ class WsReader:
             n, pos = struct.unpack(">H", self.buf[2:4])[0], 4
         self._need(pos + n)
         payload, self.buf = self.buf[pos:pos + n], self.buf[pos + n:]
+        if opcode == 0x9:  # ping: answer like a browser does
+            ws_send(self.s, payload, opcode=0xA)
         return opcode, payload
 
     def message(self, type_byte: int, timeout: float = 5) -> bytes:
@@ -475,6 +477,25 @@ def main() -> int:
             c.close()
         if ws:
             ws.close()
+
+        # WebSocket liveness: a client that never answers the server's ping is closed
+        # after ping interval + pong timeout (arm preset: 4 s + 3 s).
+        closed_before = sum("closed" in line for line in console.lines if line.startswith("ws: client"))
+        silent, _ = ws_open(ca, "https://fcu.local")
+        t0 = time.monotonic()
+        gone = False
+        if silent:
+            silent.settimeout(1)
+            while time.monotonic() - t0 < 12 and not gone:
+                try:
+                    gone = silent.recv(4096) == b""  # (status frames and the ping are ignored)
+                except (socket.timeout, ssl.SSLWantReadError):
+                    pass
+                except OSError:
+                    gone = True
+        closed_after = sum("closed" in line for line in console.lines if line.startswith("ws: client"))
+        check("silent WebSocket client closed by ping timeout", gone and closed_after > closed_before,
+              f"closed after {time.monotonic() - t0:.1f} s")
 
         # Buffer budget under load: 5 parallel 100 KB downloads (5 x 4 segments in
         # flight) while a WebSocket echoes - nothing may stall (receive reserve).

@@ -6,6 +6,13 @@ rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos
 # ---- network configuration of fcu_net (generated constexpr header) ----------------
 set(RTOS_NET_SNTP_HOST "pool.ntp.org" CACHE STRING "SNTP server name (when DHCP names no NTP server)")
 set(RTOS_NET_SNTP_PORT "123" CACHE STRING "SNTP server port")
+set(RTOS_NET_WS_PING_MS "20000" CACHE STRING "WebSocket: ping a peer silent for this long (ms)")
+set(RTOS_NET_WS_PONG_TIMEOUT_MS "10000" CACHE STRING "WebSocket: close if nothing arrives this long after the ping (ms)")
+foreach(var RTOS_NET_WS_PING_MS RTOS_NET_WS_PONG_TIMEOUT_MS)
+    if(NOT ${var} MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "${var} must be a positive number of milliseconds")
+    endif()
+endforeach()
 set(RTOS_NET_STATIC_FALLBACK "" CACHE STRING
     "Static address without DHCP server after 10 s, 'a.b.c.d/prefix,gateway'; empty: keep asking DHCP")
 if(NOT RTOS_NET_SNTP_PORT MATCHES "^[0-9]+$" OR RTOS_NET_SNTP_PORT LESS 1 OR RTOS_NET_SNTP_PORT GREATER 65535)

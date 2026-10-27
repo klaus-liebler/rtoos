@@ -181,6 +181,10 @@ public:
         tcp_.service();
     }
 
+    /// Send what the services queued during this pass (FINs, window updates, ACKs)
+    /// without waiting for the next poll().
+    void flush() noexcept { tcp_.service(); }
+
     /// Earliest point in time poll() must run again without new frames (0 = none).
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
         std::uint32_t best = tcp_.next_deadline();

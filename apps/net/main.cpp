@@ -39,6 +39,7 @@
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/dns_resolver.hpp"
 #include "rtos/net/https_server.hpp"
+#include "rtos/net/service.hpp"
 #include "rtos/net/mdns.hpp"
 #include "rtos/net/sntp.hpp"
 #include "rtos/net/stack.hpp"
@@ -139,7 +140,12 @@ void on_ws_message(void*, Server::SessionId id, std::span<const std::byte> data,
 void on_ws_closed(void*, Server::SessionId id) noexcept;
 
 const Server::WebSocketHandler ws_handler{nullptr, &on_ws_opened, &on_ws_message, &on_ws_closed};
-Server server{stack, tls_context, resources, "/ws", ws_handler};
+constexpr net::HttpsServerConfig https_config{.ws_ping_interval_ms = fcu_net_config::ws_ping_interval_ms,
+                                              .ws_pong_timeout_ms = fcu_net_config::ws_pong_timeout_ms};
+Server server{stack, tls_context, resources, "/ws", ws_handler, https_config};
+
+// Everything the network thread runs: the stack, then the services in this order.
+net::NetRuntime<Stack> runtime{stack};
 
 // ---- thread ---------------------------------------------------------------------------
 Kernel::Thread net_tcb;
@@ -198,16 +204,6 @@ void print_utc(std::uint64_t unix_ms) {
     board::print(":");
     two(rem % 60);
     board::print(" UTC");
-}
-
-std::uint32_t earliest(std::uint32_t a, std::uint32_t b) {
-    if (a == 0) {
-        return b;
-    }
-    if (b == 0) {
-        return a;
-    }
-    return static_cast<std::int32_t>(a - b) < 0 ? a : b;
 }
 
 // ---- addressing: DHCP, DNS, SNTP server ---------------------------------------------
@@ -370,6 +366,70 @@ void on_ws_message(void*, Server::SessionId id, std::span<const std::byte> data,
     }
 }
 
+// ---- application tasks of the network thread (a NetService) ----------------------------
+
+/// PHY link polling (MDIO), the static fallback, the 10 Hz status broadcast and the
+/// log lines for TLS handshakes and SNTP.
+struct AppTasks {
+    rtos::Tick next_link_poll = 0;
+    rtos::Tick next_status = 0;
+    rtos::Tick fallback_at = 0;
+    bool link = false;
+    bool fallback_armed = false;
+    bool synced = false;
+    std::uint32_t handshakes = 0;
+
+    void service() noexcept {
+        const rtos::Tick now = stack.now_ms();
+        if (static_cast<std::int32_t>(now - next_link_poll) >= 0) {
+            next_link_poll = now + link_poll_ms;
+            if (ethernet.poll_link() != link) {  // the stack sees it at its next poll
+                link = !link;
+                board::print(link ? "net: link up\n" : "net: link down\n");
+                if (link && !fallback_armed && fcu_net_config::static_fallback) {
+                    fallback_armed = true;  // DHCP restarts by itself on link changes
+                    fallback_at = now + dhcp_fallback_ms;
+                }
+            }
+        }
+        if (fallback_at != 0 && static_cast<std::int32_t>(now - fallback_at) >= 0) {
+            fallback_at = 0;
+            if (!dhcp.bound()) {
+                dhcp.stop();
+                stack.claim_address(eth_if, fcu_net_config::fallback);  // probed like a lease (RFC 5227)
+                board::print("dhcp: no server, static ");
+                print_ip(fcu_net_config::fallback.address);
+                board::print("\n");
+                sntp.set_server(fcu_net_config::fallback.gateway, sntp_port);
+            }
+        }
+        if (static_cast<std::int32_t>(now - next_status) >= 0) {
+            next_status = now + status_period_ms;
+            if (server.websocket_clients() != 0) {
+                send_status();
+            }
+        }
+        if (const auto& tls = net::TlsServerContext::stats(); tls.handshakes != handshakes) {
+            handshakes = tls.handshakes;
+            board::print("tls: handshake ");
+            board::print_dec(tls.handshake_cycles);
+            board::print(" cycles = ");
+            board::print_dec(tls.handshake_cycles / (board::sysclk_hz / 1000));
+            board::print(" ms CPU\n");
+        }
+        if (sntp.synchronized() && !synced) {
+            synced = true;
+            board::print("net: sntp synchronized, ");
+            print_utc(sntp.unix_ms(now));
+            board::print("\n");
+        }
+    }
+
+    [[nodiscard]] std::uint32_t next_deadline() const noexcept {
+        return net::earliest(net::earliest(next_link_poll, next_status), fallback_at);
+    }
+} app_tasks;
+
 // ---- network thread ------------------------------------------------------------------
 
 bool rng_fill(std::span<std::byte> out) noexcept {
@@ -416,7 +476,6 @@ void net_main(void*) {
         return;
     }
 
-    stack.poll(kernel.now());
     mdns.start(&on_mdns_renamed);
     dhcp.start();
     sntp.start();
@@ -427,72 +486,17 @@ void net_main(void*) {
     board::print(mdns.name());
     board::print("/\n");
 
-    bool link = false;
-    bool synced = false;
-    bool fallback_armed = false;
-    rtos::Tick fallback_at = 0;
-    std::uint32_t handshakes = 0;
-    rtos::Tick next_link_poll = 0;
-    rtos::Tick next_status = 0;
+    // Services run in the network thread ("in process"); a further server (Modbus
+    // TCP, OPC UA, ...) is one more add().
+    runtime.add(app_tasks, "app");
+    runtime.add(dhcp, "dhcp");
+    runtime.add(dns, "dns");
+    runtime.add(mdns, "mdns");
+    runtime.add(sntp, "sntp");
+    runtime.add(server, "https");
     for (;;) {
-        const rtos::Tick now = kernel.now();
-        if (static_cast<std::int32_t>(now - next_link_poll) >= 0) {
-            next_link_poll = now + link_poll_ms;
-            if (ethernet.poll_link() != link) {
-                link = !link;
-                board::print(link ? "net: link up\n" : "net: link down\n");
-                if (link && !fallback_armed && fcu_net_config::static_fallback) {
-                    fallback_armed = true;  // DHCP restarts by itself on link changes
-                    fallback_at = now + dhcp_fallback_ms;
-                }
-            }
-        }
-        if (fallback_at != 0 && static_cast<std::int32_t>(now - fallback_at) >= 0) {
-            fallback_at = 0;
-            if (!dhcp.bound()) {
-                dhcp.stop();
-                stack.claim_address(eth_if, fcu_net_config::fallback);  // probed like a lease (RFC 5227)
-                board::print("dhcp: no server, static ");
-                print_ip(fcu_net_config::fallback.address);
-                board::print("\n");
-                sntp.set_server(fcu_net_config::fallback.gateway, sntp_port);
-            }
-        }
-        stack.poll(now);
-        dhcp.service();
-        dns.service();
-        mdns.service();
-        sntp.service();
-        server.service();
-        if (static_cast<std::int32_t>(now - next_status) >= 0) {
-            next_status = now + status_period_ms;
-            if (server.websocket_clients() != 0) {
-                send_status();
-            }
-        }
-        if (const auto& tls = net::TlsServerContext::stats(); tls.handshakes != handshakes) {
-            handshakes = tls.handshakes;
-            board::print("tls: handshake ");
-            board::print_dec(tls.handshake_cycles);
-            board::print(" cycles = ");
-            board::print_dec(tls.handshake_cycles / (board::sysclk_hz / 1000));
-            board::print(" ms CPU\n");
-        }
-        if (sntp.synchronized() && !synced) {
-            synced = true;
-            board::print("net: sntp synchronized, ");
-            print_utc(sntp.unix_ms(kernel.now()));
-            board::print("\n");
-        }
-
-        rtos::Tick wake = earliest(next_link_poll, stack.next_deadline());
-        for (const rtos::Tick t : {dhcp.next_deadline(), dns.next_deadline(), mdns.next_deadline(),
-                                   sntp.next_deadline(), server.next_deadline(), next_status, fallback_at}) {
-            wake = earliest(wake, t);
-        }
-        const rtos::Tick after = kernel.now();
-        const rtos::Tick timeout = static_cast<std::int32_t>(wake - after) > 0 ? wake - after : 1;
-        (void)kernel.notify_wait(slot_wake, timeout);
+        const std::uint32_t wake = runtime.run_once(kernel.now());
+        (void)kernel.notify_wait(slot_wake, net::NetRuntime<Stack>::timeout(wake, kernel.now()));
     }
 }
 

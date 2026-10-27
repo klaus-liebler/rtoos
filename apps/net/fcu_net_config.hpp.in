@@ -18,6 +18,11 @@ inline constexpr std::string_view sntp_host = "@RTOS_NET_SNTP_HOST@";
 /// Windows time service holds 123 on the host).
 inline constexpr std::uint16_t sntp_port = @RTOS_NET_SNTP_PORT@;
 
+/// WebSocket liveness: a silent peer is pinged after this time and closed if
+/// nothing arrives within the pong timeout.
+inline constexpr std::uint32_t ws_ping_interval_ms = @RTOS_NET_WS_PING_MS@;
+inline constexpr std::uint32_t ws_pong_timeout_ms = @RTOS_NET_WS_PONG_TIMEOUT_MS@;
+
 /// Static address used when no DHCP server answers in time (RTOS_NET_STATIC_FALLBACK);
 /// without one, DHCP keeps trying.
 inline constexpr bool static_fallback = @rtos_net_fallback_enabled@;
