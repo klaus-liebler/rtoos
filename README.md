@@ -47,6 +47,27 @@ Die Netzwerk-Einstellungen sind CMake-Cache-Variablen: `RTOS_NET_SNTP_HOST`, `RT
 
 Wichtig: immer `cmake --build --preset …` verwenden. Nur das Preset legt die GCC-DLLs in den PATH. `cmake --build build/host` scheitert ohne Fehlermeldung.
 
+Die Host-Tests enthalten Robustheitstests nach Ideen aus den Testsuiten von lwIP, NetX Duo und FreeRTOS-Plus-TCP:
+- fehlerhafte Header, Sequenznummern-Überlauf, RFC 5961, Zero-Window-Probes und SYN-Flood;
+- einen Mutations-Fuzzer ([tests/fuzz_test.cpp](tests/fuzz_test.cpp)) für den Empfangspfad mit allen Diensten und für die Parser (HTTP, WebSocket, DNS-Namen, DHCP-Optionen).
+
+Der Fuzzer läuft deterministisch mit festem Seed. GCC hat kein libFuzzer, und MinGW hat keinen AddressSanitizer. Er findet daher:
+- Vertragsverletzungen;
+- Abstürze und UBSan-Fehler;
+- Hänger;
+- verlorene Paketpuffer;
+- einen Stack, der danach nicht mehr antwortet.
+
+Lesezugriffe hinter dem Puffer-Ende findet er nicht.
+
+Ein Testlauf mit mehr Iterationen:
+
+```
+$env:RTOS_FUZZ_ITERATIONS=2000000; $env:RTOS_FUZZ_SEED=7; build/host/tests/rtos_tests.exe --gtest_filter=*Fuzz*
+```
+
+Die Testfixture prüft außerdem nach jedem Netzwerktest, dass alle Paketpuffer in den Pool zurückgekehrt sind.
+
 ## Factory Control Unit
 
 | | |

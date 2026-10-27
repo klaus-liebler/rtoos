@@ -15,8 +15,13 @@
 //     signals the gap. Typical for small embedded stacks on a LAN.
 //   * No congestion window: the amount in flight is bounded by
 //     min(peer window, Cfg::tx_segments * MSS) per connection, which is also the
-//     bound on buffer usage. No persist timer (peer windows are large in practice).
+//     bound on buffer usage.
 //   * No TCP options except MSS.
+//
+// Zero window (RFC 1122 4.2.2.17): while the peer's window is closed and nothing is
+// in flight, a persist timer sends window probes (an ACK with seq = SND.NXT - 1,
+// which the peer answers with its current window; like Linux) with exponential
+// backoff, so a lost window update cannot stall the connection.
 //
 // Events (TcpHandler, all invoked from Stack::poll in the network thread):
 //   accepted   connection established; set conn.user
@@ -272,6 +277,7 @@ public:
             rtt_valid_ = false;
             retries_ = 0;
             deadline_ms_ = 0;
+            persist_ms_ = persist_interval_ms_ = 0;
             listener_ = nullptr;
         }
 
@@ -284,6 +290,9 @@ public:
         std::uint32_t srtt_ms_ = 0;
         std::uint32_t rttvar_ms_ = 0;
         std::uint32_t deadline_ms_ = 0;  ///< retransmission or TIME-WAIT expiry, 0 = none
+        std::uint32_t persist_ms_ = 0;   ///< next window probe, 0 = window open
+        std::uint32_t persist_interval_ms_ = 0;
+        std::uint32_t opened_ms_ = 0;    ///< SYN received
         std::uint8_t retries_ = 0;
         bool rtt_valid_ = false;
     };
@@ -383,6 +392,9 @@ public:
                     continue;
                 }
             }
+            if (c.persist_ms_ != 0 && static_cast<std::int32_t>(now - c.persist_ms_) >= 0) {
+                probe_window(c, now);
+            }
             if (c.ack_pending_ || c.window_update_pending_) {
                 send_control(c, tcp_flag::ack);
             }
@@ -393,14 +405,18 @@ public:
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
         std::uint32_t best = 0;
         for (const auto& c : connections_) {
-            if (c.deadline_ms_ != 0 && (best == 0 || static_cast<std::int32_t>(c.deadline_ms_ - best) < 0)) {
-                best = c.deadline_ms_;
+            for (const std::uint32_t t : {c.deadline_ms_, c.persist_ms_}) {
+                if (t != 0 && (best == 0 || static_cast<std::int32_t>(t - best) < 0)) {
+                    best = t;
+                }
             }
         }
         return best;
     }
 
     [[nodiscard]] std::uint32_t checksum_errors() const noexcept { return checksum_errors_; }
+    /// Half-open connections dropped to make room for a new SYN.
+    [[nodiscard]] std::uint32_t syn_recycled() const noexcept { return syn_recycled_; }
 
     static std::uint32_t pseudo_header_sum(Ipv4Address src, Ipv4Address dst, std::size_t length) noexcept {
         return (src.value >> 16) + (src.value & 0xFFFF) + (dst.value >> 16) + (dst.value & 0xFFFF) +
@@ -481,20 +497,40 @@ private:
         }
         const TcpHandler* handler = listener_for(seg.dst_port, seg.interface);
         if (handler != nullptr && (seg.flags & tcp_flag::syn) && !(seg.flags & tcp_flag::ack)) {
-            for (auto& c : connections_) {
-                if (c.state_ == TcpState::Closed) {
-                    open(c, seg, handler);
-                    return;
-                }
+            if (Connection* c = free_slot(); c != nullptr) {
+                open(*c, seg, handler);
+                return;
             }
         }
         send_reset(seg);
+    }
+
+    /// A closed connection, else the oldest half-open one (like lwIP): otherwise a
+    /// few SYNs that are never completed (a SYN flood, a scan) would hold every slot
+    /// for the minutes of SYN-ACK retransmissions.
+    Connection* free_slot() noexcept {
+        Connection* oldest = nullptr;
+        for (auto& c : connections_) {
+            if (c.state_ == TcpState::Closed) {
+                return &c;
+            }
+            if (c.state_ == TcpState::SynReceived &&
+                (oldest == nullptr || static_cast<std::int32_t>(c.opened_ms_ - oldest->opened_ms_) < 0)) {
+                oldest = &c;
+            }
+        }
+        if (oldest != nullptr) {
+            ++syn_recycled_;
+            oldest->reset_state();  // never reported to the application
+        }
+        return oldest;
     }
 
     void open(Connection& c, const Incoming& seg, const TcpHandler* handler) noexcept {
         c.reset_state();
         c.listener_ = handler;
         c.state_ = TcpState::SynReceived;
+        c.opened_ms_ = ip_.now_ms();
         c.remote_ip_ = seg.src;
         c.local_ip_ = seg.dst;
         c.remote_port_ = seg.src_port;
@@ -677,8 +713,42 @@ private:
                 c.listener_->writable(c.listener_->context, c);
             }
         } else if (seg.ack == c.snd_una_) {
-            c.snd_wnd_ = seg.window;  // pure window update
+            // Pure window update (or the answer to a window probe).
+            const bool opened = seg.window > c.snd_wnd_;
+            c.snd_wnd_ = seg.window;
+            if (opened && c.can_send() && c.writable() != 0 && c.listener_->writable != nullptr) {
+                c.listener_->writable(c.listener_->context, c);
+            }
         }
+        update_persist(c);
+    }
+
+    /// Start the persist timer when the peer's window is closed and nothing is in
+    /// flight (no retransmission would ever reveal a reopened window); stop it otherwise.
+    void update_persist(Connection& c) noexcept {
+        if (c.snd_wnd_ != 0 || c.tx_count_ != 0 || !c.can_send()) {
+            c.persist_ms_ = 0;
+        } else if (c.persist_ms_ == 0) {
+            c.persist_interval_ms_ = c.rto_ms_;
+            c.persist_ms_ = ip_.now_ms() + c.persist_interval_ms_;
+        }
+    }
+
+    void probe_window(Connection& c, std::uint32_t now) noexcept {
+        update_persist(c);
+        if (c.persist_ms_ == 0) {
+            return;
+        }
+        PacketRef p = ip_.allocate();
+        if (p) {
+            p->push_front(tcp_header_size);
+            write_header(c, *p, c.snd_nxt_ - 1, tcp_flag::ack, tcp_header_size);  // already acked: elicits an ACK
+            c.ack_pending_ = false;
+            c.window_update_pending_ = false;
+            ip_.send_ipv4(std::move(p), c.remote_ip_, ip_proto_tcp, c.local_ip_);
+        }
+        c.persist_interval_ms_ = std::min(c.persist_interval_ms_ * 2, rto_max_ms);
+        c.persist_ms_ = now + c.persist_interval_ms_;
     }
 
     void update_rtt(Connection& c, std::uint32_t sample) noexcept {
@@ -870,6 +940,7 @@ private:
     std::array<Listener, max_listeners> listeners_{};
     std::uint32_t checksum_errors_ = 0;
     std::uint32_t rx_overruns_ = 0;
+    std::uint32_t syn_recycled_ = 0;
 };
 
 }  // namespace rtos::net

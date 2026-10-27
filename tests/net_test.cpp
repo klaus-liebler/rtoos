@@ -184,7 +184,10 @@ struct EchoServer {
         ++s.closed;
         s.reason = r;
     }
-    TcpHandler handler() { return {this, &on_accepted, &on_received, nullptr, &on_closed}; }
+    static void on_writable(void* self, TcpConnectionBase&) noexcept { ++static_cast<EchoServer*>(self)->writable; }
+    TcpHandler handler() { return {this, &on_accepted, &on_received, &on_writable, &on_closed}; }
+
+    int writable = 0;
 };
 
 class TcpTest : public NetTest {
@@ -609,15 +612,88 @@ TEST_F(TcpTest, SendIsLimitedByPeerWindow) {
     EXPECT_EQ(f[0].tcp_payload().size(), 100u);
 }
 
+// lwIP test_tcp_zwp_timeout / test_tcp_persist_split, NetX Duo
+// netx_tcp_zero_window_probe_test: the peer closes its window and its window update
+// gets lost - the persist timer probes until the window reopens.
+TEST_F(TcpTest, ZeroWindowIsProbedUntilItReopens) {
+    connect();  // RTO = 200 ms (handshake RTT ~0)
+    server.echo = false;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, {}, 0));  // window closed
+    auto& c = static_cast<TestStack::TcpConnection&>(*server.connection);
+    EXPECT_EQ(c.writable(), 0u);
+    EXPECT_TRUE(sent().empty());
+
+    std::uint32_t interval = 200;
+    for (int probe = 0; probe < 4; ++probe, interval *= 2) {
+        poll(interval - 1);
+        EXPECT_TRUE(sent().empty());
+        poll(1);
+        const auto f = sent();
+        ASSERT_EQ(f.size(), 1u) << "probe " << probe;
+        EXPECT_EQ(f[0].flags(), tcp_flag::ack);
+        EXPECT_EQ(f[0].seq(), iss);  // SND.NXT - 1: answered with the current window
+        EXPECT_TRUE(f[0].tcp_payload().empty());
+    }
+    EXPECT_EQ(stack.next_deadline(), now + interval);
+
+    // The answer to a probe reopens the window: the application hears "writable".
+    const int writable_before = server.writable;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, {}, 8192));
+    EXPECT_EQ(server.writable, writable_before + 1);
+    EXPECT_GT(c.writable(), 0u);
+    poll(120'000);
+    EXPECT_TRUE(sent().empty());  // no more probes
+    EXPECT_EQ(c.write(as_bytes("data")), 4u);
+}
+
+TEST_F(TcpTest, ProbeBackoffIsCappedAndNeverGivesUp) {
+    connect();
+    server.echo = false;
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack, {}, 0));
+    int probes = 0;
+    for (int s = 0; s < 30 * 60; ++s) {  // 30 minutes
+        poll(1000);
+        probes += static_cast<int>(sent().size());
+    }
+    EXPECT_GE(probes, 30);  // every 60 s at most (rto_max), unlike retransmissions
+    EXPECT_EQ(server.closed, 0);
+    EXPECT_EQ(server.connection->state(), TcpState::Established);
+}
+
 TEST_F(TcpTest, ConnectionTableFullAnswersReset) {
     for (std::uint16_t i = 0; i < 4; ++i) {
-        deliver(tcp(static_cast<std::uint16_t>(peer_port + i), port, peer_seq, 0, tcp_flag::syn));
+        const auto client_port = static_cast<std::uint16_t>(peer_port + i);
+        deliver(tcp(client_port, port, peer_seq, 0, tcp_flag::syn));
+        deliver(tcp(client_port, port, peer_seq + 1, sent().at(0).seq() + 1, tcp_flag::ack));
     }
-    (void)sent();
+    ASSERT_EQ(server.accepted, 4);
     deliver(tcp(peer_port + 10, port, peer_seq, 0, tcp_flag::syn));
     const auto f = sent();
     ASSERT_EQ(f.size(), 1u);
     EXPECT_TRUE(f[0].flags() & tcp_flag::rst);
+}
+
+// Found by the fuzz test (fuzz_test.cpp); lwIP kills the oldest SYN_RCVD pcb alike.
+TEST_F(TcpTest, SynFloodRecyclesTheOldestHalfOpenConnection) {
+    for (std::uint16_t i = 0; i < 4; ++i) {
+        deliver(tcp(static_cast<std::uint16_t>(30000 + i), port, 1, 0, tcp_flag::syn));  // never completed
+        poll(10);
+    }
+    (void)sent();
+    deliver(tcp(peer_port, port, peer_seq, 0, tcp_flag::syn, {}, 8192, 1460));  // a real client
+    auto f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    ASSERT_EQ(f[0].flags(), tcp_flag::syn | tcp_flag::ack);
+    deliver(tcp(peer_port, port, peer_seq + 1, f[0].seq() + 1, tcp_flag::ack));
+    EXPECT_EQ(server.accepted, 1);
+    EXPECT_EQ(stack.tcp().syn_recycled(), 1u);
+
+    // The first (oldest) half-open connection made room: its ACK finds nothing now.
+    deliver(tcp(30000, port, 2, 100000 + 1, tcp_flag::ack));
+    f = sent();
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_TRUE(f[0].flags() & tcp_flag::rst);
+    EXPECT_EQ(server.accepted, 1);
 }
 
 TEST_F(TcpTest, BuffersReturnToPoolAfterClose) {
