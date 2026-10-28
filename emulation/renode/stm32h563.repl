@@ -194,19 +194,11 @@ elif request.IsRead:
     request.Value = regs.get(request.Offset, 0)
 '''
 
-// FLASH: register file (ACR reset 0x13: LATENCY 3, WRHIGHFREQ 1); a new latency is
-// active at once. All other registers read 0 (not busy, no errors).
-flashController: Python.PythonPeripheral @ sysbus 0x40022000
-    size: 0x400
-    initable: true
-    script: '''
-if request.IsInit:
-    regs = {0x000: 0x00000013}
-elif request.IsWrite:
-    regs[request.Offset] = request.Value & 0xFFFFFFFF
-elif request.IsRead:
-    request.Value = regs.get(request.Offset, 0)
-'''
+// FLASH interface: own model STM32H5_FLASH.cs (fcu.resc compiles it): ACR, unlock keys, sector
+// erase; the CPU programs by writing to the flash memory.
+flashController: MTD.STM32H5_FLASH @ sysbus 0x40022000
+    flashBase: 0x08000000
+    flashSize: 0x200000
 
 sysbus:
     init:

@@ -55,6 +55,10 @@ SECTIONS
 
   /* End of flash content, 32-byte rounded for the MPU limit. */
   __flash_used_end = ALIGN(LOADADDR(.data) + SIZEOF(.data), 32);
+  /* Flash kept for data (file systems, settings) from rtos_flash_data_start to the end:
+     rtos_add_firmware(... FLASH_DATA_START <address>) defines it; without one, none. */
+  PROVIDE(rtos_flash_data_start = ORIGIN(FLASH) + LENGTH(FLASH));
+  ASSERT(__flash_used_end <= rtos_flash_data_start, "flash overflow: the image reaches into the data region")
 
   .bss (NOLOAD) :
   {

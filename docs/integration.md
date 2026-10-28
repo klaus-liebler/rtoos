@@ -50,7 +50,7 @@ The targets you link:
 | `rtos_opcua` | the OPC UA server |
 | `rtos_wolfssl` | wolfSSL/wolfCrypt (fetched by CMake, configured by `third_party/wolfssl/user_settings.h`) |
 
-`rtos_add_firmware(<name> SOURCES … LIBRARIES …)` creates `<name>.elf` with the chip's startup code and linker script, plus `.bin` and `.map`.
+`rtos_add_firmware(<name> SOURCES … LIBRARIES … [FLASH_DATA_START <address>])` creates `<name>.elf` with the chip's startup code and linker script, plus `.bin` and `.map`. `FLASH_DATA_START` keeps the flash from that address to the end free for data such as a littlefs volume; the link fails if the image grows into it.
 
 ### Toolchain and presets
 

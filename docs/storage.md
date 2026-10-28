@@ -1,4 +1,4 @@
-# Storage: SD cards and FAT
+# Storage: SD cards, FAT and littlefs in flash
 
 [include/rtos/storage/sd_card.hpp](../include/rtos/storage/sd_card.hpp) implements the SD memory card protocol (SD Physical Layer Simplified Specification) over any host controller that satisfies the `SdHost` concept. [port/stm32h563/.../sdmmc.hpp](../port/stm32h563/include/rtos/port/stm32h5/sdmmc.hpp) is the STM32H5 host controller.
 
@@ -28,11 +28,32 @@ if (card.init() == rtos::storage::SdStatus::Ok) {
 - **Busy:** after R1b responses the driver polls the D0 line (STAR.BUSYD0).
 - **Polled:** commands and data wait on the DWT cycle counter. A 512-byte block at 25 MHz on a 1-bit bus takes about 0.2 ms.
 
+## littlefs in the MCU's flash
+
+[include/rtos/storage/littlefs.hpp](../include/rtos/storage/littlefs.hpp) runs [littlefs](https://github.com/littlefs-project/littlefs) (BSD-3; [cmake/littlefs.cmake](../cmake/littlefs.cmake), no heap, no debug output) on any `FlashMemory`. It's a fail-safe file system: a power loss at any point leaves the last committed state. It also does wear levelling. Use it for settings, recipes and missions in the MCU's own flash:
+
+```cpp
+namespace flash = rtos::port::stm32h5::flash;
+using DataFlash = flash::Region<0x081C'0000, 256 * 1024, board::sysclk_hz>;  // last 32 sectors of bank 2
+DataFlash region;
+rtos::storage::LittleFs<DataFlash> fs{region};              // link rtos_littlefs
+if (fs.mount() != LFS_ERR_OK) { fs.format(); fs.mount(); }
+decltype(fs)::File f;                                        // the file's cache lives here
+fs.open(f, "mission.bin", LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC);
+lfs_file_write(fs.get(), f.get(), data, size);
+lfs_file_close(fs.get(), f.get());
+```
+
+- **Flash programming** ([flash_program.hpp](../port/stm32h563/include/rtos/port/stm32h5/flash_program.hpp)): `flash::Writer` unlocks the flash for its lifetime. It erases 8 KB sectors and programs quad-words (16 bytes, once per erase), and invalidates the ICACHE afterwards. It refuses to work when the banks are swapped (SWAP_BANK). Erasing or programming the bank the CPU runs from stalls the CPU; a region in bank 2 keeps code in bank 1 running.
+- **`flash::Region<Base, Bytes, CpuHz>`:** a data area checked at compile time to be whole sectors, inside one bank and inside the flash. Keep the image out of it with `rtos_add_firmware(... FLASH_DATA_START <Base>)`: the link fails if the code reaches into the area.
+
 ## Tests
 
 - **Host** ([sd_card_test.cpp](../tests/sd_card_test.cpp)): the protocol against a simulated card. It covers SDHC, SDSC v2 and v1, a missing card, a card that never gets ready, programming polls after a write, multi-block transfers with CMD12, rejected ranges and CSD capacity.
 - **Host** ([filex_media_test.cpp](../tests/filex_media_test.cpp)): FileX on a RAM disk. It covers FAT16 and FAT32 round-trips across a remount, the first partition of an MBR disk (MBR untouched), and unaligned caller buffers (the RAM disk refuses them, as IDMA does).
 - **Renode** ([sdcard_test.py](../emulation/sdcard_test.py)): driver, protocol and file system against the SDMMC + card model with real image files ([Testing](testing.md#sd-card-test-renode)).
+- **Host** ([littlefs_test.cpp](../tests/littlefs_test.cpp)): littlefs on a simulated NOR flash with the H5's rules (erase to 0xFF, each quad-word programmed once). It checks files and directories across a remount, wear levelling over 400 rewrites in 8 sectors, and a power loss after every single program operation of a rewrite (the file is always entirely old or entirely new).
+- **Renode** (`ctest -R flashfs_renode`): [`fcu_flashfs`](../apps/flashfs/main.cpp) formats littlefs in the last 256 KB of bank 2, writes a mission file and 100 counter rewrites (sector erases), remounts, reads back, and finds the superblock in the flash.
 
 ## File system: FileX (FAT12/16/32)
 

@@ -10,12 +10,16 @@ set_property(TARGET rtos_stm32h563 APPEND PROPERTY INTERFACE_LINK_DEPENDS ${CMAK
 add_library(rtos_stm32h563_startup OBJECT src/startup.cpp src/vectors.cpp)
 target_link_libraries(rtos_stm32h563_startup PRIVATE rtos_stm32h563)
 
-# rtos_add_firmware(<name> SOURCES <src>... LIBRARIES <lib>...)
-# Builds <name>.elf plus <name>.bin and a linker map.
+# rtos_add_firmware(<name> SOURCES <src>... LIBRARIES <lib>... [FLASH_DATA_START <address>])
+# Builds <name>.elf plus <name>.bin and a linker map. FLASH_DATA_START keeps the flash from that
+# address to the end free for data (littlefs, settings): the link fails if the image reaches it.
 function(rtos_add_firmware name)
-    cmake_parse_arguments(FW "" "" "SOURCES;LIBRARIES" ${ARGN})
+    cmake_parse_arguments(FW "" "FLASH_DATA_START" "SOURCES;LIBRARIES" ${ARGN})
     add_executable(${name} ${FW_SOURCES} $<TARGET_OBJECTS:rtos_stm32h563_startup>)
     target_link_libraries(${name} PRIVATE ${FW_LIBRARIES})
+    if(FW_FLASH_DATA_START)
+        target_link_options(${name} PRIVATE -Wl,--defsym=rtos_flash_data_start=${FW_FLASH_DATA_START})
+    endif()
     target_link_options(${name} PRIVATE -Wl,-Map=$<TARGET_FILE_DIR:${name}>/${name}.map)
     set_target_properties(${name} PROPERTIES SUFFIX .elf)
     add_custom_command(TARGET ${name} POST_BUILD

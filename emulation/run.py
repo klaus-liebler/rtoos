@@ -25,7 +25,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_QEMU = Path("C:/opt/qemu-stm32h5/qemu-system-arm.exe")
 DEFAULT_RENODE = Path("C:/opt/renode/renode.exe")
-RESULT = re.compile(r"SELFTEST RESULT: (PASS|FAIL)")
 UNSUPPORTED = re.compile(r"\[selftest\] UNSUPPORTED (.*)")
 
 
@@ -83,7 +82,10 @@ def main() -> int:
     ap.add_argument("--allow-unsupported", action="append", default=[], metavar="TEXT",
                     help="accept UNSUPPORTED tests whose name contains TEXT")
     ap.add_argument("--interactive", action="store_true", help="just show the console")
+    ap.add_argument("--result", default="SELFTEST RESULT", metavar="PREFIX",
+                    help='the result line: "<PREFIX>: PASS|FAIL ..." (default: SELFTEST RESULT)')
     args = ap.parse_args()
+    result_line = re.compile(re.escape(args.result) + r": (PASS|FAIL)")
 
     exe = args.exe or (DEFAULT_QEMU if args.emulator == "qemu" else DEFAULT_RENODE)
     if not exe.exists():
@@ -106,7 +108,7 @@ def main() -> int:
                     text = raw.decode("utf-8", "replace")
                     sys.stdout.write(text.replace("\r", ""))
                     sys.stdout.flush()
-                    if RESULT.search(text):
+                    if result_line.search(text):
                         break
             except (OSError, ValueError):
                 pass  # emulator terminated / console closed
@@ -123,7 +125,7 @@ def main() -> int:
                 break
             done.wait(0.2)
         text = b"".join(lines).decode("utf-8", "replace")
-        if m := RESULT.search(text):
+        if m := result_line.search(text):
             result = m.group(1)
         unsupported = [u.strip() for u in UNSUPPORTED.findall(text)]
     except KeyboardInterrupt:

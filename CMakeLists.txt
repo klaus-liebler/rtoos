@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 #   cmake --preset arm   -> STM32H563 image
 #
 # As a subproject of a product (add_subdirectory, see docs/integration.md) rtoos provides
-# its libraries (rtos_kernel, rtos_tls, rtos_opcua, rtos_wolfssl, rtos_filex, the chip and board
+# its libraries (rtos_kernel, rtos_tls, rtos_opcua, rtos_wolfssl, rtos_filex, rtos_littlefs, the chip and board
 # packages, rtos_add_firmware, rtos_certificates) and, with RTOS_BUILD_EXAMPLES, its own
 # example firmware and tests.
 project(rtoos LANGUAGES C CXX)
@@ -45,6 +45,7 @@ target_link_options(rtos_kernel INTERFACE -fcontracts)
 # ---- third party ------------------------------------------------------------
 include(cmake/wolfssl.cmake)
 include(cmake/filex.cmake)
+include(cmake/littlefs.cmake)
 
 # ---- certificates (tools/make_certs.py, checked at every configure) -------------
 # RTOS_CA_CERT / RTOS_CA_KEY: the CA (tools/make_ca.py) that signs the device certificates;

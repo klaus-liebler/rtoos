@@ -4,6 +4,9 @@ rtos_add_firmware(fcu_net SOURCES net/main.cpp LIBRARIES rtos_board_fcu rtos_tls
 rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos_tls)
 rtos_add_firmware(fcu_stepper SOURCES stepper/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_sdcard SOURCES sdcard/main.cpp LIBRARIES rtos_board_fcu rtos_filex)
+# littlefs in the last 256 KB of bank 2: the image must stay below it
+rtos_add_firmware(fcu_flashfs SOURCES flashfs/main.cpp LIBRARIES rtos_board_fcu rtos_littlefs
+                  FLASH_DATA_START 0x081C0000)
 # compile check of all chip drivers (instantiated with the FCU's clocks, not linked)
 add_library(rtos_drivers_check OBJECT drivers_check.cpp)
 target_link_libraries(rtos_drivers_check PRIVATE rtos_board_fcu)
@@ -103,4 +106,9 @@ if(EXISTS "${RTOS_RENODE}")
              COMMAND Python3::Interpreter -I ${PROJECT_SOURCE_DIR}/emulation/sdcard_test.py
                      $<TARGET_FILE:fcu_sdcard> --exe ${RTOS_RENODE})
     set_tests_properties(sdcard_renode PROPERTIES TIMEOUT 180)
+    # littlefs in the internal flash against the flash interface model (unlock, sector erase).
+    add_test(NAME flashfs_renode
+             COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:fcu_flashfs> --exe ${RTOS_RENODE}
+                     --result "FLASHFS RESULT")
+    set_tests_properties(flashfs_renode PROPERTIES TIMEOUT 120)
 endif()
