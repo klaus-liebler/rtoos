@@ -8,7 +8,7 @@
 
 Built in:
 
-- **Kernel:** preemptive scheduler with preemption threshold, task notifications, semaphores, message queues, object and block pools. Interrupts above the kernel mask have zero latency.
+- **Kernel:** preemptive scheduler with preemption threshold, task notifications, semaphores, message queues, object and block pools, a non-blocking log journal. Interrupts above the kernel mask have zero latency.
 - **IP stack:** IPv4, ARP, ICMP, UDP, TCP, DHCP client and server, DNS, mDNS, SNTP. Supports several interfaces and uses zero-copy packet buffers.
 - **HTTPS** with TLS 1.3 (wolfSSL), including **WebSocket**
 - **Modbus TCP**
@@ -47,6 +47,7 @@ cmake --preset board && cmake --build --preset board
 | [Examples](docs/examples.md) | the apps in `apps/`, explained step by step |
 | [Your own project and board](docs/integration.md) | rtoos as the base of a product: CMake, board package, putting the services together |
 | [Kernel](docs/kernel.md) | threads, synchronisation, execution contexts, rules |
+| [Logging](docs/logging.md) | non-blocking log journal with independent readers (console, network) |
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |

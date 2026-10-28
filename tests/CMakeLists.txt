@@ -8,6 +8,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(rtos_tests
     kernel_test.cpp
+    log_test.cpp
     block_pool_test.cpp
     sync_test.cpp
     net_test.cpp
