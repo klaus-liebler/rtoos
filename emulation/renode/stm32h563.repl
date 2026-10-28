@@ -11,8 +11,8 @@
 // SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
 // cache drivers run unchanged.
 //
-// Clock: the firmware runs SYSCLK = HCLK = PCLKx = 250 MHz from PLL1 (boards/fcu).
-// All frequencies below are that clock; the CPU executes 250 MIPS (CPI 1), so
+// Clock: the firmware runs SYSCLK = HCLK = PCLK2/3 = 250 MHz from PLL1, PCLK1 = 125 MHz
+// (boards/fcu: APB1 / 2; the APB1 timers run at 2 x PCLK1 = 250 MHz). Frequencies below follow; the CPU executes 250 MIPS (CPI 1), so
 // cycle counts from DWT_CYCCNT are consistent with SysTick but not cycle-accurate.
 
 cpu: CPU.CortexM @ sysbus
@@ -46,16 +46,16 @@ usart1: UART.STM32F7_USART @ sysbus 0x40013800
     IRQ -> nvic@58
 
 usart2: UART.STM32F7_USART @ sysbus 0x40004400
-    frequency: 250000000
+    frequency: 125000000
     IRQ -> nvic@59
 
 usart3: UART.STM32F7_USART @ sysbus 0x40004800
-    frequency: 250000000
+    frequency: 125000000
     IRQ -> nvic@60
 
 // Timers: Renode's STM32 timer model (PSC, ARR, CNT, update event and interrupt, CEN, UG);
 // compare outputs and DMA are not modelled, and the model's update period is ARR ticks (the
-// hardware's is ARR + 1). Kernel clock = PCLK1/2 = 250 MHz (prescalers 1).
+// hardware's is ARR + 1). Timer clock 250 MHz: 2 x PCLK1 (APB1 / 2) and PCLK2.
 tim2: Timers.STM32_Timer @ sysbus 0x40000000
     frequency: 250000000
     initialLimit: 0xFFFFFFFF

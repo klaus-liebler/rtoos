@@ -5,7 +5,9 @@
 // can be checked against the specifications on the host.
 #include <gtest/gtest.h>
 
+#include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/clocks.hpp"
+#include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
@@ -170,6 +172,36 @@ TEST(TimerConfig, TickRateMustDivideTheKernelClock) {
     EXPECT_FALSE(h5::timer_registers({.kernel_hz = 250'000'000, .tick_hz = 1'000}, 0xFFFF).valid) << "PSC > 65535";
     EXPECT_FALSE(h5::timer_registers({.kernel_hz = 250'000'000, .update_hz = 20'000'000, .min_steps = 100}, 0xFFFF).valid)
         << "too few steps";
+}
+
+TEST(AdcConfig, PrescalerKeepsTheAdcClockWithinItsLimit) {
+    // HCLK 250 MHz, at most 40 MHz: / 8 -> 31.25 MHz (/ 6 would give 41.7 MHz)
+    EXPECT_EQ(h5::adc_presc({.kernel_hz = 250'000'000, .cpu_hz = 250'000'000, .channel = 18}), 4u);
+    EXPECT_EQ(h5::adc_clock_hz({.kernel_hz = 250'000'000, .cpu_hz = 250'000'000, .channel = 18}), 31'250'000u);
+    // the vendor firmware: HCLK 160 MHz / 4 = 40 MHz
+    EXPECT_EQ(h5::adc_clock_hz({.kernel_hz = 160'000'000, .cpu_hz = 160'000'000, .channel = 18}), 40'000'000u);
+}
+
+TEST(DtsConfig, CalibrationClockBelowOneMegahertz) {
+    EXPECT_EQ(h5::dts_hsref_div(125'000'000), 126u);
+    EXPECT_LT(125'000'000 / h5::dts_hsref_div(125'000'000), 1'000'000u);
+    EXPECT_GT(h5::dts_hsref_div(250'000'000), 127u) << "PCLK1 250 MHz is too fast: the board runs APB1 / 2";
+    static_assert(h5::rcc::ClockTree{.pll1 = {.m = 32, .n = 250, .p = 2, .q = 5}, .apb1_div = 2}.pclk1_hz() == 125'000'000);
+}
+
+TEST(DtsConfig, TemperatureFromCounterAndFactoryValues) {
+    // factory values: T0 = 30 degC (code 0), FMT0 = 300.0 kHz, ramp 1000 Hz/degC
+    constexpr std::uint32_t t0valr1 = 3000;  // 0.1 kHz units
+    constexpr std::uint32_t rampvalr = 1000;
+    // FM = 125 MHz * 7 / mfreq; FM = 325 kHz -> 25 degC above T0
+    const std::uint32_t mfreq = 125'000'000u * 7 / 325'000;
+    const auto t = h5::dts_centi_celsius(125'000'000, 7, mfreq, t0valr1, rampvalr);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 5500, 15) << "one counter step is ~0.12 degC here (mfreq ~2692)";
+    EXPECT_EQ(*h5::dts_centi_celsius(125'000'000, 7, 125'000'000u * 7 / 300'000, t0valr1 | (1u << 16), rampvalr) / 100,
+              130) << "T0 code 1: 130 degC";
+    EXPECT_FALSE(h5::dts_centi_celsius(125'000'000, 7, 0, t0valr1, rampvalr).has_value());
+    EXPECT_FALSE(h5::dts_centi_celsius(125'000'000, 7, mfreq, t0valr1, 0).has_value()) << "unprogrammed ramp";
 }
 
 }  // namespace

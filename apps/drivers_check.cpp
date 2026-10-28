@@ -7,6 +7,8 @@
 #include <cstddef>
 
 #include "board/fcu.hpp"
+#include "rtos/port/stm32h5/adc.hpp"
+#include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
@@ -26,6 +28,9 @@ using Spi2 = h5::SpiMaster<h5::SpiId::Spi2, {.kernel_hz = board::pll1_q_hz, .max
 using Pwm = h5::Timer<h5::TimerId::Tim4, {.kernel_hz = board::clocks.timer1_hz(), .update_hz = 20'000, .min_steps = 1000}>;
 using Steps = h5::Timer<h5::TimerId::Tim16, {.kernel_hz = board::clocks.timer2_hz(), .tick_hz = 1'000'000}>;
 using Leds = h5::Timer<h5::TimerId::Tim15, {.kernel_hz = board::clocks.timer2_hz(), .update_hz = 800'000}>;
+using Pressure = h5::Adc<h5::AdcId::Adc1, {.kernel_hz = board::clocks.hclk_hz(), .cpu_hz = board::sysclk_hz,
+                                           .channel = 18, .sample = h5::AdcSample::Cycles2_5}>;
+using CpuTemperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
 using Wide = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 250'000'000}>;
 }  // namespace
 
@@ -60,6 +65,18 @@ void drivers_check() noexcept {
     Leds::configure_dma_burst(0x38, 1, 1);
     Wide::init();
     Wide::set_period(1'000'000'000);
+
+    (void)Pressure::init();
+    Pressure::start_continuous();
+    (void)Pressure::read();
+    Pressure::stop();
+    std::uint16_t v = 0;
+    (void)Pressure::convert(v);
+    CpuTemperature::init();
+    if (CpuTemperature::ready()) {
+        CpuTemperature::start();
+    }
+    (void)CpuTemperature::centi_celsius();
 
     Spi2::init();
     (void)Spi2::transfer(b, b);
