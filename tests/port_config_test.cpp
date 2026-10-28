@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "rtos/port/stm32h5/clocks.hpp"
+#include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
@@ -102,6 +103,39 @@ TEST(RccConfig, ClockTreeDerivesFrequenciesAndRegisters) {
     EXPECT_EQ(cube.cfgr2(), (0x4u << 4) | (0x4u << 8));
     EXPECT_EQ(cube.wait_states(), 3u);
     EXPECT_EQ(h5::rcc::ClockTree::hpre(32), 0xFFu) << "HPRE has no /32";
+}
+
+TEST(GpioConfig, PinListFoldsIntoOneValuePerPortAndRegister) {
+    namespace gpio = h5::gpio;
+    using gpio::GpioPort;
+    constexpr std::array pins{
+        gpio::output({GpioPort::H, 1}, true),
+        gpio::alternate({GpioPort::D, 8}, 7),
+        gpio::alternate({GpioPort::D, 9}, 7, gpio::Speed::Low, gpio::Pull::Up),
+        gpio::alternate({GpioPort::C, 10}, 11, gpio::Speed::VeryHigh),
+        gpio::output({GpioPort::A, 0}, false, gpio::Speed::Low, true),
+        gpio::analog({GpioPort::A, 3}),
+    };
+    constexpr auto plans = gpio::plan(pins);
+    const auto& a = plans[0];
+    const auto& c = plans[2];
+    const auto& d = plans[3];
+    const auto& h = plans[7];
+    EXPECT_FALSE(plans[1].used) << "port B untouched";
+    EXPECT_EQ(h.mode_mask, 3u << 2);
+    EXPECT_EQ(h.mode, 1u << 2);
+    EXPECT_EQ(h.bsrr, 1u << 1) << "LED starts high";
+    EXPECT_EQ(d.mode, (2u << 16) | (2u << 18));
+    EXPECT_EQ(d.afh_mask, 0xFFu);
+    EXPECT_EQ(d.afh, 0x77u);
+    EXPECT_EQ(d.pull, 1u << 18);
+    EXPECT_EQ(d.speed, 2u << 16) << "TX High, RX Low";
+    EXPECT_EQ(c.afh, 11u << 8);
+    EXPECT_EQ(c.speed, 3u << 20);
+    EXPECT_EQ(a.bsrr, 1u << 16) << "PA0 starts low";
+    EXPECT_EQ(a.type, 1u) << "PA0 open drain";
+    EXPECT_EQ(a.mode, (1u << 0) | (3u << 6));
+    EXPECT_EQ(a.afl_mask, 0u) << "no alternate function on port A";
 }
 
 }  // namespace

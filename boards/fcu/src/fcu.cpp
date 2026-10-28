@@ -19,6 +19,28 @@ namespace h5 = rtos::port::stm32h5;
 using Console = h5::Usart<h5::UsartId::Usart3>;
 
 
+// LED off (active low), USART3 console (AF7)
+constexpr std::array base_pins{
+    h5::gpio::output(led_info_pin, /*initial_high*/ true),
+    h5::gpio::alternate(console_tx_pin, 7),
+    h5::gpio::alternate(console_rx_pin, 7, h5::gpio::Speed::Low, h5::gpio::Pull::Up),
+};
+
+// RMII (AF11, ST open pin data STM32H563VITx) and the PHY reset, held low
+constexpr h5::gpio::Pin phy_reset{h5::gpio::GpioPort::A, 0};
+constexpr std::array ethernet_pins{
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 1}, 11, h5::gpio::Speed::VeryHigh),   // REF_CLK
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 2}, 11, h5::gpio::Speed::VeryHigh),   // MDIO
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 1}, 11, h5::gpio::Speed::VeryHigh),   // MDC
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 7}, 11, h5::gpio::Speed::VeryHigh),   // CRS_DV
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 4}, 11, h5::gpio::Speed::VeryHigh),   // RXD0
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 5}, 11, h5::gpio::Speed::VeryHigh),   // RXD1
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 5}, 11, h5::gpio::Speed::VeryHigh),   // TX_EN
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 10}, 11, h5::gpio::Speed::VeryHigh),  // TXD0
+    h5::gpio::alternate({h5::gpio::GpioPort::B, 15}, 11, h5::gpio::Speed::VeryHigh),  // TXD1
+    h5::gpio::output(phy_reset, /*initial_high*/ false),
+};
+
 void init() noexcept {
     h5::rcc::configure_clocks<clocks>();
 
@@ -30,11 +52,7 @@ void init() noexcept {
                        .dma_end = h5::sram_base + h5::sram_bytes - 1u});
     h5::ICache::enable(h5::ICache::Ways::TwoWay);
 
-    led_info(false);
-    h5::gpio::configure(led_info_pin, h5::gpio::Mode::Output);
-
-    h5::gpio::configure_alternate(console_tx_pin, 7);
-    h5::gpio::configure_alternate(console_rx_pin, 7, h5::gpio::Speed::Low, h5::gpio::Pull::Up);
+    h5::gpio::configure<base_pins>();
     Console::configure<h5::UartConfig{.kernel_hz = clocks.pclk1_hz(), .baud = console_baud, .fifo = false}>();
 }
 
@@ -48,17 +66,7 @@ void spin(std::uint32_t cycles) noexcept {
 }  // namespace
 
 void init_ethernet() noexcept {
-    using h5::gpio::GpioPort;
-    using h5::gpio::Pin;
-    constexpr std::array<Pin, 9> rmii{{{GpioPort::A, 1}, {GpioPort::A, 2}, {GpioPort::C, 1},
-                                       {GpioPort::A, 7}, {GpioPort::C, 4}, {GpioPort::C, 5},
-                                       {GpioPort::A, 5}, {GpioPort::C, 10}, {GpioPort::B, 15}}};
-    for (const Pin& pin : rmii) {
-        h5::gpio::configure_alternate(pin, 11, h5::gpio::Speed::VeryHigh);
-    }
-    constexpr Pin phy_reset{GpioPort::A, 0};
-    h5::gpio::write(phy_reset, false);
-    h5::gpio::configure(phy_reset, h5::gpio::Mode::Output);
+    h5::gpio::configure<ethernet_pins>();
     spin(sysclk_hz / 10'000);  // >= 100 us reset pulse (LAN8742A)
     h5::gpio::write(phy_reset, true);
     spin(sysclk_hz / 500);  // >= 2 ms until the PHY answers on MDIO
