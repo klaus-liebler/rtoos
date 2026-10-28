@@ -9,6 +9,8 @@
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
+#include "rtos/port/stm32h5/spi.hpp"
+#include "rtos/port/stm32h5/timer.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
 
 namespace {
@@ -136,6 +138,38 @@ TEST(GpioConfig, PinListFoldsIntoOneValuePerPortAndRegister) {
     EXPECT_EQ(a.type, 1u) << "PA0 open drain";
     EXPECT_EQ(a.mode, (1u << 0) | (3u << 6));
     EXPECT_EQ(a.afl_mask, 0u) << "no alternate function on port A";
+}
+
+TEST(SpiConfig, PrescalerIsTheSmallestWithinTheBusLimit) {
+    // HX711 behind SPI2 at PLL1 Q = 100 MHz, at most 1 MHz: / 128 -> 781 kHz
+    EXPECT_EQ(h5::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 1'000'000}), 6u);
+    EXPECT_EQ(h5::spi_bus_hz({.kernel_hz = 100'000'000, .max_bus_hz = 1'000'000}), 781'250u);
+    EXPECT_EQ(h5::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 50'000'000}), 0u) << "/2";
+    EXPECT_EQ(h5::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 49'999'999}), 1u) << "/4";
+    EXPECT_EQ(h5::spi_mbr({.kernel_hz = 250'000'000, .max_bus_hz = 100'000}), 8u) << "below / 256: invalid";
+}
+
+TEST(TimerConfig, PwmGetsTheFinestPrescalerThatFits) {
+    // 20 kHz at 250 MHz: 12500 ticks without prescaler
+    const auto r = h5::timer_registers({.kernel_hz = 250'000'000, .update_hz = 20'000, .min_steps = 1000}, 0xFFFF);
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.psc, 0u);
+    EXPECT_EQ(r.arr, 12'499u);
+    // 50 Hz needs a prescaler on a 16-bit counter: 5'000'000 ticks / 77 -> 64935 per period
+    const auto slow = h5::timer_registers({.kernel_hz = 250'000'000, .update_hz = 50}, 0xFFFF);
+    ASSERT_TRUE(slow.valid);
+    EXPECT_LE(slow.arr, 0xFFFFu);
+    EXPECT_NEAR(static_cast<double>(h5::timer_update_mhz(slow, 250'000'000)), 50'000.0, 500.0);
+    EXPECT_EQ(h5::timer_registers({.kernel_hz = 250'000'000, .update_hz = 50}, 0xFFFF'FFFF).psc, 0u) << "32 bit: none";
+}
+
+TEST(TimerConfig, TickRateMustDivideTheKernelClock) {
+    EXPECT_TRUE(h5::timer_registers({.kernel_hz = 250'000'000, .tick_hz = 1'000'000}, 0xFFFF).valid);
+    EXPECT_EQ(h5::timer_registers({.kernel_hz = 250'000'000, .tick_hz = 1'000'000}, 0xFFFF).psc, 249u);
+    EXPECT_FALSE(h5::timer_registers({.kernel_hz = 250'000'000, .tick_hz = 3'000'000}, 0xFFFF).valid);
+    EXPECT_FALSE(h5::timer_registers({.kernel_hz = 250'000'000, .tick_hz = 1'000}, 0xFFFF).valid) << "PSC > 65535";
+    EXPECT_FALSE(h5::timer_registers({.kernel_hz = 250'000'000, .update_hz = 20'000'000, .min_steps = 100}, 0xFFFF).valid)
+        << "too few steps";
 }
 
 }  // namespace
