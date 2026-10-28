@@ -10,6 +10,7 @@
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
+#include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
@@ -36,6 +37,9 @@ using CpuTemperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
 using Can = h5::Fdcan<{.kernel_hz = board::pll1_q_hz, .cpu_hz = board::sysclk_hz, .bitrate = 500'000}>;
 using Wide = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 250'000'000}>;
 h5::UsbDrdFs<> usb_fs;
+using LedDma = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
+                                .direction = h5::DmaDirection::MemoryToPeripheral, .memory_bytes = 2, .peripheral_bytes = 2}>;
+std::array<std::uint16_t, 24> led_bits{};
 }  // namespace
 
 void drivers_check() noexcept {
@@ -100,6 +104,11 @@ void drivers_check() noexcept {
     usb_fs.clear_stall(0x81);
     usb_fs.set_address(5);
     usb_fs.close_all();
+
+    LedDma::init();
+    (void)LedDma::start(Leds::compare_address<1>(), led_bits.data(), led_bits.size());
+    (void)LedDma::done();
+    LedDma::stop();
 
     Spi2::init();
     (void)Spi2::transfer(b, b);

@@ -9,6 +9,7 @@
 #include "rtos/port/stm32h5/clocks.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
+#include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
@@ -220,6 +221,20 @@ TEST(CanConfig, BitTimingFromTheKernelClock) {
     EXPECT_EQ(h5::can_bit_timing(100'000'000, 125'000, 875).prescaler, 32u);
     // a rate the clock cannot make
     EXPECT_FALSE(h5::can_bit_timing(100'000'000, 333'333, 875).valid);
+}
+
+TEST(DmaConfig, TransferRegistersFromTheConfiguration) {
+    // memory (halfwords, incrementing) -> TIM15 CCR1, paced by TIM15_CH1 at the destination
+    constexpr h5::DmaConfig leds{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
+                                 .direction = h5::DmaDirection::MemoryToPeripheral,
+                                 .memory_bytes = 2, .peripheral_bytes = 2};
+    EXPECT_EQ(h5::dma_tr1(leds), 1u | (1u << 3) | (1u << 16)) << "SDW 16 bit, SINC, DDW 16 bit";
+    EXPECT_EQ(h5::dma_tr2(leds), 94u | (1u << 10)) << "REQSEL TIM15_CH1, DREQ";
+    // UCPD1 RX bytes -> memory, paced at the source
+    constexpr h5::DmaConfig pd_rx{.channel = 0, .request = h5::DmaRequest::Ucpd1Rx,
+                                  .direction = h5::DmaDirection::PeripheralToMemory};
+    EXPECT_EQ(h5::dma_tr1(pd_rx), 1u << 19) << "bytes, DINC";
+    EXPECT_EQ(h5::dma_tr2(pd_rx), 112u) << "REQSEL UCPD1_RX, no DREQ";
 }
 
 }  // namespace
