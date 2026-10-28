@@ -112,7 +112,7 @@ ctest --preset arm -R net_renode -V
 ctest --preset arm -R sdcard_renode -V
 ```
 
-[emulation/sdcard_test.py](../emulation/sdcard_test.py) inserts an SDHC image (64 MB) and an SDSC image (32 MB) into SDMMC1 and runs [`fcu_sdcard`](../apps/sdcard/main.cpp): initialisation, one block and an eight-block run written, read back and compared. The test then checks the image file itself: the patterns are at the blocks the firmware wrote, and nothing else changed.
+[emulation/sdcard_test.py](../emulation/sdcard_test.py) inserts an SDHC image (64 MB) and an SDSC image (32 MB) into SDMMC1 and runs [`fcu_sdcard`](../apps/sdcard/main.cpp): initialisation, one block and an eight-block run written, read back and compared, then a FAT file system with two files (one in a directory) written, remounted and read back. The test then checks the image file itself: the patterns at the blocks the firmware wrote, a valid FAT boot sector, and both files' contents.
 
 ### Stepper test (Renode)
 

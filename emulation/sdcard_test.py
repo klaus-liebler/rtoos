@@ -112,7 +112,13 @@ def main() -> int:
         check(data[single:single + BLOCK] == pattern(BLOCK, 1), "the image holds the single block")
         run_at = (blocks - 1 - 8) * BLOCK
         check(data[run_at:run_at + 8 * BLOCK] == pattern(8 * BLOCK, 2), "the image holds the eight-block run")
-        check(data[:run_at] == bytes(run_at), "nothing else was written")
+        # the file system: a FAT boot sector at sector 0 (no partition table), both files' contents
+        # (the BPB fields that count - the type string at 54/82 is informational and FileX leaves it blank)
+        check(data[0] in (0xEB, 0xE9) and int.from_bytes(data[11:13], "little") == 512 and data[16] == 2
+              and data[510:512] == b"\x55\xAA", "FAT boot sector: jump, 512 bytes per sector, 2 FATs, 55 AA")
+        check(b"rtoos on the Factory Control Unit\n" in data, "hello.txt's content is on the card")
+        check(pattern(20_000, 3)[:4096] in data, "logs/data.bin's content is on the card")
+        check(m is not None and "fs: FAT" in console and "read back" in console, "firmware read both files back")
 
     print("SDCARD TEST", "PASS" if failures == 0 else f"FAIL ({failures})")
     return 0 if failures == 0 else 1

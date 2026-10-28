@@ -1,4 +1,4 @@
-# Storage: SD cards
+# Storage: SD cards and FAT
 
 [include/rtos/storage/sd_card.hpp](../include/rtos/storage/sd_card.hpp) implements the SD memory card protocol (SD Physical Layer Simplified Specification) over any host controller that satisfies the `SdHost` concept. [port/stm32h563/.../sdmmc.hpp](../port/stm32h563/include/rtos/port/stm32h5/sdmmc.hpp) is the STM32H5 host controller.
 
@@ -31,6 +31,28 @@ if (card.init() == rtos::storage::SdStatus::Ok) {
 ## Tests
 
 - **Host** ([sd_card_test.cpp](../tests/sd_card_test.cpp)): the protocol against a simulated card. It covers SDHC, SDSC v2 and v1, a missing card, a card that never gets ready, programming polls after a write, multi-block transfers with CMD12, rejected ranges and CSD capacity.
-- **Renode** ([sdcard_test.py](../emulation/sdcard_test.py)): driver and protocol against the SDMMC + card model with real image files ([Testing](testing.md#sd-card-test-renode)).
+- **Host** ([filex_media_test.cpp](../tests/filex_media_test.cpp)): FileX on a RAM disk. It covers FAT16 and FAT32 round-trips across a remount, the first partition of an MBR disk (MBR untouched), and unaligned caller buffers (the RAM disk refuses them, as IDMA does).
+- **Renode** ([sdcard_test.py](../emulation/sdcard_test.py)): driver, protocol and file system against the SDMMC + card model with real image files ([Testing](testing.md#sd-card-test-renode)).
 
-A file system (FAT/exFAT) on top of `SdCard` comes next.
+## File system: FileX (FAT12/16/32)
+
+[include/rtos/storage/filex_media.hpp](../include/rtos/storage/filex_media.hpp) runs [FileX](https://github.com/eclipse-threadx/filex) (Eclipse ThreadX, MIT; fetched and pinned by [cmake/filex.cmake](../cmake/filex.cmake), configured by [third_party/filex/fx_user.h](../third_party/filex/fx_user.h)) on any `BlockDevice`, such as an `SdCard` or a RAM disk:
+
+```cpp
+rtos::storage::FileXMedia<rtos::storage::SdCard<Host>> volume{card};    // link rtos_filex
+if (volume.open() != FX_SUCCESS) {        // cards come formatted
+    volume.format_fat("FCU");             // FAT12/16/32 by cluster count, no partition table
+    volume.open();
+}
+FX_FILE file;
+fx_file_create(volume.media(), const_cast<CHAR*>("log.txt"));
+fx_file_open(volume.media(), &file, const_cast<CHAR*>("log.txt"), FX_OPEN_FOR_WRITE);
+fx_file_write(&file, data, size);
+fx_file_close(&file);
+volume.flush();
+```
+
+- **Standalone:** no ThreadX, no locks. One thread owns a volume. Dates and times come from the application (`fx_system_date_set`, `fx_system_time_set`), not from a timer.
+- **Partitions:** a card with a partition table is opened at its first partition, an unpartitioned card at sector 0. The driver takes the offset from the MBR, not from the boot sector's hidden-sector count. `format_fat` formats the whole device without a partition table.
+- **Alignment:** FileX transfers directly from and to the caller's buffers. Buffers that aren't word-aligned go through a bounce sector, because the SDMMC's IDMA needs word alignment.
+- **No exFAT:** the open-source FileX has no exFAT. SDXC cards (over 32 GB, exFAT from the factory) must be formatted with `format_fat` (FAT32).

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
-// SD card check for the Factory Control Unit: initialises the card in the SDMMC1 slot and
-// writes, reads back and compares test patterns - one block and a multi-block run - at the
-// card's last blocks (the first ones keep a file system). Ends with one line:
+// SD card check for the Factory Control Unit: initialises the card in the SDMMC1 slot, writes,
+// reads back and compares test patterns - one block and a multi-block run - at the card's last
+// blocks, then formats the card with FAT (FileX), writes two files (one in a directory),
+// remounts and reads them back. Ends with one line:
 //
 //     SDCARD RESULT: PASS (<blocks> blocks, SDHC|SDSC)      or      SDCARD RESULT: FAIL <step>
 //
@@ -17,6 +18,7 @@
 #include "rtos/port/cm33/port.hpp"
 #include "rtos/port/stm32h5/sdmmc.hpp"
 #include "rtos/rtos.hpp"
+#include "rtos/storage/filex_media.hpp"
 #include "rtos/storage/sd_card.hpp"
 
 namespace {
@@ -41,13 +43,19 @@ using rtos::storage::SdStatus;
 using Host = h5::Sdmmc<h5::SdmmcId::Sdmmc1, {.kernel_hz = board::pll1_q_hz, .cpu_hz = board::sysclk_hz}>;
 Host host;
 rtos::storage::SdCard<Host> card{host};
+rtos::storage::FileXMedia<rtos::storage::SdCard<Host>> volume{card};
+
+constexpr char greeting[] = "rtoos on the Factory Control Unit\n";
+constexpr std::size_t data_bytes = 20'000;
+alignas(4) std::array<std::byte, data_bytes> data_out;
+alignas(4) std::array<std::byte, data_bytes> data_in;
 
 constexpr std::size_t run_blocks = 8;
 alignas(4) std::array<std::byte, run_blocks * rtos::storage::sd_block_size> out_buffer;
 alignas(4) std::array<std::byte, run_blocks * rtos::storage::sd_block_size> in_buffer;
 
 Kernel::Thread check_tcb;
-alignas(8) std::array<std::byte, 2048> check_stack;
+alignas(8) std::array<std::byte, 4096> check_stack;
 
 constexpr const char* status_name(SdStatus s) {
     switch (s) {
@@ -84,6 +92,25 @@ void fill(std::span<std::byte> b, std::uint32_t seed) {
     for (std::size_t i = 0; i < b.size(); ++i) {
         b[i] = static_cast<std::byte>((i * 31 + seed * 7 + (i >> 9)) & 0xFF);
     }
+}
+
+bool write_file(const char* path, std::span<const std::byte> content) {
+    FX_FILE file{};
+    return fx_file_create(volume.media(), const_cast<CHAR*>(path)) == FX_SUCCESS &&
+           fx_file_open(volume.media(), &file, const_cast<CHAR*>(path), FX_OPEN_FOR_WRITE) == FX_SUCCESS &&
+           fx_file_write(&file, const_cast<std::byte*>(content.data()), static_cast<ULONG>(content.size())) == FX_SUCCESS &&
+           fx_file_close(&file) == FX_SUCCESS;
+}
+
+std::size_t read_file(const char* path, std::span<std::byte> out) {
+    FX_FILE file{};
+    ULONG got = 0;
+    if (fx_file_open(volume.media(), &file, const_cast<CHAR*>(path), FX_OPEN_FOR_READ) != FX_SUCCESS) {
+        return 0;
+    }
+    (void)fx_file_read(&file, out.data(), static_cast<ULONG>(out.size()), &got);
+    (void)fx_file_close(&file);
+    return got;
 }
 
 void check(void*) {
@@ -125,6 +152,31 @@ void check(void*) {
     if (in_buffer != out_buffer) {
         finish("compare run", SdStatus::CardError);
     }
+
+    // file system: format, two files, remount, read back
+    if (volume.format_fat("FCU", 8) != FX_SUCCESS || volume.open() != FX_SUCCESS) {
+        finish("format", SdStatus::CardError);
+    }
+    fill(data_out, 3);
+    if (!write_file("hello.txt", std::as_bytes(std::span(greeting, sizeof greeting - 1))) ||
+        fx_directory_create(volume.media(), const_cast<CHAR*>("logs")) != FX_SUCCESS ||
+        !write_file("logs/data.bin", data_out) || volume.close() != FX_SUCCESS) {
+        finish("write files", SdStatus::CardError);
+    }
+    if (volume.open() != FX_SUCCESS) {
+        finish("remount", SdStatus::CardError);
+    }
+    std::array<std::byte, sizeof greeting - 1> text{};
+    if (read_file("hello.txt", text) != text.size() || !std::ranges::equal(text, std::as_bytes(std::span(greeting, sizeof greeting - 1)))) {
+        finish("read hello.txt", SdStatus::CardError);
+    }
+    if (read_file("logs/data.bin", data_in) != data_bytes || data_in != data_out) {
+        finish("read logs/data.bin", SdStatus::CardError);
+    }
+    board::print("fs: FAT");
+    board::print_dec(volume.media()->fx_media_32_bit_FAT ? 32u : (volume.media()->fx_media_12_bit_FAT ? 12u : 16u));
+    board::print(", hello.txt and logs/data.bin read back\n");
+    (void)volume.close();
     finish(nullptr, SdStatus::Ok);
 }
 

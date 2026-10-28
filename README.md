@@ -49,7 +49,7 @@ cmake --preset board && cmake --build --preset board
 | [Kernel](docs/kernel.md) | threads, synchronisation, execution contexts, rules |
 | [Logging](docs/logging.md) | non-blocking log journal with independent readers (console, network) |
 | [Motion](docs/motion.md) | stepper moves with a sigmoid speed ramp computed by the compiler |
-| [Storage](docs/storage.md) | SD cards: protocol and STM32H5 SDMMC driver |
+| [Storage](docs/storage.md) | SD cards (protocol, STM32H5 SDMMC driver) and FAT file system (FileX) |
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
