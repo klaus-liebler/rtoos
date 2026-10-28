@@ -66,6 +66,22 @@ runtime.add(server, "https");
 - **WebSocket keep-alive:** a client that sent nothing for `ws_ping_interval_ms` gets a ping; if nothing comes back within `ws_pong_timeout_ms`, it is closed.
 - **Origin check:** WebSocket upgrades from foreign origins are rejected with 403.
 - **Measurements:** `TlsServerContext::stats()` holds the cycles of the last handshake and a per-record cost model (fixed + per byte, least-squares fit).
+- **Single-page apps:** a resource with the path `"*"` answers every GET path that no other resource matches, so the app's client routes (`/system`, `/power`, …) survive a reload. Exact paths always win, wherever they are listed.
+
+### WebSocket messages from other threads
+
+The server belongs to the network thread. Other threads, such as a control loop that publishes its state or a log mirror, post their messages into a [`WebSocketOutbox`](../include/rtos/net/websocket_outbox.hpp), which the network thread delivers:
+
+```cpp
+rtos::net::WebSocketOutbox<Server, 2048, Kernel::Lock> outbox{server};
+outbox.set_wake([](void*) noexcept { kernel.notify(net_tcb, slot_wake, 1, rtos::NotifyAction::SetBits); }, nullptr);
+runtime.add(outbox, "ws-outbox");
+
+outbox.broadcast(status);        // any thread or kernel-aware ISR, never waits
+outbox.send(session, reply);
+```
+
+Posting copies the message into a byte ring under one short lock. When the ring is full, the message is refused and counted (`stats().dropped`). At delivery, a session whose transmit queue is full misses the message (`stats().undelivered`): status messages are superseded by the next ones anyway.
 
 ## Fairness in one thread
 

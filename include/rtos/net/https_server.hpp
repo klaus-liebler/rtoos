@@ -46,7 +46,8 @@
 namespace rtos::net {
 
 struct HttpResource {
-    std::string_view path;              ///< exact path, e.g. "/"
+    std::string_view path;              ///< exact path, e.g. "/"; "*": every GET path no other
+                                        ///< resource matches (single-page apps with client routes)
     std::string_view content_type;      ///< e.g. "text/html; charset=utf-8"
     std::string_view content_encoding;  ///< "br" for pre-compressed content, or empty
     std::span<const std::byte> body;
@@ -395,28 +396,37 @@ private:
                 upgrade();
                 return;
             }
+            const HttpResource* match = nullptr;
             for (const auto& res : owner_->resources_) {
                 if (res.path == path) {
-                    if (!res.content_encoding.empty()) {
-                        const auto accept = r.header("Accept-Encoding");
-                        if (!accept || !contains_token(*accept, res.content_encoding)) {
-                            respond_error("406 Not Acceptable");
-                            return;
-                        }
-                    }
-                    begin_header("200 OK");
-                    add_header("Content-Type", res.content_type);
-                    if (!res.content_encoding.empty()) {
-                        add_header("Content-Encoding", res.content_encoding);
-                    }
-                    add_length(res.body.size());
-                    add_header("Cache-Control", "no-cache");
-                    end_header();
-                    body_ = res.body;
-                    bulk_ = body_.size() > owner_->config_.inline_response_max;
-                    conn_->set_bulk(bulk_);
-                    return;
+                    match = &res;
+                    break;
                 }
+                if (res.path == "*" && match == nullptr) {
+                    match = &res;  // fallback, unless an exact path follows
+                }
+            }
+            if (match != nullptr) {
+                const HttpResource& res = *match;
+                if (!res.content_encoding.empty()) {
+                    const auto accept = r.header("Accept-Encoding");
+                    if (!accept || !contains_token(*accept, res.content_encoding)) {
+                        respond_error("406 Not Acceptable");
+                        return;
+                    }
+                }
+                begin_header("200 OK");
+                add_header("Content-Type", res.content_type);
+                if (!res.content_encoding.empty()) {
+                    add_header("Content-Encoding", res.content_encoding);
+                }
+                add_length(res.body.size());
+                add_header("Cache-Control", "no-cache");
+                end_header();
+                body_ = res.body;
+                bulk_ = body_.size() > owner_->config_.inline_response_max;
+                conn_->set_bulk(bulk_);
+                return;
             }
             respond_error("404 Not Found");
         }

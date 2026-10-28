@@ -76,9 +76,10 @@ struct TcpPeer {
     std::deque<std::byte> rx;
 };
 
-/// wolfSSL client doing GET /blob over a TcpPeer.
+/// wolfSSL client doing GET <path> (default /blob) over a TcpPeer.
 struct Client {
     TcpPeer peer;
+    std::string path = "/blob";
     WOLFSSL* ssl = nullptr;
     std::deque<std::byte> out;  ///< TLS bytes waiting to be sent
     enum class State { Connecting, Request, Reading, Done, Failed } state = State::Connecting;
@@ -309,10 +310,10 @@ protected:
     }
 
     void drive_clients() {
-        static constexpr std::string_view request =
-            "GET /blob HTTP/1.1\r\nHost: fcu.local\r\nConnection: close\r\n\r\n";
         for (auto& cp : clients) {
             Client& c = *cp;
+            const std::string request =
+                "GET " + c.path + " HTTP/1.1\r\nHost: fcu.local\r\nConnection: close\r\n\r\n";
             if (!c.peer.established || c.peer.reset) {
                 continue;
             }
@@ -423,7 +424,10 @@ protected:
     alignas(16) static inline std::array<std::byte, 160 * 1024> tls_memory{};
     TlsServerContext tls;
     std::array<std::byte, blob_size> blob{};
-    std::array<HttpResource, 1> resources{
+    static constexpr std::string_view app_page{"<!doctype html><title>app</title>"};
+    // "*" first: an exact path listed later still wins
+    std::array<HttpResource, 2> resources{
+        HttpResource{"*", "text/html", "", std::as_bytes(std::span(app_page.data(), app_page.size()))},
         HttpResource{"/blob", "application/octet-stream", "", std::span<const std::byte>(blob)}};
     Server::WebSocketHandler ws{};
     Server server{stack, tls, resources, "/ws", ws};
@@ -452,6 +456,25 @@ TEST_F(HttpsFairness, ParallelDownloadsCompleteByteExact) {
         pass();
     }
     expect_downloads_complete();
+}
+
+// A single-page app's client routes (/system, /power, ...) all get the app; /blob stays exact.
+TEST_F(HttpsFairness, FallbackResourceServesEveryOtherPath) {
+    add_client().path = "/system";
+    add_client().path = "/power?tab=2";
+    add_client();
+    for (int i = 0; i < 20'000 && !all_done(); ++i) {
+        pass();
+    }
+    ASSERT_TRUE(all_done());
+    for (std::size_t i = 0; i < 2; ++i) {
+        const std::string& r = clients[i]->response;
+        EXPECT_EQ(r.rfind("HTTP/1.1 200 OK", 0), 0u) << r;
+        EXPECT_NE(r.find("Content-Type: text/html"), std::string::npos);
+        EXPECT_EQ(r.substr(r.find("\r\n\r\n") + 4), app_page);
+    }
+    const std::string& blob_response = clients[2]->response;
+    EXPECT_EQ(blob_response.size() - (blob_response.find("\r\n\r\n") + 4), blob_size);
 }
 
 TEST_F(HttpsFairness, BulkAdmissionKeepsBuffersForInteractiveReplies) {

@@ -18,6 +18,7 @@ add_executable(rtos_tests
     dhcp_server_test.cpp
     tls_test.cpp
     http_ws_test.cpp
+    websocket_outbox_test.cpp
     fuzz_test.cpp
     https_fairness_test.cpp
     modbus_test.cpp
