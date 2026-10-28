@@ -5,7 +5,7 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, USART1..3, SDMMC1, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
 // SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
@@ -125,6 +125,12 @@ gpioPortH: GPIOPort.STM32_GPIOPort @ sysbus <0x42021C00, +0x400>
 gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
     modeResetValue: 0xFFFFFFFF
     numberOfAFs: 16
+
+// SDMMC1 with an SD card: own model STM32H5_SDMMC.cs (IDMA, R7 check pattern; fcu.resc
+// compiles it). The card is inserted at run time:
+//   sysbus.sdmmc1 InsertCard @<image> <true: SDHC | false: SDSC>
+sdmmc1: SD.STM32H5_SDMMC @ sysbus 0x46008000
+    IRQ -> nvic@79
 
 // Note: with MACCR.SARC = 000 the model logs "Attempted to use external MAC address"
 // for every TX frame and leaves the frame unchanged - which is what the STM32

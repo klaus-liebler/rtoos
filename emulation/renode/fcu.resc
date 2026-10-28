@@ -6,6 +6,7 @@ $bin?=@build/arm/apps/fcu_selftest.elf
 
 using sysbus
 mach create $name
+include $ORIGIN/STM32H5_SDMMC.cs
 machine LoadPlatformDescription $ORIGIN/fcu.repl
 
 macro reset

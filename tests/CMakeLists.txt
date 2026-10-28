@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(rtos_tests
     kernel_test.cpp
     log_test.cpp
+    sd_card_test.cpp
     motion_test.cpp
     port_config_test.cpp
     block_pool_test.cpp

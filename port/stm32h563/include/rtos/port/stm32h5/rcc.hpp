@@ -125,14 +125,15 @@ namespace detail {
 inline volatile std::uint32_t& rcc_reg(std::uintptr_t offset) noexcept {
     return *reinterpret_cast<volatile std::uint32_t*>(periph_alias + 0x0402'0C00 + offset);
 }
-inline constexpr std::uint16_t ahb1 = 0x88, ahb2 = 0x8C, apb1l = 0x9C, apb1h = 0xA0, apb2 = 0xA4, apb3 = 0xA8;
+inline constexpr std::uint16_t ahb1 = 0x88, ahb2 = 0x8C, ahb4 = 0x94, apb1l = 0x9C, apb1h = 0xA0, apb2 = 0xA4, apb3 = 0xA8;
 inline constexpr std::uint16_t enr_to_rstr = 0x28;
 }  // namespace detail
 
 namespace gate {
-using detail::ahb1, detail::ahb2, detail::apb1l, detail::apb1h, detail::apb2, detail::apb3;
+using detail::ahb1, detail::ahb2, detail::ahb4, detail::apb1l, detail::apb1h, detail::apb2, detail::apb3;
 inline constexpr Gate gpdma1{ahb1, 0}, gpdma2{ahb1, 1}, crc{ahb1, 12};
 inline constexpr Gate adc12{ahb2, 10};
+inline constexpr Gate sdmmc1{ahb4, 11}, sdmmc2{ahb4, 12};
 inline constexpr Gate tim2{apb1l, 0}, tim3{apb1l, 1}, tim4{apb1l, 2}, tim5{apb1l, 3}, tim6{apb1l, 4}, tim7{apb1l, 5};
 inline constexpr Gate spi2{apb1l, 14}, spi3{apb1l, 15}, usart2{apb1l, 17}, usart3{apb1l, 18}, uart4{apb1l, 19},
                       uart5{apb1l, 20}, i2c1{apb1l, 21}, i2c2{apb1l, 22}, uart7{apb1l, 30}, uart8{apb1l, 31};

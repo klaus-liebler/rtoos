@@ -112,6 +112,7 @@ include/rtos/kernel/     scheduler internals: ready queue, wait queues, timer wh
 include/rtos/sync/       Semaphore, MessageQueue, ObjectPool, BlockPool, SpscRing
 include/rtos/log/        log journal, RTOS_LOG_* macros, console format
 include/rtos/motion/     stepper moves with a compile-time sigmoid ramp
+include/rtos/storage/    SD card protocol
 include/rtos/net/        IP stack, DHCP, DNS, mDNS, SNTP, TLS, HTTP, WebSocket, HTTPS,
                          TcpServer, NetRuntime, Modbus TCP and OPC UA transports
 include/rtos/modbus/     Modbus PDU, RegisterBank, RTU framing, RtuService

@@ -41,6 +41,13 @@ constexpr std::array ethernet_pins{
     h5::gpio::output(phy_reset, /*initial_high*/ false),
 };
 
+// SD card: SDMMC1, 1-bit bus (AF12, ST open pin data STM32H563VITx); CMD and D0 pulled up
+constexpr std::array sdcard_pins{
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 10}, 12, h5::gpio::Speed::High, h5::gpio::Pull::Up),  // D0
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 12}, 12, h5::gpio::Speed::High),                      // CK
+    h5::gpio::alternate({h5::gpio::GpioPort::D, 2}, 12, h5::gpio::Speed::High, h5::gpio::Pull::Up),   // CMD
+};
+
 void init() noexcept {
     h5::rcc::configure_clocks<clocks>();
 
@@ -71,6 +78,8 @@ void init_ethernet() noexcept {
     h5::gpio::write(phy_reset, true);
     spin(sysclk_hz / 500);  // >= 2 ms until the PHY answers on MDIO
 }
+
+void init_sdcard() noexcept { h5::gpio::configure<sdcard_pins>(); }
 
 rtos::net::MacAddress mac_address() noexcept {
     // FNV-1a over the 96-bit UID (RM0481: UID_BASE 0x08FFF800, stm32h563xx.h)

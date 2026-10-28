@@ -44,6 +44,9 @@ void init() noexcept;
 /// RMII pins (AF11) and a PHY reset pulse. Call before Ethernet::init().
 void init_ethernet() noexcept;
 
+/// SD card slot: SDMMC1 1-bit bus (D0 PA10, CK PC12, CMD PD2; AF12), no card detect.
+void init_sdcard() noexcept;
+
 /// Unique, locally administered MAC address derived from the 96-bit device UID.
 [[nodiscard]] rtos::net::MacAddress mac_address() noexcept;
 

@@ -1,0 +1,36 @@
+# Storage: SD cards
+
+[include/rtos/storage/sd_card.hpp](../include/rtos/storage/sd_card.hpp) implements the SD memory card protocol (SD Physical Layer Simplified Specification) over any host controller that satisfies the `SdHost` concept. [port/stm32h563/.../sdmmc.hpp](../port/stm32h563/include/rtos/port/stm32h5/sdmmc.hpp) is the STM32H5 host controller.
+
+```cpp
+using Host = h5::Sdmmc<h5::SdmmcId::Sdmmc1, {.kernel_hz = board::pll1_q_hz, .cpu_hz = board::sysclk_hz}>;
+Host host;
+rtos::storage::SdCard<Host> card{host};
+
+board::init_sdcard();                         // FCU: SDMMC1 1-bit (D0 PA10, CK PC12, CMD PD2)
+if (card.init() == rtos::storage::SdStatus::Ok) {
+    card.read(block, buffer);                 // whole 512-byte blocks, word-aligned buffer
+    card.write(block, data);                  // returns once the card has programmed the data
+}
+```
+
+## Protocol
+
+- **Initialisation:** CMD0, CMD8 (version 2 cards echo the check pattern, version 1 cards don't answer), ACMD41 with HCS until the card is ready (up to about 1 s), CMD2, CMD3, CMD9 (the CSD gives the capacity, CSD 1.0 and 2.0), CMD7, CMD16 for byte-addressed SDSC cards. After that the transfer clock is switched on.
+- **Addressing:** block numbers for SDHC/SDXC, byte addresses for SDSC. The caller always uses block numbers.
+- **Transfers:** CMD17/CMD24 for one block, CMD18/CMD25 plus CMD12 for several. After a write, CMD13 polls until the card is back in the transfer state.
+- **Errors:** `SdStatus` (timeout, CRC error, card error, no card, unsupported card, not ready). Partial blocks and ranges beyond the card are rejected before anything is sent.
+
+## STM32H5 host controller
+
+- **Configuration at compile time:** the clock dividers for identification (≤ 400 kHz) and transfer (≤ 25 MHz, default speed) are computed and checked from the kernel clock (PLL1 Q). On the FCU this gives 400 kHz and 25 MHz.
+- **Data by IDMA:** the SDMMC's internal DMA moves data directly between the card and the caller's buffer, with no CPU copy and no FIFO handling.
+- **Busy:** after R1b responses the driver polls the D0 line (STAR.BUSYD0).
+- **Polled:** commands and data wait on the DWT cycle counter. A 512-byte block at 25 MHz on a 1-bit bus takes about 0.2 ms.
+
+## Tests
+
+- **Host** ([sd_card_test.cpp](../tests/sd_card_test.cpp)): the protocol against a simulated card. It covers SDHC, SDSC v2 and v1, a missing card, a card that never gets ready, programming polls after a write, multi-block transfers with CMD12, rejected ranges and CSD capacity.
+- **Renode** ([sdcard_test.py](../emulation/sdcard_test.py)): driver and protocol against the SDMMC + card model with real image files ([Testing](testing.md#sd-card-test-renode)).
+
+A file system (FAT/exFAT) on top of `SdCard` comes next.
