@@ -21,9 +21,10 @@ constexpr size_t SHA256_DIGEST_SIZE = 32;
 constexpr size_t SHA1_DIGEST_SIZE = 20;
 constexpr size_t MAX_RSA_MODULUS_BYTES = 256; // RSA-2048
 
-/// `memory` (16-byte aligned, e.g. 24 KB) becomes the static pool for keys, the random
-/// number generator and the certificate manager. Only the first call sets it up; later
-/// calls report whether that worked.
+/// `memory` (16-byte aligned, e.g. 24 KB) becomes the static pool for the random number
+/// generator, the certificate manager and the client certificate checks. Empty: the existing
+/// wolfSSL pool (the global heap hint, e.g. the TLS context's) is shared. Only the first call
+/// sets it up; later calls report whether that worked.
 bool InitCrypto(std::span<std::byte> memory);
 
 bool Sha256(std::span<const Byte> data, Byte out[SHA256_DIGEST_SIZE]);

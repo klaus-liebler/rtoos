@@ -151,6 +151,13 @@ bool Validity(std::span<const Byte> certDer, int64_t &notBefore, int64_t &notAft
 bool InitCrypto(std::span<std::byte> memory) {
     if(g_heap != nullptr) return g_rngReady; // once per program: the pool backs keys and the RNG
     if(wolfSSL_Init() != WOLFSSL_SUCCESS) return false;
+    if(memory.empty()) {
+        // no pool of its own: the existing one (the TLS context's, tls.cpp) serves OPC UA too
+        g_heap = static_cast<WOLFSSL_HEAP_HINT *>(wolfSSL_GetGlobalHeapHint());
+        if(g_heap == nullptr) return false;
+        g_rngReady = wc_InitRng_ex(&g_rng, g_heap, INVALID_DEVID) == 0;
+        return g_rngReady;
+    }
     // Buckets for what lives here (DRBG, certificate manager and its CA, the decoded client
     // certificate during a check); RSA itself works on the stack (WOLFSSL_SP_NO_MALLOC).
     // wolfSSL's default split is made for TLS sessions and needs ~85 KB.

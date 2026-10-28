@@ -43,6 +43,8 @@ extern "C" {
 
 /* ---- memory: static pool, no malloc ---------------------------------------------- */
 #define WOLFSSL_STATIC_MEMORY
+/* allocation/free callback of the static pool: per-bucket high-water marks (net/tls_memory.hpp) */
+#define WOLFSSL_STATIC_MEMORY_DEBUG_CALLBACK
 #define WOLFSSL_NO_MALLOC
 
 /* ---- entropy ------------------------------------------------------------------------ */

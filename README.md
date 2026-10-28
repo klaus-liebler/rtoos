@@ -129,7 +129,7 @@ WebSocket-Protokoll (binär, erstes Byte = Typ):
 
 Eigenschaften:
 
-- **Speicher:** kein Heap. Paketpuffer und Ethernet-Deskriptoren liegen in `.dma_buffer`, einem nicht cachebaren MPU-Bereich. wolfSSL nutzt einen statischen Pool von 160 KB für alle Sessions (`WOLFSSL_STATIC_MEMORY`).
+- **Speicher:** kein Heap. Paketpuffer und Ethernet-Deskriptoren liegen in `.dma_buffer`, einem nicht cachebaren MPU-Bereich. wolfSSL nutzt einen statischen Pool von 72 KB für alle TLS-Sessions und OPC UA (`WOLFSSL_STATIC_MEMORY`). Seine Aufteilung ist gemessen, nicht geschätzt: [tls_memory.hpp](include/rtos/net/tls_memory.hpp) zählt über den Debug-Callback des Pools pro Blockgröße Bestand, Höchststand und größte Anfrage; die Firmware gibt das alle 10 s aus (`tls: pool peak ...`), und der Renode-Test prüft unter Last, dass keine Allokation fehlschlägt. Unter Volllast (6 Sessions, Handshakes, OPC-UA-RSA) lag der Höchststand bei 28 KB; Blockgrößen und Anzahlen in `apps/net/main.cpp` folgen den Messwerten plus Reserve.
 - **TLS:** Handshake und Records macht wolfSSL komplett, inklusive KeyUpdate und close_notify ([tls.hpp](include/rtos/net/tls.hpp)).
   - Ein `write()` ergibt einen Record (höchstens 4 KB). Eine WebSocket-Nachricht, also Header und Nutzlast zusammenhängend, ist immer genau ein Record.
   - Kopien: Beim Senden kopiert wolfSSL den Klartext in seinen Record-Puffer, verschlüsselt dort, und der I/O-Callback kopiert den Ciphertext in TCP-Segmente. Beim Empfangen läuft es umgekehrt.

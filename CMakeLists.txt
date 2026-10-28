@@ -50,7 +50,7 @@ execute_process(COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/mak
 add_library(rtos_certs INTERFACE)  # #embed "server.der" / "server.key.der" / "ca.der"
 target_compile_options(rtos_certs INTERFACE --embed-dir=${RTOS_CERT_DIR})
 
-add_library(rtos_tls STATIC src/net/tls.cpp src/net/websocket.cpp)
+add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp)
 target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
 
 # ---- OPC UA (the FCU's opcua_native library; crypto: wolfCrypt RSA-2048) ----------

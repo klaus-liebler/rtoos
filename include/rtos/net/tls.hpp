@@ -99,6 +99,13 @@ struct TlsStats {
     TlsCostModel read;   ///< wolfSSL_read() calls that returned data
 };
 
+/// Bucket layout of the static pool: block sizes (ascending) and how many blocks of each per
+/// round; wolfSSL repeats the rounds until the memory is used up. Empty: wolfSSL's defaults.
+struct TlsPoolLayout {
+    std::span<const std::uint32_t> sizes;
+    std::span<const std::uint32_t> counts;
+};
+
 class TlsServerContext {
 public:
     TlsServerContext() noexcept = default;
@@ -113,9 +120,10 @@ public:
     [[nodiscard]] static const TlsStats& stats() noexcept;
 
     /// `memory` (16-byte aligned) becomes wolfSSL's static pool for this context and
-    /// all its sessions; at most `max_sessions` sessions are open at the same time.
+    /// all its sessions, divided into buckets per `layout`; at most `max_sessions` sessions
+    /// are open at the same time.
     [[nodiscard]] TlsInitResult init(std::span<std::byte> memory, const TlsCredentials& credentials,
-                                     int max_sessions) noexcept;
+                                     int max_sessions, const TlsPoolLayout& layout = {}) noexcept;
     /// wolfSSL error code of the failed step (0 if none).
     [[nodiscard]] int last_error() const noexcept { return last_error_; }
 

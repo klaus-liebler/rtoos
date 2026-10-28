@@ -62,11 +62,30 @@ bool TlsServerContext::initialize_library(EntropySource entropy, SecondsSource s
 const TlsStats& TlsServerContext::stats() noexcept { return g_stats; }
 
 TlsInitResult TlsServerContext::init(std::span<std::byte> memory, const TlsCredentials& credentials,
-                                     int max_sessions) noexcept {
+                                     int max_sessions, const TlsPoolLayout& layout) noexcept {
     WOLFSSL_CTX* ctx = nullptr;
-    last_error_ = wolfSSL_CTX_load_static_memory(&ctx, wolfTLSv1_3_server_method_ex,
-                                                 reinterpret_cast<unsigned char*>(memory.data()),
-                                                 static_cast<unsigned int>(memory.size()), WOLFMEM_GENERAL, max_sessions);
+    if (layout.sizes.empty()) {
+        last_error_ = wolfSSL_CTX_load_static_memory(&ctx, wolfTLSv1_3_server_method_ex,
+                                                     reinterpret_cast<unsigned char*>(memory.data()),
+                                                     static_cast<unsigned int>(memory.size()), WOLFMEM_GENERAL,
+                                                     max_sessions);
+    } else {
+        // as wolfSSL_CTX_load_static_memory, with this layout instead of WOLFMEM_BUCKETS/DIST
+        if (layout.sizes.size() != layout.counts.size() || layout.sizes.size() > WOLFMEM_MAX_BUCKETS) {
+            return TlsInitResult::StaticMemory;
+        }
+        std::array<word32, WOLFMEM_MAX_BUCKETS> sizes{}, counts{};
+        std::copy(layout.sizes.begin(), layout.sizes.end(), sizes.begin());
+        std::copy(layout.counts.begin(), layout.counts.end(), counts.begin());
+        WOLFSSL_HEAP_HINT* hint = nullptr;
+        last_error_ = wc_LoadStaticMemory_ex(&hint, static_cast<unsigned int>(layout.sizes.size()), sizes.data(),
+                                             counts.data(), reinterpret_cast<unsigned char*>(memory.data()),
+                                             static_cast<unsigned int>(memory.size()), WOLFMEM_GENERAL, max_sessions);
+        if (last_error_ == 0) {
+            ctx = wolfSSL_CTX_new_ex(wolfTLSv1_3_server_method_ex(hint), hint);
+            last_error_ = ctx != nullptr ? WOLFSSL_SUCCESS : WOLFSSL_FAILURE;
+        }
+    }
     if (last_error_ != WOLFSSL_SUCCESS) {
         return TlsInitResult::StaticMemory;
     }

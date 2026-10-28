@@ -84,7 +84,8 @@ public:
     OpcUaServer(const OpcUaServer&) = delete;
     OpcUaServer& operator=(const OpcUaServer&) = delete;
 
-    /// Crypto pool (`crypto_memory`, 16-byte aligned, ~24 KB), server key, trusted CA. Once.
+    /// Crypto pool (`crypto_memory`, 16-byte aligned, ~24 KB; empty: share the TLS context's
+    /// pool, created before), server key, trusted CA. Once.
     [[nodiscard]] OpcUaInitResult init(const OpcUaIdentity& id, std::span<std::byte> crypto_memory) noexcept {
         namespace sec = opcua::security;
         if (!sec::InitCrypto(crypto_memory)) {

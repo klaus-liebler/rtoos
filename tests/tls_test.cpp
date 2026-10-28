@@ -18,6 +18,7 @@
 #include <string>
 
 #include "rtos/net/tls.hpp"
+#include "rtos/net/tls_memory.hpp"
 
 namespace {
 
@@ -181,6 +182,37 @@ TEST_F(TlsTest, HandshakeVerifiesCertificateAndHostName) {
     ASSERT_TRUE(handshake());
     EXPECT_STREQ(server.cipher_suite(), "TLS13-CHACHA20-POLY1305-SHA256");
     EXPECT_STREQ(wolfSSL_get_version(client), "TLSv1.3");
+}
+
+// A pool with its own bucket layout; the tracking counts its buckets while it is loaded and
+// every block taken by a handshake. (fcu_net's layout is measured on the target: wolfSSL's
+// structures are larger on x64, its 5632-byte blocks would not hold them here.)
+TEST_F(TlsTest, PoolLayoutAndHighWaterMarks) {
+    rtos::net::tls_pool_tracking_start();
+    alignas(16) static std::array<std::byte, 96 * 1024> memory{};
+    static constexpr std::array<std::uint32_t, 7> sizes{64, 128, 256, 512, 1024, 4096, 16128};
+    static constexpr std::array<std::uint32_t, 7> counts{64, 24, 36, 8, 6, 6, 2};
+    const TlsCredentials credentials{bytes(server_cert, sizeof server_cert), bytes(server_key, sizeof server_key)};
+    TlsServerContext ctx;
+    ASSERT_EQ(ctx.init(memory, credentials, 2, {sizes, counts}), TlsInitResult::Ok) << ctx.last_error();
+    const rtos::net::TlsPoolStats& pool = rtos::net::tls_pool_stats();
+    for (std::size_t i = 0; i < sizes.size(); ++i) {
+        const auto it = std::find_if(pool.buckets.begin(), pool.buckets.begin() + static_cast<std::ptrdiff_t>(pool.count),
+                                     [&](const rtos::net::TlsPoolBucket& b) { return b.size == sizes[i]; });
+        ASSERT_NE(it, pool.buckets.begin() + static_cast<std::ptrdiff_t>(pool.count)) << sizes[i];
+        EXPECT_GE(it->total, counts[i]) << "at least one round of the layout";
+    }
+    EXPECT_GT(pool.total_bytes, 80'000u);
+    EXPECT_LE(pool.total_bytes, memory.size());
+    // the fixture's handshake (its own pool): the global callback counts it too
+    const std::uint32_t before = pool.peak_bytes;
+    ASSERT_TRUE(handshake());
+    EXPECT_GT(pool.peak_bytes, before);
+    EXPECT_EQ(pool.failures, 0u);
+
+    TlsServerContext bad;
+    static constexpr std::array<std::uint32_t, 2> two{64, 128};
+    EXPECT_EQ(bad.init(memory, credentials, 2, {sizes, two}), TlsInitResult::StaticMemory) << "sizes and counts differ";
 }
 
 TEST_F(TlsTest, ApplicationDataBothDirections) {

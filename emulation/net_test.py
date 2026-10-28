@@ -738,6 +738,13 @@ def main() -> int:
             ws.close()
         renewed = console.wait_for("dhcp: renewed 192.168.77.2", LEASE_S)
         check("DHCP renewal at T1 (unicast REQUEST)", renewed and "REQUEST (renew)" in dhcp_log, f"server saw {dhcp_log}")
+        # wolfSSL pool (TLS + OPC UA): high-water marks after the load (reported every 10 s)
+        pool_lines = [line.strip() for line in console.lines if "tls: pool peak" in line]
+        if pool_lines:
+            failures = int(pool_lines[-1].split("failures ")[1].split(",")[0])
+            check("wolfSSL pool: no failed allocation under load", failures == 0, pool_lines[-1])
+        else:
+            check("wolfSSL pool report", False, "no report")
         # The stack is painted at boot; a report after the OPC UA handshakes (every 10 s).
         stack_lines = [line for line in console.lines if "net: stack" in line]
         if stack_lines:

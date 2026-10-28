@@ -60,6 +60,7 @@
 #include "rtos/net/sntp.hpp"
 #include "rtos/net/stack.hpp"
 #include "rtos/net/tls.hpp"
+#include "rtos/net/tls_memory.hpp"
 #include "rtos/opcua/clock.hpp"
 #include "rtos/opcua/ns0_base.hpp"
 #include "rtos/opcua/registers.hpp"
@@ -157,7 +158,15 @@ net::SntpClient<Stack> sntp{stack, net::Ipv4Address::any(), sntp_port, 60'000};
 net::DnsResolver<Stack> dns{stack};
 
 // ---- TLS + HTTPS ----------------------------------------------------------------------
-alignas(16) std::array<std::byte, 160 * 1024> tls_memory;  // wolfSSL static pool (no heap)
+// wolfSSL static pool (no heap) of TLS and OPC UA, sized from measurements (tls_memory.hpp):
+// Renode net_test with 6 HTTPS sessions (5 downloads, a WebSocket), handshakes and the OPC UA
+// RSA opens. Measured peak blocks (largest request): 64:43 (63), 128:14, 256:24, 512:4,
+// 1024:2 (896), 2432-bucket:7 (2112), 16128-bucket:1 (5496), 29.6 KB in all. Block sizes fit the
+// largest requests; counts are the peaks plus ~50 %, the largest blocks for 2 concurrent
+// handshakes (max_handshakes) plus one. The 10 s report prints the marks (tls: pool peak).
+constexpr std::array<std::uint32_t, 7> tls_bucket_sizes{64, 128, 256, 512, 1024, 2176, 5632};
+constexpr std::array<std::uint32_t, 7> tls_bucket_counts{64, 24, 36, 8, 6, 10, 3};
+alignas(16) std::array<std::byte, 72 * 1024> tls_memory;
 net::TlsServerContext tls_context;
 
 const std::array<net::HttpResource, 2> resources{{
@@ -242,8 +251,8 @@ static_assert(ua::AllDataTypesResolve(ua_nodes));
 static_assert(ua::AllReferencesResolve(ua_nodes, ua_references));
 constexpr ua::AddressSpace ua_space(ua_nodes, ua_references);
 
-// The OpenSecureChannel's RSA-2048 work runs in background steps (opcua_server.hpp).
-alignas(16) std::array<std::byte, 48 * 1024> opcua_crypto_memory;  // wolfCrypt pool: keys, RNG, CA
+// The OpenSecureChannel's RSA-2048 work runs in background steps (opcua_server.hpp). Its
+// wolfCrypt allocations (RNG, CA, client certificate checks) share the TLS pool.
 net::OpcUaServer<Stack, 2> opcua{stack, ua_space, "opc.tcp://fcu.local:4840"};
 
 void set_led(bool on, std::string_view source) noexcept {
@@ -540,6 +549,27 @@ struct AppTasks {
             board::print_dec(runtime.stats(worst_step).max_step_cycles / cycles_per_us);
             board::print(" us\n");
         }
+        // wolfSSL pool (TLS + OPC UA): high-water mark overall and per bucket
+        // (size:peak/total<largest request)
+        const net::TlsPoolStats& pool = net::tls_pool_stats();
+        board::print("tls: pool peak ");
+        board::print_dec(pool.peak_bytes);
+        board::print(" of ");
+        board::print_dec(pool.total_bytes);
+        board::print(" bytes, failures ");
+        board::print_dec(pool.failures);
+        board::print(", buckets");
+        for (std::size_t i = 0; i < pool.count; ++i) {
+            board::print(" ");
+            board::print_dec(pool.buckets[i].size);
+            board::print(":");
+            board::print_dec(pool.buckets[i].peak);
+            board::print("/");
+            board::print_dec(pool.buckets[i].total);
+            board::print("<");
+            board::print_dec(pool.buckets[i].largest);
+        }
+        board::print("\n");
         board::print("net: stack ");
         board::print_dec(static_cast<std::uint32_t>(net_stack_used()));
         board::print(" of ");
@@ -647,8 +677,9 @@ void net_main(void*) {
         board::print("tls: library init failed\n");
         return;
     }
+    net::tls_pool_tracking_start();  // before the pool is loaded: counts its buckets
     if (const auto r = tls_context.init(tls_memory, {as_span(server_certificate), as_span(server_private_key)},
-                                        static_cast<int>(max_https_sessions));
+                                        static_cast<int>(max_https_sessions), {tls_bucket_sizes, tls_bucket_counts});
         r != net::TlsInitResult::Ok) {
         board::print("tls: context init failed, step ");
         board::print_dec(static_cast<std::uint32_t>(r));
@@ -658,8 +689,7 @@ void net_main(void*) {
 
     // OPC UA: after the TLS library (wolfCrypt is initialised, the global heap hint set).
     ua::SetClock([]() noexcept { return sntp.unix_ms(kernel.now()); }, []() noexcept { return kernel.now64(); });
-    if (const auto r = opcua.init({as_span(opcua_certificate), as_span(opcua_private_key), as_span(ca_certificate)},
-                                  opcua_crypto_memory);
+    if (const auto r = opcua.init({as_span(opcua_certificate), as_span(opcua_private_key), as_span(ca_certificate)}, {});
         r != net::OpcUaInitResult::Ok) {
         board::print("opcua: init failed, step ");
         board::print_dec(static_cast<std::uint32_t>(r));
