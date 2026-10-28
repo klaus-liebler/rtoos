@@ -2,6 +2,7 @@ rtos_add_firmware(fcu_demo SOURCES demo/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_selftest SOURCES selftest/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_net SOURCES net/main.cpp LIBRARIES rtos_board_fcu rtos_tls rtos_opcua rtos_certs)
 rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos_tls)
+rtos_add_firmware(fcu_stepper SOURCES stepper/main.cpp LIBRARIES rtos_board_fcu)
 # compile check of all chip drivers (instantiated with the FCU's clocks, not linked)
 add_library(rtos_drivers_check OBJECT drivers_check.cpp)
 target_link_libraries(rtos_drivers_check PRIVATE rtos_board_fcu)
@@ -91,4 +92,9 @@ if(EXISTS "${RTOS_RENODE}")
              COMMAND Python3::Interpreter -I ${PROJECT_SOURCE_DIR}/emulation/net_test.py
                      $<TARGET_FILE:fcu_net> ${RTOS_WEB_OUT} ${RTOS_CERT_DIR}/ca.crt ${RTOS_RENODE})
     set_tests_properties(net_renode PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 RUN_SERIAL TRUE)
+    # Sigmoid stepper ramp measured on the STEP pin (virtual time of every edge).
+    add_test(NAME stepper_renode
+             COMMAND Python3::Interpreter -I ${PROJECT_SOURCE_DIR}/emulation/stepper_test.py
+                     $<TARGET_FILE:fcu_stepper> --exe ${RTOS_RENODE})
+    set_tests_properties(stepper_renode PROPERTIES TIMEOUT 180)
 endif()

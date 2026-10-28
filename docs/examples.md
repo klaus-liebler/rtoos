@@ -8,6 +8,7 @@ The `apps/` directory holds four firmware images for the Factory Control Unit. T
 | `fcu_selftest` | [apps/selftest/main.cpp](../apps/selftest/main.cpp) | the kernel on real hardware mechanisms: context switches, FPU, interrupts of both classes, stack limit |
 | `fcu_net` | [apps/net/main.cpp](../apps/net/main.cpp) | a complete network product: Ethernet, DHCP, DNS, mDNS, SNTP, HTTPS with a web app and WebSocket, Modbus TCP, OPC UA, all in one network thread |
 | `fcu_bench` | [apps/bench/main.cpp](../apps/bench/main.cpp) | a measurement firmware (cost of copies in the TLS record path) |
+| `fcu_stepper` | [apps/stepper/main.cpp](../apps/stepper/main.cpp) | a stepper axis with a compile-time sigmoid ramp on a timer interrupt ([Motion](motion.md)) |
 
 Each one is a single `main.cpp` built with one line in [apps/CMakeLists.txt](../apps/CMakeLists.txt):
 

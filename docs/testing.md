@@ -6,7 +6,7 @@ rtoos is tested on three levels. Each level covers what the level below it canno
 |---|---|---|---|
 | 1: host unit tests | GoogleTest on the PC | all logic: kernel (on a mock CPU port), IP stack (over simulated links), TLS, HTTPS, WebSocket, Modbus, OPC UA, USB (against a simulated host); fuzzers | `ctest --preset host` |
 | 2: QEMU | own machine `fcu` | the kernel on the real CPU mechanisms: PendSV, lazy FPU, interrupt priorities and BASEPRI, SysTick, PSPLIM | `ctest --preset arm` (`selftest_qemu`) |
-| 3: Renode | FCU platform with Ethernet, on a TAP network | everything that involves the CPU's peripherals: the same self-test plus the end-to-end network test of the real firmware | `ctest --preset arm` (`selftest_renode`, `net_renode`) |
+| 3: Renode | FCU platform with Ethernet and timers, on a TAP network | everything that involves the CPU's peripherals: the same self-test, the end-to-end network test of the real firmware, the stepper ramp measured on the STEP pin | `ctest --preset arm` (`selftest_renode`, `net_renode`, `stepper_renode`) |
 
 Every change to the kernel, a port, the chip or the board must pass `ctest --preset host` and `ctest --preset arm`. `net_renode` reports *skipped* without the TAP adapter, and a skip does not count as a pass for network changes.
 
@@ -74,6 +74,7 @@ An emulator gap is fixed in the emulator model where possible. Otherwise the sel
 
 - Renode does not enforce PSPLIM. A thread stack overflow there corrupts memory silently, and stack painting misses frames that are not written densely. Size stacks from the frames.
 - Neither emulator models the `USB_DRD_FS` controller.
+- Renode's timer model (`Timers.STM32_Timer`) has no compare outputs or DMA, and its update period is ARR ticks instead of ARR + 1 (0.1 % at 1000 ticks): `stepper_test.py` tolerates that. QEMU has no timers.
 
 ### Network test (Renode over TAP)
 
@@ -103,6 +104,14 @@ ctest --preset arm -R net_renode -V
 - OPC UA with asyncua: None read-only, Sign and SignAndEncrypt with the client certificate, rejection of a self-signed client
 - 5 parallel 100 KB downloads plus WebSocket echo, Modbus and OPC UA response times (buffer budget and fairness)
 - no failed allocation in the wolfSSL pool under all of this load
+
+### Stepper test (Renode)
+
+```
+ctest --preset arm -R stepper_renode -V
+```
+
+[emulation/stepper_test.py](../emulation/stepper_test.py) loads a probe LED on the STEP pin (PB4) and hooks a Renode Python handler to its state changes, which records the virtual time of every edge. From the edges of `fcu_stepper`'s two moves it checks the sigmoid ramp: each step's rate, the fit against a linear ramp, where the acceleration peaks, cruise, the mirrored deceleration and the short triangle ([Motion](motion.md#tests)).
 
 ### Testing with a browser
 

@@ -48,6 +48,7 @@ cmake --preset board && cmake --build --preset board
 | [Your own project and board](docs/integration.md) | rtoos as the base of a product: CMake, board package, putting the services together |
 | [Kernel](docs/kernel.md) | threads, synchronisation, execution contexts, rules |
 | [Logging](docs/logging.md) | non-blocking log journal with independent readers (console, network) |
+| [Motion](docs/motion.md) | stepper moves with a sigmoid speed ramp computed by the compiler |
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
