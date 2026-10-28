@@ -468,8 +468,13 @@ TEST_F(Open62541AttributesTest, read_server_namespacearray) {
     EXPECT_EQ(v.value.TypeId(), ua::BuiltinTypeId::String);
     std::array<Byte, 128> buffer{};
     ua::ByteWriter w(buffer);
-    ASSERT_TRUE(ua::EncodeVariant(w, ua::Variant::Of(ua::StringArray{ua::kNamespaceArray})));
+    const ua::Variant served = ua::ReadNamespaceArray(nullptr);
+    ASSERT_TRUE(ua::EncodeVariant(w, served));
     EXPECT_EQ(w.Written()[1], 2) << "two namespaces";
+    const auto* names = served.GetIf<ua::StringArray>();
+    ASSERT_NE(names, nullptr);
+    EXPECT_EQ(names->values[0].value, "http://opcfoundation.org/UA/");
+    EXPECT_EQ(names->values[1].value, ua::Application().applicationUri) << "namespace 1 = the ApplicationUri";
     const DataValue rank = read({.node = ns0(ua::ns0::Server_NamespaceArray), .attribute = attr(A::ValueRank)});
     EXPECT_EQ(*rank.value.GetIf<ua::Int32>(), 1);
 }

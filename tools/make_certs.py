@@ -4,6 +4,7 @@
 
   make_certs.py <openssl executable> <output directory> --ca-cert <crt> --ca-key <key>
   make_certs.py <openssl executable> <output directory>      # local test CA
+                [--host fcu.local] [--ip 192.168.77.2] [--opcua-uri urn:...]
 
 with --ca-cert/--ca-key  sign with that CA; the key is only read by openssl, never
                          copied. The CA should follow tools/make_ca.py's profile.
@@ -13,18 +14,19 @@ without                  create (once) a local test CA with the same profile in 
 Output:
   ca.crt / ca.der              the signing CA's certificate (public)
   server.der / server.key.der  server certificate + its ECDSA P-256 key, embedded
-                               into the firmware; SAN DNS fcu.local, IP 192.168.77.2
+                               into the firmware; SAN DNS <host>, IP <ip>
   server.crt                   the same certificate (PEM)
   opcua.der / opcua.key.der    OPC UA application instance certificate (RSA-2048: the
                                Basic256Sha256 security policy needs RSA), SAN URI = the
-                               server's ApplicationUri, DNS fcu.local, IP 192.168.77.2
+                               server's ApplicationUri (<opcua-uri>), DNS <host>, IP <ip>
   opcua_client.der/.key.der    OPC UA client certificate signed by the CA (tests, asyncua;
   opcua_client.crt/.key.pem    import into UAExpert & Co.), SAN URI urn:rtoos:test-client
   opcua_rogue.der/.key.der     self-signed OPC UA client certificate: must be rejected
 
 The server certificate is (re)issued only if it is missing, does not verify strictly
 (RFC 5280 profile, -x509_strict) against the current CA, lacks the SAN, or expires
-within 30 days - running this at every configure is cheap. FOR DEVELOPMENT AND
+within 30 days, or names another host, IP or ApplicationUri - running this at every
+configure is cheap. FOR DEVELOPMENT AND
 TESTS ONLY: the server key is stored unencrypted in the output directory (git-ignored).
 """
 import argparse
@@ -34,9 +36,9 @@ import shutil
 import subprocess
 import sys
 
-SAN = "DNS:fcu.local,IP:192.168.77.2"
-OPCUA_URI = "urn:factory-control-unit:opcua-native"  # rtos/opcua: APPLICATION_URI
-OPCUA_SAN = f"URI:{OPCUA_URI},DNS:fcu.local,IP:192.168.77.2"
+DEFAULT_HOST = "fcu.local"
+DEFAULT_IP = "192.168.77.2"
+DEFAULT_OPCUA_URI = "urn:factory-control-unit:opcua-native"  # rtos/opcua: APPLICATION_URI
 # The CA is name-constrained to .local (tools/make_ca.py): a client needs a .local DNS name
 # (wolfSSL checks the CN as a DNS name when the SAN has none).
 CLIENT_SAN = "URI:urn:rtoos:test-client,DNS:test-client.local"
@@ -52,21 +54,31 @@ def ok(openssl: str, *args: str) -> bool:
     return subprocess.run([openssl, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
-def server_cert_valid(openssl: str, out: pathlib.Path, ca_crt: pathlib.Path) -> bool:
+def server_cert_valid(openssl: str, out: pathlib.Path, ca_crt: pathlib.Path, host: str, ip: str) -> bool:
     crt = out / "server.crt"
     if not all((out / f).exists() for f in ("server.crt", "server.der", "server.key.der")):
         return False
     if not ok(openssl, "verify", "-x509_strict", "-CAfile", str(ca_crt), "-purpose", "sslserver",
-              "-verify_hostname", "fcu.local", "-verify_ip", "192.168.77.2", str(crt)):
+              "-verify_hostname", host, "-verify_ip", ip, str(crt)):
         return False
     return ok(openssl, "x509", "-in", str(crt), "-noout", "-checkend", str(30 * 24 * 3600))
 
 
-def opcua_valid(openssl: str, out: pathlib.Path, ca_crt: pathlib.Path, name: str) -> bool:
+def has_uri(openssl: str, crt: pathlib.Path, uri: str) -> bool:
+    text = subprocess.run([openssl, "x509", "-in", str(crt), "-noout", "-ext", "subjectAltName"],
+                          capture_output=True, text=True).stdout
+    return f"URI:{uri}" in text
+
+
+def opcua_valid(openssl: str, out: pathlib.Path, ca_crt: pathlib.Path, name: str,
+                host: str | None = None, ip: str | None = None, uri: str | None = None) -> bool:
     crt = out / f"{name}.crt"
     if not all((out / f).exists() for f in (f"{name}.crt", f"{name}.der", f"{name}.key.der")):
         return False
-    if not ok(openssl, "verify", "-x509_strict", "-CAfile", str(ca_crt), str(crt)):
+    names = ["-verify_hostname", host, "-verify_ip", ip] if host is not None else []
+    if not ok(openssl, "verify", "-x509_strict", "-CAfile", str(ca_crt), *names, str(crt)):
+        return False
+    if uri is not None and not has_uri(openssl, crt, uri):
         return False
     return ok(openssl, "x509", "-in", str(crt), "-noout", "-checkend", str(30 * 24 * 3600))
 
@@ -99,8 +111,14 @@ def main() -> None:
     ap.add_argument("out", type=pathlib.Path)
     ap.add_argument("--ca-cert", type=pathlib.Path)
     ap.add_argument("--ca-key", type=pathlib.Path)
+    ap.add_argument("--host", default=DEFAULT_HOST, help="DNS name of the device (under .local for rtoosCA)")
+    ap.add_argument("--ip", default=DEFAULT_IP, help="IPv4 address in the certificates (private range for rtoosCA)")
+    ap.add_argument("--opcua-uri", default=DEFAULT_OPCUA_URI, help="OPC UA ApplicationUri of the server")
     args = ap.parse_args()
     openssl, out = args.openssl, args.out
+    host, ip = args.host, args.ip
+    san = f"DNS:{host},IP:{ip}"
+    opcua_san = f"URI:{args.opcua_uri},DNS:{host},IP:{ip}"
     out.mkdir(parents=True, exist_ok=True)
     ca_crt = out / "ca.crt"
 
@@ -121,23 +139,23 @@ def main() -> None:
             (out / "testCA.pem.key").replace(ca_key)
             run(openssl, "x509", "-in", str(ca_crt), "-outform", "DER", "-out", str(out / "ca.der"))
 
-    if not opcua_valid(openssl, out, ca_crt, "opcua"):
-        issue_rsa(openssl, out, "opcua", "fcu OPC UA", OPCUA_SAN, "serverAuth,clientAuth", ca_crt, ca_key)
-        print(f"make_certs: issued OPC UA certificate for {OPCUA_SAN}")
+    if not opcua_valid(openssl, out, ca_crt, "opcua", host, ip, args.opcua_uri):
+        issue_rsa(openssl, out, "opcua", f"{host} OPC UA", opcua_san, "serverAuth,clientAuth", ca_crt, ca_key)
+        print(f"make_certs: issued OPC UA certificate for {opcua_san}")
     if not opcua_valid(openssl, out, ca_crt, "opcua_client"):
         issue_rsa(openssl, out, "opcua_client", "test-client.local", CLIENT_SAN, "clientAuth,serverAuth",
                   ca_crt, ca_key)
     if not (out / "opcua_rogue.der").exists():
         issue_rsa(openssl, out, "opcua_rogue", "rogue client", "URI:urn:rogue", "clientAuth", None, None)
 
-    if server_cert_valid(openssl, out, ca_crt):
+    if server_cert_valid(openssl, out, ca_crt, host, ip):
         return
     key, csr, crt, ext = out / "server.key", out / "server.csr", out / "server.crt", out / "server.ext"
     ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
-                   f"extendedKeyUsage=serverAuth\nsubjectAltName={SAN}\n"
+                   f"extendedKeyUsage=serverAuth\nsubjectAltName={san}\n"
                    "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n")
     run(openssl, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(key))
-    run(openssl, "req", "-new", "-key", str(key), "-subj", "/CN=fcu.local", "-out", str(csr))
+    run(openssl, "req", "-new", "-key", str(key), "-subj", f"/CN={host}", "-out", str(csr))
     run(openssl, "x509", "-req", "-in", str(csr), "-CA", str(ca_crt), "-CAkey", str(ca_key),
         "-set_serial", "0x" + secrets.token_hex(8), "-days", "397", "-sha256",
         "-extfile", str(ext), "-out", str(crt))
@@ -145,9 +163,9 @@ def main() -> None:
     run(openssl, "ec", "-in", str(key), "-outform", "DER", "-out", str(out / "server.key.der"))
     for f in (csr, ext, key):
         f.unlink()
-    if not server_cert_valid(openssl, out, ca_crt):
+    if not server_cert_valid(openssl, out, ca_crt, host, ip):
         raise SystemExit("make_certs: issued certificate does not verify strictly against the CA")
-    print(f"make_certs: issued server certificate for {SAN}")
+    print(f"make_certs: issued server certificate for {san}")
 
 
 if __name__ == "__main__":

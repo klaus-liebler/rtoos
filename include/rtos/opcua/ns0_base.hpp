@@ -15,6 +15,7 @@
 #include <cstddef>
 
 #include "rtos/opcua/address_space.hpp"
+#include "rtos/opcua/application.hpp"
 #include "rtos/opcua/clock.hpp"
 
 namespace rtos::opcua {
@@ -38,12 +39,6 @@ constexpr std::array<ReferenceEntry, A + B> JoinReferences(const std::array<Refe
                                                            const std::array<ReferenceEntry, B> &b) {
     return detail::Join(a, b);
 }
-
-/// Server.NamespaceArray: ns 0 and the application namespace 1.
-inline constexpr String kNamespaceArray[] = {String("http://opcfoundation.org/UA/"),
-                                             String("urn:factory-control-unit:opcua-native")};
-/// Server.ServerArray: this server only.
-inline constexpr String kServerArray[] = {String("urn:factory-control-unit:opcua-native")};
 
 namespace detail {
 inline Variant ReadCurrentTime(void *) { return Variant::Of(DateTimeValue{Now()}); }
@@ -178,11 +173,11 @@ inline constexpr std::array kBaseNodes = {
     Node{.nodeId = NodeId(0, ns0::Server_NamespaceArray), .nodeClass = NodeClass::Variable,
          .browseName = QualifiedName(0, "NamespaceArray"), .displayName = LocalizedText("en-US", "NamespaceArray"),
          .dataType = NodeId(0, ns0::DataType_String), .accessLevel = ns0::ACCESS_LEVEL_CURRENT_READ,
-         .staticValue = Variant::Of(StringArray{kNamespaceArray}), .valueRank = 1},
+         .readCallback = &ReadNamespaceArray, .valueRank = 1},
     Node{.nodeId = NodeId(0, ns0::Server_ServerArray), .nodeClass = NodeClass::Variable,
          .browseName = QualifiedName(0, "ServerArray"), .displayName = LocalizedText("en-US", "ServerArray"),
          .dataType = NodeId(0, ns0::DataType_String), .accessLevel = ns0::ACCESS_LEVEL_CURRENT_READ,
-         .staticValue = Variant::Of(StringArray{kServerArray}), .valueRank = 1},
+         .readCallback = &ReadServerArray, .valueRank = 1},
     Node{.nodeId = NodeId(0, ns0::Server_ServerStatus_CurrentTime), .nodeClass = NodeClass::Variable,
          .browseName = QualifiedName(0, "CurrentTime"), .displayName = LocalizedText("en-US", "CurrentTime"),
          .dataType = NodeId(0, ns0::DataType_DateTime), .accessLevel = ns0::ACCESS_LEVEL_CURRENT_READ,

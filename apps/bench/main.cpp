@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Benchmark: cost of the copies in the TLS record path (wolfSSL's record buffer
-// <-> TCP segments). It decided against an own zero-copy record layer (README:
-// "Zero-Copy im TLS-Record-Layer"): the copies cost 3-6 % of the record CPU time.
+// <-> TCP segments). It decided against an own zero-copy record layer (docs/decisions.md:
+// "Zero-copy TLS record layer"): the copies cost 3-6 % of the record CPU time.
 //
 // For each record size (39 B status, 512 B WebSocket message, 1438 B = one full TCP
 // segment of the web app) the same ChaCha20-Poly1305 record is produced twice:

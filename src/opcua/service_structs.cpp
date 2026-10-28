@@ -1,5 +1,6 @@
 #include "rtos/opcua/service_structs.hpp"
 
+#include "rtos/opcua/application.hpp"
 #include "rtos/opcua/codec.hpp"
 #include "rtos/opcua/node_ids.hpp"
 #include "rtos/opcua/secure_channel.hpp"
@@ -8,9 +9,6 @@
 namespace rtos::opcua {
 
 namespace {
-constexpr std::string_view APPLICATION_URI = "urn:factory-control-unit:opcua-native";
-constexpr std::string_view PRODUCT_URI = "urn:factory-control-unit:opcua-native:product";
-constexpr std::string_view APPLICATION_NAME = "Factory Control Unit OPC UA Server";
 constexpr std::string_view TRANSPORT_PROFILE_URI =
     "http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary";
 constexpr std::string_view ANONYMOUS_POLICY_ID = "anonymous";
@@ -62,9 +60,9 @@ EndpointDescription BuildEndpoint(std::string_view endpointUrl, Int32 securityMo
     const bool secure = securityMode != SECURITY_MODE_NONE;
     EndpointDescription ep;
     ep.endpointUrl = String(endpointUrl);
-    ep.server.applicationUri = String(APPLICATION_URI);
-    ep.server.productUri = String(PRODUCT_URI);
-    ep.server.applicationName = LocalizedText("en-US", APPLICATION_NAME);
+    ep.server.applicationUri = String(Application().applicationUri);
+    ep.server.productUri = String(Application().productUri);
+    ep.server.applicationName = LocalizedText("en-US", Application().applicationName);
     ep.server.applicationType = APPLICATION_TYPE_SERVER;
     ep.securityMode = securityMode;
     ep.securityPolicyUri = String(secure ? SECURITY_POLICY_BASIC256SHA256_URI : SECURITY_POLICY_NONE_URI);
@@ -94,7 +92,7 @@ bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std
     for(Int32 i = 0; i < uris; i++) {
         String uri;
         if(!requestBody.ReadString(uri)) return false;
-        ours = ours || (!uri.isNull && uri.value == APPLICATION_URI);
+        ours = ours || (!uri.isNull && uri.value == Application().applicationUri);
     }
     if(!requestBody.Ok()) return false;
     if(!EncodeNodeId(w, NodeId(0, ns0::FindServersResponse))) return false;

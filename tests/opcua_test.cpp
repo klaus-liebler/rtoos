@@ -1872,6 +1872,35 @@ TEST_F(OpcUaTest, client_find_servers) {
     EXPECT_EQ(find("urn:somewhere:else"), 0);
 }
 
+// A product names its own application: GetEndpoints, FindServers and the NamespaceArray follow.
+TEST_F(OpcUaTest, ApplicationIdentityIsConfigurable) {
+    const ua::ApplicationIdentity product{.applicationUri = "urn:example:press-7",
+                                          .productUri = "urn:example:press",
+                                          .applicationName = "Press 7"};
+    ua::SetApplicationIdentity(product);
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_none());
+    const auto r = call([&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::FindServersRequest));
+        request_header(w, ua::NodeId(), 11);
+        w.WriteString(kEndpoint);
+        w.WriteInt32(0);
+        w.WriteInt32(1);
+        w.WriteString(std::string_view("urn:example:press-7"));
+    });
+    ua::SetApplicationIdentity({});  // back to the defaults for the other tests
+    ASSERT_TRUE(r && ua::IsGood(r->result));
+    ua::ByteReader b = r->reader();
+    ua::Int32 count = -1;
+    ASSERT_TRUE(b.ReadInt32(count));
+    ASSERT_EQ(count, 1);
+    ua::ApplicationDescription app;
+    ASSERT_TRUE(ua::DecodeApplicationDescription(b, app));
+    EXPECT_EQ(app.applicationUri.value, "urn:example:press-7");
+    EXPECT_EQ(app.productUri.value, "urn:example:press");
+    EXPECT_EQ(app.applicationName.text, "Press 7");
+}
+
 TEST_F(OpcUaTest, ReadIsAnsweredWhileAnRsaOpenWaits) {
     ASSERT_TRUE(hello());
     ASSERT_TRUE(open_none());
