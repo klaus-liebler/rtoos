@@ -8,6 +8,7 @@
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/clocks.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
@@ -202,6 +203,23 @@ TEST(DtsConfig, TemperatureFromCounterAndFactoryValues) {
               130) << "T0 code 1: 130 degC";
     EXPECT_FALSE(h5::dts_centi_celsius(125'000'000, 7, 0, t0valr1, rampvalr).has_value());
     EXPECT_FALSE(h5::dts_centi_celsius(125'000'000, 7, mfreq, t0valr1, 0).has_value()) << "unprogrammed ramp";
+}
+
+TEST(CanConfig, BitTimingFromTheKernelClock) {
+    // 100 MHz (PLL1 Q), 500 kbit/s: 25 quanta at prescaler 8, sample point 88 %
+    constexpr auto t = h5::can_bit_timing(100'000'000, 500'000, 875);
+    static_assert(t.valid);
+    EXPECT_EQ(t.prescaler, 8u);
+    EXPECT_EQ(t.quanta(), 25u);
+    EXPECT_EQ(t.sample_permille(), 880u);
+    EXPECT_EQ(100'000'000u / (t.prescaler * t.quanta()), 500'000u);
+    // NBTP: NSJW 31:25, NBRP 24:16, NTSEG1 15:8, NTSEG2 6:0, each minus one
+    EXPECT_EQ(t.nbtp(), ((t.sjw - 1) << 25) | (7u << 16) | ((t.tseg1 - 1) << 8) | (t.tseg2 - 1));
+    // 1 Mbit/s and 125 kbit/s
+    EXPECT_EQ(h5::can_bit_timing(100'000'000, 1'000'000, 875).quanta(), 25u);
+    EXPECT_EQ(h5::can_bit_timing(100'000'000, 125'000, 875).prescaler, 32u);
+    // a rate the clock cannot make
+    EXPECT_FALSE(h5::can_bit_timing(100'000'000, 333'333, 875).valid);
 }
 
 }  // namespace

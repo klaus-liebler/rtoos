@@ -9,6 +9,7 @@
 #include "board/fcu.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
@@ -31,6 +32,7 @@ using Leds = h5::Timer<h5::TimerId::Tim15, {.kernel_hz = board::clocks.timer2_hz
 using Pressure = h5::Adc<h5::AdcId::Adc1, {.kernel_hz = board::clocks.hclk_hz(), .cpu_hz = board::sysclk_hz,
                                            .channel = 18, .sample = h5::AdcSample::Cycles2_5}>;
 using CpuTemperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
+using Can = h5::Fdcan<{.kernel_hz = board::pll1_q_hz, .cpu_hz = board::sysclk_hz, .bitrate = 500'000}>;
 using Wide = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 250'000'000}>;
 }  // namespace
 
@@ -77,6 +79,13 @@ void drivers_check() noexcept {
         CpuTemperature::start();
     }
     (void)CpuTemperature::centi_celsius();
+
+    (void)Can::init();
+    (void)Can::send({.id = 0x123, .length = 2, .data = {1, 2}});
+    h5::CanFrame frame;
+    (void)Can::receive(frame);
+    (void)Can::status();
+    (void)Can::rx_overflowed();
 
     Spi2::init();
     (void)Spi2::transfer(b, b);
