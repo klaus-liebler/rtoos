@@ -82,6 +82,10 @@ def main():
                 bits = f"{lo}" if lo == hi else f"{hi}:{lo}"
                 desc = " ".join((f.findtext("description") or "").split())[:90]
                 print(f"      [{bits:>5}] {fname:<14} {desc}")
+                if args.field:  # values only for the fields asked for
+                    for e in f.iter("enumeratedValue"):
+                        edesc = " ".join((e.findtext("description") or "").split())[:70]
+                        print(f"               {e.findtext('value'):>6} {e.findtext('name'):<14} {edesc}")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(rtos_tests
     kernel_test.cpp
     log_test.cpp
+    port_config_test.cpp
     block_pool_test.cpp
     sync_test.cpp
     net_test.cpp
@@ -32,7 +33,9 @@ add_executable(rtos_tests
     opcua_o6_subscriptions_test.cpp
     opcua_codec_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_certs GTest::gtest_main)
-target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# The chip drivers' compile-time configuration (constexpr register values) is tested on the host.
+target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                           ${PROJECT_SOURCE_DIR}/port/stm32h563/include ${PROJECT_SOURCE_DIR}/port/cortex_m33/include)
 # UBSan in trap mode needs no runtime library; static linking makes the test
 # executable independent of the toolchain's DLLs.
 target_compile_options(rtos_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

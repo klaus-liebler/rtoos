@@ -2,6 +2,9 @@ rtos_add_firmware(fcu_demo SOURCES demo/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_selftest SOURCES selftest/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_net SOURCES net/main.cpp LIBRARIES rtos_board_fcu rtos_tls rtos_opcua rtos_certs)
 rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos_tls)
+# compile check of all chip drivers (instantiated with the FCU's clocks, not linked)
+add_library(rtos_drivers_check OBJECT drivers_check.cpp)
+target_link_libraries(rtos_drivers_check PRIVATE rtos_board_fcu)
 
 # ---- network configuration of fcu_net (generated constexpr header) ----------------
 set(RTOS_NET_SNTP_HOST "pool.ntp.org" CACHE STRING "SNTP server name (when DHCP names no NTP server)")

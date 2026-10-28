@@ -47,3 +47,4 @@ A workaround is allowed only when it
 ## Embedded rules
 - No heap at run time, no exceptions, no RTTI on the target. Contract semantic on the target: `quick_enforce`.
 - Hardware access only through ports that satisfy a concept (`rtos::CpuPort`); the kernel stays testable on the host.
+- **Compile-time configuration (binding):** a peripheral's configuration is a template argument (a structural config struct, e.g. `UartConfig`, `I2cConfig`, `rcc::ClockTree`). Register values, dividers and prescalers are computed at compile time and checked against the RM0481/specification limits with `static_assert`; at run time the driver only writes constants. Kernel clock frequencies come from the board's `ClockTree` (`board::clocks.pclk1_hz()` ...), never from run-time variables. The computations are `constexpr` functions with host tests (`tests/port_config_test.cpp`); every driver template is instantiated in `apps/drivers_check.cpp`.

@@ -93,10 +93,22 @@ The interface that the examples and the self-test use ([boards/fcu/include/board
 | `board::init()` | clock tree in the order RM0481 requires (voltage scale → flash wait states → PLL), MPU (flash, RAM, non-cacheable DMA region), ICACHE, LED, console UART. First call in `main()`. |
 | `board::init_ethernet()` | RMII pins (AF11) and the PHY reset pulse, before `Ethernet::init()` |
 | `board::mac_address()` | a unique, locally administered MAC from the 96-bit device UID |
+| `board::clocks` | the clock tree (`rcc::ClockTree`): PLL1, prescalers; every frequency (`pclk1_hz()`, `timer1_hz()`, `pll1_q_hz()` …) as a compile-time constant |
 | `board::phy_address`, `board::sysclk_hz` | constants for the drivers |
 | `board::print…()`, `board::flush()` | polled console output, safe in fault handlers |
 
-Take every hardware fact (addresses, bits, alternate functions, IRQ numbers) from the STM32H563 SVD, RM0481 and the datasheet, never from memory.
+Take every hardware fact (addresses, bits, alternate functions, IRQ numbers) from the STM32H563 SVD, RM0481 and the datasheet, never from memory. `python tools/svd.py STM32H563.svd <PERIPHERAL> [REGISTER] [FIELD]` prints them.
+
+Peripheral configurations are compile-time values. The compiler computes the register values and rejects impossible ones:
+
+```cpp
+constexpr h5::UartConfig tmc_bus{.kernel_hz = board::clocks.pclk1_hz(), .baud = 115'200, .half_duplex = true};
+h5::BufferedUart<h5::UsartId::Uart5, tmc_bus> tmc_uart;          // BRR computed and range-checked
+using Sensors = h5::I2cMaster<h5::I2cId::I2c4, {.kernel_hz = board::clocks.pclk3_hz(),
+                                               .cpu_hz = board::sysclk_hz, .bus_hz = 400'000}>;   // TIMINGR
+```
+
+A baud rate the kernel clock cannot produce within 2 %, or an I2C timing outside the bus specification, stops the build with a `static_assert` message.
 
 Bring the board up in this order:
 

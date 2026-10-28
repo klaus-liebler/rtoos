@@ -18,17 +18,9 @@ namespace board {
 namespace h5 = rtos::port::stm32h5;
 using Console = h5::Usart<h5::UsartId::Usart3>;
 
-// HSI 64 MHz / 32 = 2 MHz reference (PLL1RGE 2-4 MHz), x 250 = 500 MHz VCO, / 2.
-constexpr h5::rcc::Pll1Config pll1{.m = 32, .n = 250, .p = 2};
-static_assert(pll1.output_hz() == sysclk_hz);
 
 void init() noexcept {
-    // Raise the clock in the order RM0481 requires: voltage scale, flash wait states,
-    // then the PLL switch-over.
-    h5::rcc::use_hsi(h5::rcc::HsiDiv::Div1);
-    h5::pwr::set_voltage_scale(h5::pwr::VoltageScale::Vos0);
-    h5::flash::set_latency(h5::flash::vos0_wait_states(sysclk_hz), h5::flash::programming_delay(sysclk_hz));
-    h5::rcc::use_pll1<pll1>();
+    h5::rcc::configure_clocks<clocks>();
 
     h5::configure_mpu({.flash_start = h5::flash_base,
                        .flash_end = reinterpret_cast<std::uint32_t>(&__flash_used_end) - 1u,
@@ -43,7 +35,7 @@ void init() noexcept {
 
     h5::gpio::configure_alternate(console_tx_pin, 7);
     h5::gpio::configure_alternate(console_rx_pin, 7, h5::gpio::Speed::Low, h5::gpio::Pull::Up);
-    Console::init(sysclk_hz, console_baud);
+    Console::configure<h5::UartConfig{.kernel_hz = clocks.pclk1_hz(), .baud = console_baud, .fifo = false}>();
 }
 
 namespace {

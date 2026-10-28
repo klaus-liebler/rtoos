@@ -3,7 +3,8 @@
 // Board support: Factory Control Unit (factory_in_a_box/pcb_factory_control_unit).
 //
 //   MCU      STM32H563VIT6 (LQFP100, 2 MB flash, 640 KB SRAM), no HSE crystal
-//   Clock    HSI 64 MHz -> PLL1 -> SYSCLK = HCLK = PCLKx = 250 MHz (VOS0, 5 wait states)
+//   Clock    HSI 64 MHz -> PLL1 -> SYSCLK = HCLK = PCLKx = 250 MHz (VOS0, 5 wait states),
+//            PLL1 Q = 100 MHz
 //   Console  USART3, PD8 = TX, PD9 = RX (AF7) -> STDC14 connector J2, ST-LINK VCP
 //   LED      LED_INFO (D1) on PH1, active low (anode via 1 k to 3V3)
 //   Ethernet LAN8742A, RMII, PHY address 0 (PHYAD0 open -> internal pull-down),
@@ -17,11 +18,18 @@
 #include <string_view>
 
 #include "rtos/net/address.hpp"
+#include "rtos/port/stm32h5/clocks.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
 
 namespace board {
 
-inline constexpr std::uint32_t sysclk_hz = 250'000'000;
+/// HSI 64 MHz / 32 = 2 MHz reference, x 250 = 500 MHz VCO; P / 2 = 250 MHz SYSCLK = HCLK =
+/// PCLK1/2/3 (all prescalers 1); Q / 5 = 100 MHz, the kernel clock of SPI1-3 (reset selection)
+/// and FDCAN (RCC_CCIPR5 = pll1_q). Checked at compile time (clocks.hpp).
+inline constexpr rtos::port::stm32h5::rcc::ClockTree clocks{.pll1 = {.m = 32, .n = 250, .p = 2, .q = 5}};
+inline constexpr std::uint32_t sysclk_hz = clocks.sysclk_hz();
+inline constexpr std::uint32_t pll1_q_hz = clocks.pll1_q_hz();
+static_assert(sysclk_hz == 250'000'000 && pll1_q_hz == 100'000'000);
 inline constexpr std::uint32_t console_baud = 115'200;
 
 inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin{rtos::port::stm32h5::gpio::GpioPort::H, 1};
