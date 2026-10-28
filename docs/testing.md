@@ -73,7 +73,7 @@ With the GUI: start `renode`, then `$bin=@build/arm/apps/fcu_demo.elf; include @
 An emulator gap is fixed in the emulator model where possible. Otherwise the self-test reports the feature as `UNSUPPORTED`, and the runner allows exactly that feature for that emulator (`--allow-unsupported`). Tests are never weakened.
 
 - Renode does not enforce PSPLIM. A thread stack overflow there corrupts memory silently, and stack painting misses frames that are not written densely. Size stacks from the frames.
-- Neither emulator models the `USB_DRD_FS` controller.
+- Neither emulator models the `USB_DRD_FS` controller: the driver is tested on the host against a register simulation ([usb_drd_fs_test.cpp](../tests/usb_drd_fs_test.cpp)).
 - The flash interface is an own model, [STM32H5_FLASH.cs](../emulation/renode/STM32H5_FLASH.cs) (unlock keys, sector erase). The CPU programs by writing to flash memory, and Renode accepts such writes even without PG and more than once per erase. The "program once" rule is checked by the host tests' NOR simulation instead.
 - Renode's own STM32 SDMMC model moves data only through the FIFO (no IDMA), and its SD card answers CMD8 with the card status instead of R7. The platform therefore uses an own model, [STM32H5_SDMMC.cs](../emulation/renode/STM32H5_SDMMC.cs) (compiled by `fcu.resc`): SDMMC v2 with IDMA and an SD card that follows the Simplified Specification (states, R7 echo, SDHC/SDSC addressing, CSD 2.0/1.0, a programming phase after writes). QEMU has no SDMMC.
 - Renode's timer model (`Timers.STM32_Timer`) has no compare outputs or DMA, and its update period is ARR ticks instead of ARR + 1 (0.1 % at 1000 ticks): `stepper_test.py` tolerates that. QEMU has no timers.

@@ -135,6 +135,7 @@ inline constexpr Gate gpdma1{ahb1, 0}, gpdma2{ahb1, 1}, crc{ahb1, 12};
 inline constexpr Gate adc12{ahb2, 10};
 inline constexpr Gate sdmmc1{ahb4, 11}, sdmmc2{ahb4, 12};
 inline constexpr Gate tim2{apb1l, 0}, tim3{apb1l, 1}, tim4{apb1l, 2}, tim5{apb1l, 3}, tim6{apb1l, 4}, tim7{apb1l, 5};
+inline constexpr Gate crs{apb1l, 24};
 inline constexpr Gate spi2{apb1l, 14}, spi3{apb1l, 15}, usart2{apb1l, 17}, usart3{apb1l, 18}, uart4{apb1l, 19},
                       uart5{apb1l, 20}, i2c1{apb1l, 21}, i2c2{apb1l, 22}, uart7{apb1l, 30}, uart8{apb1l, 31};
 inline constexpr Gate uart9{apb1h, 0}, uart12{apb1h, 1}, dts{apb1h, 3}, fdcan12{apb1h, 9}, ucpd1{apb1h, 23};

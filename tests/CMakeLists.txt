@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(rtos_tests
     kernel_test.cpp
     log_test.cpp
+    usb_drd_fs_test.cpp
     littlefs_test.cpp
     filex_media_test.cpp
     sd_card_test.cpp

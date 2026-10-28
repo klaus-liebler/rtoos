@@ -278,7 +278,7 @@ python emulation/run.py qemu build/arm/apps/fcu_bench.elf --timeout 30
 
 ## USB examples
 
-The USB stack has no example firmware yet, because the register driver for the STM32H5 `USB_DRD_FS` controller is still missing (neither emulator models the controller). Until then, the host tests show the complete composition: [tests/usb_ncm_test.cpp](../tests/usb_ncm_test.cpp) runs CDC-NCM as a second network interface with a DHCP server, and [tests/usb_cdc_test.cpp](../tests/usb_cdc_test.cpp) runs CDC-ACM with Modbus RTU. See [USB](usb.md).
+The USB stack has no example firmware yet: neither emulator models the STM32H5 `USB_DRD_FS` controller, so an example could only be checked on the board. The host tests show the complete composition: [tests/usb_ncm_test.cpp](../tests/usb_ncm_test.cpp) runs CDC-NCM as a second network interface with a DHCP server, and [tests/usb_cdc_test.cpp](../tests/usb_cdc_test.cpp) runs CDC-ACM with Modbus RTU. See [USB](usb.md).
 
 ## Next step
 

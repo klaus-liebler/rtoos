@@ -14,6 +14,7 @@
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
+#include "rtos/port/stm32h5/usb_device.hpp"
 
 namespace h5 = rtos::port::stm32h5;
 
@@ -34,6 +35,7 @@ using Pressure = h5::Adc<h5::AdcId::Adc1, {.kernel_hz = board::clocks.hclk_hz(),
 using CpuTemperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
 using Can = h5::Fdcan<{.kernel_hz = board::pll1_q_hz, .cpu_hz = board::sysclk_hz, .bitrate = 500'000}>;
 using Wide = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 250'000'000}>;
+h5::UsbDrdFs<> usb_fs;
 }  // namespace
 
 void drivers_check() noexcept {
@@ -86,6 +88,18 @@ void drivers_check() noexcept {
     (void)Can::receive(frame);
     (void)Can::status();
     (void)Can::rx_overflowed();
+
+    h5::UsbHardware::enable_clocks();
+    usb_fs.start();
+    usb_fs.connect();
+    usb_fs.on_irq();
+    (void)usb_fs.poll();
+    (void)usb_fs.open({0x81, rtos::usb::TransferType::Bulk, 64});
+    (void)usb_fs.transfer(0x81, b, true);
+    usb_fs.stall(0x81);
+    usb_fs.clear_stall(0x81);
+    usb_fs.set_address(5);
+    usb_fs.close_all();
 
     Spi2::init();
     (void)Spi2::transfer(b, b);
