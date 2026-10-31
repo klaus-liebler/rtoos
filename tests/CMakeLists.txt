@@ -25,6 +25,7 @@ add_executable(rtos_tests
     dhcp_server_test.cpp
     tls_test.cpp
     ssh_test.cpp
+    devices_test.cpp
     http_ws_test.cpp
     websocket_outbox_test.cpp
     fuzz_test.cpp

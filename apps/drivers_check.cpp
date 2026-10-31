@@ -7,6 +7,10 @@
 #include <cstddef>
 
 #include "board/fcu.hpp"
+#include "rtos/devices/hx711.hpp"
+#include "rtos/devices/ina226.hpp"
+#include "rtos/devices/tcs34725.hpp"
+#include "rtos/devices/vl53l0x.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/cache.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
@@ -42,6 +46,12 @@ h5::UsbDrdFs<> usb_fs;
 using LedDma = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
                                 .direction = h5::DmaDirection::MemoryToPeripheral, .memory_bytes = 2, .peripheral_bytes = 2}>;
 std::array<std::uint16_t, 24> led_bits{};
+// external chips on the chip's buses (rtos/devices)
+using Supply = rtos::devices::Ina226<I2c4, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
+using Tof = rtos::devices::Vl53l0x<I2c1>;
+using Color = rtos::devices::Tcs34725<I2c1, {.integration_ms = 154}>;
+bool scale_ready() noexcept { return !h5::gpio::read({h5::gpio::GpioPort::C, 2}); }
+using Scale = rtos::devices::Hx711<Spi2, &scale_ready>;
 using PdClock = h5::MicrosecondTimer<h5::TimerId::Tim5, board::clocks.timer1_hz()>;
 PdClock pd_clock;
 RTOS_DMA_BUFFER h5::Ucpd<{.kernel_hz = board::clocks.ucpd_hz()}> ucpd;
@@ -124,6 +134,17 @@ void drivers_check() noexcept {
         pd_sink.on_timer();
     }
     pd_sink.poll([](rtos::usb_pd::SinkEvent) {});
+
+    if (Supply::probe() && Supply::init()) {
+        (void)Supply::read();
+    }
+    (void)Tof::start();
+    (void)Tof::poll();
+    (void)Color::power_on();
+    (void)Color::read();
+    (void)Scale::init();
+    (void)Scale::poll();
+    (void)Scale::average();
 
     Spi2::init();
     (void)Spi2::transfer(b, b);
