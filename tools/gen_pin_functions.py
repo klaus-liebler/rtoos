@@ -30,6 +30,7 @@ def strip(tag):
 
 
 def main():
+    sys.stdout.reconfigure(newline="\n")  # LF on Windows too (.gitattributes)
     db = Path(sys.argv[1])
     mcu = ET.parse(db / f"{PART}.xml").getroot()
     pins = {}  # "PA0" -> [signals]
