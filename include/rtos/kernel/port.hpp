@@ -62,4 +62,11 @@ concept CpuPort = requires(typename P::LockState state, std::span<std::byte> sta
     { P::park() } noexcept -> std::same_as<void>;
 };
 
+/// Optional: a free-running cycle counter. With it the kernel accumulates each thread's CPU
+/// cycles (ThreadControlBlock::run_cycles), e.g. for a task monitor.
+template <class P>
+concept CycleCountingPort = requires {
+    { P::cycle_count() } noexcept -> std::same_as<std::uint32_t>;
+};
+
 }  // namespace rtos

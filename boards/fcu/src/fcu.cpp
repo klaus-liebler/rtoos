@@ -22,30 +22,30 @@ using Console = h5::Usart<h5::UsartId::Usart3>;
 // LED off (active low), USART3 console (AF7)
 constexpr std::array base_pins{
     h5::gpio::output(led_info_pin, /*initial_high*/ true),
-    h5::gpio::alternate(console_tx_pin, 7),
-    h5::gpio::alternate(console_rx_pin, 7, h5::gpio::Speed::Low, h5::gpio::Pull::Up),
+    h5::gpio::alternate(console_tx_pin, h5::gpio::Signal::USART3_TX),
+    h5::gpio::alternate(console_rx_pin, h5::gpio::Signal::USART3_RX, h5::gpio::Speed::Low, h5::gpio::Pull::Up),
 };
 
-// RMII (AF11, ST open pin data STM32H563VITx) and the PHY reset, held low
+// RMII and the PHY reset, held low
 constexpr h5::gpio::Pin phy_reset{h5::gpio::GpioPort::A, 0};
 constexpr std::array ethernet_pins{
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 1}, 11, h5::gpio::Speed::VeryHigh),   // REF_CLK
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 2}, 11, h5::gpio::Speed::VeryHigh),   // MDIO
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 1}, 11, h5::gpio::Speed::VeryHigh),   // MDC
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 7}, 11, h5::gpio::Speed::VeryHigh),   // CRS_DV
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 4}, 11, h5::gpio::Speed::VeryHigh),   // RXD0
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 5}, 11, h5::gpio::Speed::VeryHigh),   // RXD1
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 5}, 11, h5::gpio::Speed::VeryHigh),   // TX_EN
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 10}, 11, h5::gpio::Speed::VeryHigh),  // TXD0
-    h5::gpio::alternate({h5::gpio::GpioPort::B, 15}, 11, h5::gpio::Speed::VeryHigh),  // TXD1
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 1}, h5::gpio::Signal::ETH_RMII_REF_CLK, h5::gpio::Speed::VeryHigh),   // REF_CLK
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 2}, h5::gpio::Signal::ETH_MDIO, h5::gpio::Speed::VeryHigh),   // MDIO
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 1}, h5::gpio::Signal::ETH_MDC, h5::gpio::Speed::VeryHigh),   // MDC
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 7}, h5::gpio::Signal::ETH_RMII_CRS_DV, h5::gpio::Speed::VeryHigh),   // CRS_DV
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 4}, h5::gpio::Signal::ETH_RMII_RXD0, h5::gpio::Speed::VeryHigh),   // RXD0
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 5}, h5::gpio::Signal::ETH_RMII_RXD1, h5::gpio::Speed::VeryHigh),   // RXD1
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 5}, h5::gpio::Signal::ETH_RMII_TX_EN, h5::gpio::Speed::VeryHigh),   // TX_EN
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 10}, h5::gpio::Signal::ETH_RMII_TXD0, h5::gpio::Speed::VeryHigh),  // TXD0
+    h5::gpio::alternate({h5::gpio::GpioPort::B, 15}, h5::gpio::Signal::ETH_RMII_TXD1, h5::gpio::Speed::VeryHigh),  // TXD1
     h5::gpio::output(phy_reset, /*initial_high*/ false),
 };
 
-// SD card: SDMMC1, 1-bit bus (AF12, ST open pin data STM32H563VITx); CMD and D0 pulled up
+// SD card: SDMMC1, 1-bit bus; CMD and D0 pulled up
 constexpr std::array sdcard_pins{
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 10}, 12, h5::gpio::Speed::High, h5::gpio::Pull::Up),  // D0
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 12}, 12, h5::gpio::Speed::High),                      // CK
-    h5::gpio::alternate({h5::gpio::GpioPort::D, 2}, 12, h5::gpio::Speed::High, h5::gpio::Pull::Up),   // CMD
+    h5::gpio::alternate({h5::gpio::GpioPort::A, 10}, h5::gpio::Signal::SDMMC1_D0, h5::gpio::Speed::High, h5::gpio::Pull::Up),  // D0
+    h5::gpio::alternate({h5::gpio::GpioPort::C, 12}, h5::gpio::Signal::SDMMC1_CK, h5::gpio::Speed::High),                      // CK
+    h5::gpio::alternate({h5::gpio::GpioPort::D, 2}, h5::gpio::Signal::SDMMC1_CMD, h5::gpio::Speed::High, h5::gpio::Pull::Up),   // CMD
 };
 
 void init() noexcept {

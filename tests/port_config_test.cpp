@@ -117,9 +117,9 @@ TEST(GpioConfig, PinListFoldsIntoOneValuePerPortAndRegister) {
     using gpio::GpioPort;
     constexpr std::array pins{
         gpio::output({GpioPort::H, 1}, true),
-        gpio::alternate({GpioPort::D, 8}, 7),
-        gpio::alternate({GpioPort::D, 9}, 7, gpio::Speed::Low, gpio::Pull::Up),
-        gpio::alternate({GpioPort::C, 10}, 11, gpio::Speed::VeryHigh),
+        gpio::alternate({GpioPort::D, 8}, gpio::Signal::USART3_TX),
+        gpio::alternate({GpioPort::D, 9}, gpio::Signal::USART3_RX, gpio::Speed::Low, gpio::Pull::Up),
+        gpio::alternate({GpioPort::C, 10}, gpio::Signal::ETH_RMII_TXD0, gpio::Speed::VeryHigh),
         gpio::output({GpioPort::A, 0}, false, gpio::Speed::Low, true),
         gpio::analog({GpioPort::A, 3}),
     };
@@ -143,6 +143,23 @@ TEST(GpioConfig, PinListFoldsIntoOneValuePerPortAndRegister) {
     EXPECT_EQ(a.type, 1u) << "PA0 open drain";
     EXPECT_EQ(a.mode, (1u << 0) | (3u << 6));
     EXPECT_EQ(a.afl_mask, 0u) << "no alternate function on port A";
+}
+
+TEST(GpioConfig, AlternateFunctionsComeFromThePinDatabase) {
+    namespace gpio = h5::gpio;
+    using gpio::GpioPort, gpio::Signal;
+    // ST's pin data for the STM32H563VITx (pin_functions.hpp)
+    static_assert(gpio::function_af({GpioPort::D, 8}, Signal::USART3_TX) == 7);
+    static_assert(gpio::function_af({GpioPort::B, 5}, Signal::UART5_RX) == 14);
+    static_assert(gpio::function_af({GpioPort::A, 15}, Signal::TIM2_CH1) == 1);
+    static_assert(gpio::function_af({GpioPort::B, 13}, Signal::UCPD1_CC1) == gpio::additional);
+    static_assert(gpio::function_af({GpioPort::A, 4}, Signal::ADC1_INP18) == gpio::additional);
+    static_assert(gpio::function_af({GpioPort::D, 9}, Signal::USART3_TX) == -1, "PD9 is USART3_RX only");
+    constexpr auto rx = gpio::alternate({GpioPort::D, 9}, Signal::USART3_RX);
+    EXPECT_EQ(rx.af, 7u);
+    EXPECT_EQ(gpio::analog({GpioPort::A, 4}, Signal::ADC1_INP18).mode, gpio::Mode::Analog);
+    // gpio::alternate({GpioPort::D, 9}, Signal::USART3_TX) or a pin the LQFP100 lacks (PF0) in a
+    // configure<>() list stop the build (error_pin_has_no_such_alternate_function, ..._not_in_package).
 }
 
 TEST(SpiConfig, PrescalerIsTheSmallestWithinTheBusLimit) {

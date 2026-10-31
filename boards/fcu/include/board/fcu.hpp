@@ -6,7 +6,7 @@
 //   Clock    HSI 64 MHz -> PLL1 -> SYSCLK = HCLK = PCLK2/3 = 250 MHz (VOS0, 5 wait states),
 //            PCLK1 = 125 MHz (timers 250 MHz), PLL1 Q = 100 MHz
 //   Console  USART3, PD8 = TX, PD9 = RX (AF7) -> STDC14 connector J2, ST-LINK VCP
-//   LED      LED_INFO (D1) on PH1, active low (anode via 1 k to 3V3)
+//   LED      LED_INFO (D1), active low (anode via 1 k to 3V3): PH1 (revision 2), PE15 (revision 1)
 //   Ethernet LAN8742A, RMII, PHY address 0 (PHYAD0 open -> internal pull-down),
 //            REFCLKO mode (nINTSEL pulled low by R24) -> 50 MHz on PA1;
 //            pins (AF11, ST open pin data STM32H563VITx):
@@ -34,7 +34,13 @@ inline constexpr std::uint32_t pll1_q_hz = clocks.pll1_q_hz();
 static_assert(sysclk_hz == 250'000'000 && pll1_q_hz == 100'000'000);
 inline constexpr std::uint32_t console_baud = 115'200;
 
-inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin{rtos::port::stm32h5::gpio::GpioPort::H, 1};
+/// Hardware revision (CMake cache variable RTOS_FCU_REVISION): 1 = first boards, 2 = current PCB.
+inline constexpr unsigned revision = RTOS_FCU_REVISION;
+static_assert(revision == 1 || revision == 2);
+
+inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin =
+    revision == 1 ? rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::E, 15}
+                  : rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::H, 1};
 inline constexpr rtos::port::stm32h5::gpio::Pin console_tx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 8};
 inline constexpr rtos::port::stm32h5::gpio::Pin console_rx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 9};
 

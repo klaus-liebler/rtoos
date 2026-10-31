@@ -31,6 +31,7 @@ struct MockPort {
     static inline bool isr = false;               ///< executing in an interrupt
     static inline bool zero_latency_isr = false;  ///< ...whose priority is above the kernel mask
     static inline void* started_sp = nullptr;
+    static inline std::uint32_t cycles = 0;  ///< cycle_count(): tests advance it
 
     static void reset() noexcept {
         lock_depth = 0;
@@ -38,7 +39,9 @@ struct MockPort {
         isr = false;
         zero_latency_isr = false;
         started_sp = nullptr;
+        cycles = 0;
     }
+    static std::uint32_t cycle_count() noexcept { return cycles; }
 
     static LockState lock() noexcept { return lock_depth++; }
     static void unlock(LockState previous) noexcept { lock_depth = previous; }

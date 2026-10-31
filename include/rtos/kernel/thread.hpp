@@ -69,6 +69,9 @@ struct ThreadControlBlock {
     std::uint8_t id = 0xFF;      ///< Index in the kernel registry, used by wake bitmaps.
     std::uint8_t wait_index = 0;
     ThreadState state = ThreadState::Inactive;
+    // ---- statistics (task monitors) ------------------------------------------------
+    std::uint32_t run_count = 0;   ///< times switched in
+    std::uint64_t run_cycles = 0;  ///< CPU cycles while running (ports with cycle_count() only)
 
     // ---- object waits (semaphores, queues, pools) ---------------------------------
     WaitQueue<ThreadControlBlock>* wait_queue = nullptr;  ///< Queue blocked on, if any.

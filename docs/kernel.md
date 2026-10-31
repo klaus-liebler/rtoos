@@ -22,6 +22,7 @@ The `KernelConfig` concept rejects invalid values at compile time ([config.hpp](
 - **Preemptive, fixed priorities**, with an O(1) ready queue: one 32-bit bitmap, one CLZ.
 - **Round robin** between threads of equal priority.
 - **Preemption threshold:** a thread can run with a threshold above its priority. Threads that share data get the same threshold (a ceiling). They never preempt each other and need no mutex, while more urgent threads still preempt them.
+- **Run statistics** for task monitors: every thread counts how often it was switched in (`run_count`) and, with a port that has `cycle_count()` (Cortex-M33: DWT_CYCCNT, after `CycleCounter::enable()`), the CPU cycles it ran (`run_cycles`).
 - **Timeouts** are kept in a timer wheel. `Tick` is 32 bits (1 ms); `Kernel::now64()` extends it to 64 bits for clocks that must never wrap (OPC UA).
 
 ## Services and execution contexts

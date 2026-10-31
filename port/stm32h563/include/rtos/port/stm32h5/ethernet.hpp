@@ -268,6 +268,11 @@ public:
     [[nodiscard]] std::uint32_t rx_errors() const noexcept { return rx_errors_; }
     [[nodiscard]] std::uint32_t rx_dropped() const noexcept { return rx_dropped_; }
 
+    /// PHY register access over MDIO (diagnostics, cable test), from the network thread only:
+    /// poll_link() uses MDIO there too.
+    [[nodiscard]] std::uint16_t phy_read(unsigned reg) noexcept { return mdio_read(reg); }
+    void phy_write(unsigned reg, std::uint16_t value) noexcept { mdio_write(reg, value); }
+
 private:
     using sbs_pmcr = PReg<0x0400'0400 + 0x100>;                    // SBS base 0x44000400 + PMCR
     static constexpr std::uint32_t sbs_eth_sel_phy_msk = 7u << 21;

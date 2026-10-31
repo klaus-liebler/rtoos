@@ -40,6 +40,22 @@ TEST_F(KernelTest, CreatingMoreUrgentThreadPreempts) {
     EXPECT_EQ(k.current(), &b.tcb);
 }
 
+TEST_F(KernelTest, RunStatisticsCountSwitchesAndCycles) {
+    create(a, 10);
+    start();
+    EXPECT_EQ(a.tcb.run_count, 1u);
+    MockPort::cycles = 1000;
+    create(b, 5);  // b preempts a after 1000 cycles
+    run_pendsv();
+    EXPECT_EQ(b.tcb.run_count, 1u);
+    EXPECT_EQ(a.tcb.run_cycles, 1000u);
+    MockPort::cycles = 1250;
+    k.suspend(b.tcb);  // a runs again after 250 cycles of b
+    run_pendsv();
+    EXPECT_EQ(b.tcb.run_cycles, 250u);
+    EXPECT_EQ(a.tcb.run_count, 2u);
+}
+
 TEST_F(KernelTest, CreatingLessUrgentThreadDoesNotSwitch) {
     create(a, 10);
     start();

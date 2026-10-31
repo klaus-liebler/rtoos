@@ -24,6 +24,7 @@
 #include <span>
 
 #include "rtos/kernel/port.hpp"
+#include "rtos/port/cm33/cycle_counter.hpp"
 #include "rtos/port/cm33/registers.hpp"
 
 #ifndef RTOS_CM33_PRIO_BITS
@@ -70,6 +71,9 @@ struct Cm33Port {
             "isb             \n" ::"r"(previous)
             : "memory");
     }
+
+    /// DWT_CYCCNT: per-thread CPU cycles (Kernel run_cycles) once CycleCounter::enable() ran.
+    static std::uint32_t cycle_count() noexcept { return CycleCounter::now(); }
 
     static void request_context_switch() noexcept {
         scb::ICSR::write(scb::icsr_pendsvset);

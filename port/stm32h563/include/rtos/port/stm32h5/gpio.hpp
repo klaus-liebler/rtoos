@@ -4,13 +4,16 @@
 //
 // Pin configuration is a compile-time list: the compiler folds it into one mask and one
 // value per port and register (MODER, OTYPER, OSPEEDR, PUPDR, AFRL/AFRH, initial levels in
-// BSRR) and rejects contradictions; at run time configure<Pins>() does one read-modify-write
+// BSRR) and rejects contradictions and impossible pins: alternate functions are named by their
+// signal and looked up in ST's pin database (pin_functions.hpp, tools/gen_pin_functions.py), so a
+// pin without that function, or one the LQFP100 package lacks, does not compile. At run time
+// configure<Pins>() does one read-modify-write
 // per register and port that the list touches.
 //
 //   inline constexpr std::array pins{
 //       gpio::output({GpioPort::H, 1}, /*high*/ true),                   // LED, off (active low)
-//       gpio::alternate({GpioPort::D, 8}, 7),                            // USART3 TX
-//       gpio::alternate({GpioPort::D, 9}, 7, Speed::Low, Pull::Up),      // USART3 RX
+//       gpio::alternate({GpioPort::D, 8}, Signal::USART3_TX),
+//       gpio::alternate({GpioPort::D, 9}, Signal::USART3_RX, Speed::Low, Pull::Up),
 //   };
 //   gpio::configure<pins>();
 //
@@ -24,6 +27,7 @@
 #include <utility>
 
 #include "rtos/port/stm32h5/chip.hpp"
+#include "rtos/port/stm32h5/pin_functions.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
 
 namespace rtos::port::stm32h5::gpio {
@@ -57,11 +61,45 @@ struct PinConfig {
                                          bool open_drain = false) noexcept {
     return {.pin = p, .mode = Mode::Output, .speed = speed, .open_drain = open_drain, .initial_high = initial_high};
 }
-[[nodiscard]] constexpr PinConfig alternate(Pin p, std::uint8_t af, Speed speed = Speed::High, Pull pull = Pull::None,
-                                            bool open_drain = false) noexcept {
-    return {.pin = p, .mode = Mode::Alternate, .speed = speed, .pull = pull, .open_drain = open_drain, .af = af};
-}
 [[nodiscard]] constexpr PinConfig analog(Pin p) noexcept { return {.pin = p, .mode = Mode::Analog}; }
+
+namespace detail {
+// Not constexpr: calling them during constant evaluation stops the build, and the compiler
+// error names the function - the reason.
+void error_pin_has_no_such_alternate_function();
+void error_pin_has_no_such_analog_function();
+}  // namespace detail
+
+/// The pin's function `signal` (pin_functions.hpp, ST's pin database); -1 if it has none.
+[[nodiscard]] consteval int function_af(Pin p, Signal signal) {
+    for (const PinFunction& f : pin_functions) {
+        if (f.port == p.port && f.number == p.number && f.signal == signal) {
+            return f.af;
+        }
+    }
+    return -1;
+}
+
+/// Pin `p` as peripheral signal `signal`, e.g. alternate({GpioPort::D, 8}, Signal::USART3_TX).
+/// The AF number comes from ST's pin database; a pin without that function does not compile.
+[[nodiscard]] consteval PinConfig alternate(Pin p, Signal signal, Speed speed = Speed::High, Pull pull = Pull::None,
+                                            bool open_drain = false) {
+    const int af = function_af(p, signal);
+    if (af < 0 || af == additional) {
+        detail::error_pin_has_no_such_alternate_function();
+    }
+    return {.pin = p, .mode = Mode::Alternate, .speed = speed, .pull = pull, .open_drain = open_drain,
+            .af = static_cast<std::uint8_t>(af)};
+}
+
+/// Pin `p` analog for its additional function `signal` (ADC input, UCPD CC line, ...); a pin
+/// without that function does not compile.
+[[nodiscard]] consteval PinConfig analog(Pin p, Signal signal) {
+    if (function_af(p, signal) != additional) {
+        detail::error_pin_has_no_such_analog_function();
+    }
+    return analog(p);
+}
 
 inline constexpr std::size_t port_count = 9;  // A..I
 
@@ -70,6 +108,7 @@ namespace detail {
 // error names the function - the reason.
 void error_pin_or_alternate_function_above_15();
 void error_pin_configured_twice();
+void error_pin_not_in_package();
 }  // namespace detail
 
 /// What configure() writes into one port (computed at compile time).
@@ -84,7 +123,7 @@ struct PortPlan {
 };
 
 /// Fold a pin list into per-port register values. Contradictions are errors: the same pin
-/// twice, a pin number above 15, an alternate function above 15.
+/// twice, a pin the package does not have, a pin number or alternate function above 15.
 template <std::size_t N>
 consteval std::array<PortPlan, port_count> plan(const std::array<PinConfig, N>& pins) {
     std::array<PortPlan, port_count> plans{};
@@ -92,6 +131,13 @@ consteval std::array<PortPlan, port_count> plan(const std::array<PinConfig, N>& 
         const PinConfig& c = pins[i];
         if (c.pin.number > 15 || c.af > 15) {
             detail::error_pin_or_alternate_function_above_15();
+        }
+        bool bonded = false;
+        for (const auto& [port, number] : package_pins) {
+            bonded = bonded || (port == c.pin.port && number == c.pin.number);
+        }
+        if (!bonded) {
+            detail::error_pin_not_in_package();
         }
         for (std::size_t j = 0; j < i; ++j) {
             if (pins[j].pin == c.pin) {

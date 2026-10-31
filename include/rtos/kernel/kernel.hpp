@@ -206,6 +206,10 @@ public:
         run_pending_work();
         current_ = &pick();
         current_->slice_left = current_->time_slice;
+        ++current_->run_count;
+        if constexpr (CycleCountingPort<Port>) {
+            switched_in_cycles_ = Port::cycle_count();
+        }
         return *current_;
     }
 
@@ -238,6 +242,12 @@ public:
             }
             forget_preempted(next);
             next.slice_left = next.time_slice;
+            if constexpr (CycleCountingPort<Port>) {
+                const std::uint32_t now = Port::cycle_count();
+                prev->run_cycles += now - switched_in_cycles_;
+                switched_in_cycles_ = now;
+            }
+            ++next.run_count;
             current_ = &next;
             ++context_switches_;
         }
@@ -711,6 +721,7 @@ private:
     std::atomic<std::uint32_t> epoch_{0};  ///< wraps of now_ (now64())
     Thread* current_ = nullptr;
     std::uint32_t context_switches_ = 0;
+    std::uint32_t switched_in_cycles_ = 0;  ///< cycle count when current_ was switched in
     bool started_ = false;
 
     Thread idle_{};
