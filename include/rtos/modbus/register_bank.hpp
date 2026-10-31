@@ -72,10 +72,20 @@ public:
         [[maybe_unused]] const Guard guard{};
         std::ranges::copy(values, input_.begin() + start);
     }
+    void set_holdings(std::uint16_t start, std::span<const std::uint16_t> values) noexcept {
+        contract_assert(start + values.size() <= Holding);
+        [[maybe_unused]] const Guard guard{};
+        std::ranges::copy(values, holding_.begin() + start);
+    }
     void read_holdings(std::uint16_t start, std::span<std::uint16_t> out) const noexcept {
         contract_assert(start + out.size() <= Holding);
         [[maybe_unused]] const Guard guard{};
         std::copy_n(holding_.begin() + start, out.size(), out.begin());
+    }
+    void read_inputs(std::uint16_t start, std::span<std::uint16_t> out) const noexcept {
+        contract_assert(start + out.size() <= Input);
+        [[maybe_unused]] const Guard guard{};
+        std::copy_n(input_.begin() + start, out.size(), out.begin());
     }
 
     // ---- RegisterMap (protocol side) ------------------------------------------------

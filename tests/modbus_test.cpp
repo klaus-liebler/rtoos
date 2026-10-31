@@ -165,6 +165,24 @@ TEST(RegisterBank, WriteHookAfterSuccessfulWritesOnly) {
     EXPECT_EQ(values, (std::array<std::uint16_t, 3>{1, 2, 3}));
 }
 
+TEST(RegisterBank, ApplicationBlocksOnBothTablesWithoutHook) {
+    int hooks = 0;
+    RegisterBank<8, 8, CountingGuard> bank{WriteHook{&hooks, [](void* h, std::uint16_t, std::uint16_t) noexcept {
+                                               ++*static_cast<int*>(h);
+                                           }}};
+    CountingGuard::entered = 0;
+    const std::array<std::uint16_t, 2> value{0x1234, 0x5678};
+    bank.set_holdings(3, value);
+    bank.set_inputs(6, value);
+    std::array<std::uint16_t, 2> holding{}, input{};
+    bank.read_holdings(3, holding);
+    bank.read_inputs(6, input);
+    EXPECT_EQ(holding, value);
+    EXPECT_EQ(input, value);
+    EXPECT_EQ(CountingGuard::entered, 4) << "one guard per block";
+    EXPECT_EQ(hooks, 0) << "the hook is for protocol writes";
+}
+
 // ---------------------------------------------------------------------------
 // RTU
 // ---------------------------------------------------------------------------

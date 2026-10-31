@@ -10,6 +10,9 @@
 //
 // 32-bit values occupy two registers, high word first (the Modbus convention of the FCU).
 // Every read or write is one RegisterMap block access: consistent under its guard.
+#include <array>
+#include <cstdio>
+
 #include "rtos/modbus/modbus.hpp"
 #include "rtos/opcua/variant.hpp"
 
@@ -18,6 +21,7 @@ namespace rtos::opcua::registers {
 struct Register {
     modbus::Table table;
     UInt16 address;
+    UInt16 words = 1;  ///< ReadHexString only: registers in the value (struct, chip UID)
 };
 
 inline modbus::RegisterMap *g_map = nullptr;
@@ -77,6 +81,26 @@ inline bool WriteUInt32(void *context, const Variant &value) {
 inline Variant ReadInt32(void *context) {
     UInt16 w[2] = {};
     return detail::Read(context, w) ? Variant::Of(static_cast<Int32>((UInt32{w[0]} << 16) | w[1])) : Variant{};
+}
+inline bool WriteInt32(void *context, const Variant &value) {
+    Int32 v = 0;
+    if(!detail::Value(value, v)) return false;
+    const auto u = static_cast<UInt32>(v);
+    const UInt16 w[2] = {static_cast<UInt16>(u >> 16), static_cast<UInt16>(u)};
+    return detail::Write(context, w);
+}
+
+/// A value of several registers (Register::words, at most 32) as one hex string, high word
+/// first. The text lives in a buffer of the network thread: the caller encodes it at once.
+inline Variant ReadHexString(void *context) {
+    const auto &r = *static_cast<const Register *>(context);
+    std::array<UInt16, 32> w{};
+    if(r.words == 0 || r.words > w.size() || !detail::Read(context, std::span{w}.first(r.words))) return Variant{};
+    static std::array<char, 4 * 32 + 1> text;
+    for(std::size_t i = 0; i < r.words; ++i) {
+        std::snprintf(text.data() + 4 * i, 5, "%04X", w[i]);
+    }
+    return Variant::Of(String(std::string_view(text.data(), 4u * r.words)));
 }
 
 } // namespace rtos::opcua::registers

@@ -2002,5 +2002,25 @@ TEST_F(OpcUaTest, MutatedMessagesKeepTheServerHealthy) {
     EXPECT_EQ(std::get<ua::UInt16>(value.storage), 7);
 }
 
+TEST(OpcUaRegisters, Int32AndHexStringFromRegisters) {
+    rtos::modbus::RegisterBank<4, 6> bank;
+    ua::registers::Bind(bank);
+    constexpr ua::registers::Register set_point{rtos::modbus::Table::Holding, 1};
+    EXPECT_TRUE(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::Int32{-2})));
+    EXPECT_EQ(bank.holding(1), 0xFFFF);
+    EXPECT_EQ(bank.holding(2), 0xFFFE);
+    const auto back = ua::registers::ReadInt32(ua::registers::Context(set_point));
+    ASSERT_NE(std::get_if<ua::Int32>(&back.storage), nullptr);
+    EXPECT_EQ(*std::get_if<ua::Int32>(&back.storage), -2);
+    EXPECT_FALSE(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::UInt16{1})));
+
+    const std::array<std::uint16_t, 3> uid{0x0045, 0x0017, 0xA0B1};
+    bank.set_inputs(2, uid);
+    constexpr ua::registers::Register chip_id{rtos::modbus::Table::Input, 2, 3};
+    const auto text = ua::registers::ReadHexString(ua::registers::Context(chip_id));
+    ASSERT_NE(std::get_if<ua::String>(&text.storage), nullptr);
+    EXPECT_EQ(std::get_if<ua::String>(&text.storage)->value, "00450017A0B1");
+}
+
 }  // namespace
 

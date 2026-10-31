@@ -63,7 +63,7 @@ ua::Node{.nodeId = ua::NodeId(1, 5000), .nodeClass = ua::NodeClass::Variable,
          .userContext = ua::registers::Context(led)};
 ```
 
-`ReadUInt32` combines two registers (high word first). [apps/net/main.cpp](../apps/net/main.cpp) builds a complete `Objects/FCU` folder this way. Callbacks run in the network thread and must be short.
+`ReadUInt32`/`ReadInt32` combine two registers (high word first) in one block access; `ReadHexString` shows a value of `Register::words` registers (a struct, a chip UID) as one hex string. [apps/net/main.cpp](../apps/net/main.cpp) builds a complete `Objects/FCU` folder this way. Callbacks run in the network thread and must be short.
 
 ### Clock
 
