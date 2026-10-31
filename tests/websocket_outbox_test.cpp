@@ -13,6 +13,7 @@ namespace {
 /// The part of HttpsServer the outbox uses.
 struct FakeServer {
     using SessionId = std::uint8_t;
+    static constexpr std::size_t max_message = 512;
     struct Sent {
         int session;  ///< -1: broadcast
         std::string data;

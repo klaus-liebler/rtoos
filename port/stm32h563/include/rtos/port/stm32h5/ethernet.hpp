@@ -208,6 +208,11 @@ public:
 
     [[nodiscard]] net::MacAddress mac() const noexcept { return mac_; }
     [[nodiscard]] bool link_up() const noexcept { return link_; }
+    /// Link speed as poll_link() set the MAC: 10 or 100 Mbit/s, 0 without link.
+    [[nodiscard]] std::uint16_t speed_mbps() const noexcept {
+        return link_ ? ((eth_reg::MACCR::read() & eth_reg::maccr_fes) != 0 ? 100 : 10) : 0;
+    }
+    [[nodiscard]] bool full_duplex() const noexcept { return link_ && (eth_reg::MACCR::read() & eth_reg::maccr_dm) != 0; }
 
     bool transmit(net::PacketRef frame) noexcept {
         reclaim_tx();

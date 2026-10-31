@@ -67,6 +67,7 @@ template <class Stack, std::size_t MaxSessions = 4, std::size_t MaxMessage = 512
 class HttpsServer {
 public:
     using SessionId = std::uint8_t;
+    static constexpr std::size_t max_message = MaxMessage;  ///< WebSocket messages, both directions
     using Connection = typename Stack::TcpConnection;
 
     struct WebSocketHandler {

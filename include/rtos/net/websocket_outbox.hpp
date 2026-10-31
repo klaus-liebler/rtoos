@@ -37,7 +37,7 @@ class WebSocketOutbox {
 public:
     using SessionId = typename Server::SessionId;
     static constexpr SessionId all_sessions = static_cast<SessionId>(0xFF);
-    static constexpr std::size_t max_message = 512;
+    static constexpr std::size_t max_message = Server::max_message;
 
     explicit WebSocketOutbox(Server& server) noexcept : server_(server) {}
     WebSocketOutbox(const WebSocketOutbox&) = delete;
