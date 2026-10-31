@@ -11,6 +11,7 @@ Built in:
 - **Kernel:** preemptive scheduler with preemption threshold, task notifications, semaphores, message queues, object and block pools, a non-blocking log journal. Interrupts above the kernel mask have zero latency.
 - **IP stack:** IPv4, ARP, ICMP, UDP, TCP, DHCP client and server, DNS, mDNS, SNTP. Supports several interfaces and uses zero-copy packet buffers.
 - **HTTPS** with TLS 1.3 (wolfSSL), including **WebSocket**
+- **SSH log terminal** (wolfSSH): `ssh log@device` shows the log journal live, public-key login
 - **Modbus TCP**
 - **OPC UA** (binary, opc.tcp): Basic256Sha256 (Sign, SignAndEncrypt), sessions, browse, subscriptions
 - **USB device stack** with CDC-ACM (virtual serial port), CDC-NCM (Ethernet over USB) and a **Modbus RTU server** over the CDC serial port
@@ -24,7 +25,7 @@ All network services share one thread. Expensive work (TLS handshakes, large dow
 |---|---|---|
 | 1: host unit tests | GoogleTest on the PC; the kernel runs on a mock CPU port, the IP stack over simulated links, the USB stack against a simulated host | all of the logic: kernel, IP stack, TLS, HTTPS, WebSocket, Modbus, OPC UA, USB classes. Also deterministic mutation fuzzers and test cases ported from lwIP, FreeRTOS-Plus-TCP, TinyUSB, USBX and open62541. Fast, runs in seconds. |
 | 2: QEMU | own QEMU machine `fcu` | the kernel on the real CPU mechanisms: PendSV context switches, lazy FPU stacking, interrupt priorities and BASEPRI masking, SysTick, PSPLIM stack limit (on-target self-test) |
-| 3: Renode | Renode platform of the FCU, connected to the PC through a TAP adapter | everything that involves the CPU's peripherals: the same self-test, plus an end-to-end network test of the real firmware over the emulated Ethernet controller (DHCP, DNS, mDNS, SNTP, HTTPS, WebSocket, Modbus TCP, OPC UA with asyncua, behaviour under load) |
+| 3: Renode | Renode platform of the FCU, connected to the PC through a TAP adapter | everything that involves the CPU's peripherals: the same self-test, plus an end-to-end network test of the real firmware over the emulated Ethernet controller (DHCP, DNS, mDNS, SNTP, HTTPS, WebSocket, Modbus TCP, OPC UA with asyncua, the SSH log terminal with OpenSSH, behaviour under load) |
 
 The target board is the **Factory Control Unit (FCU)**: STM32H563VIT6 with a LAN8742A PHY.
 
@@ -51,7 +52,7 @@ cmake --preset board && cmake --build --preset board
 | [Logging](docs/logging.md) | non-blocking log journal with independent readers (console, network) |
 | [Motion](docs/motion.md) | stepper moves with a sigmoid speed ramp computed by the compiler |
 | [Storage](docs/storage.md) | SD cards (protocol, STM32H5 SDMMC driver), FAT (FileX), littlefs in the internal flash |
-| [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, fairness |
+| [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, SSH log terminal, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
 | [USB](docs/usb.md) | device stack, CDC-ACM, CDC-NCM, Modbus RTU over USB, USB Power Delivery sink |

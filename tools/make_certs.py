@@ -22,6 +22,9 @@ Output:
   opcua_client.der/.key.der    OPC UA client certificate signed by the CA (tests, asyncua;
   opcua_client.crt/.key.pem    import into UAExpert & Co.), SAN URI urn:rtoos:test-client
   opcua_rogue.der/.key.der     self-signed OPC UA client certificate: must be rejected
+  ssh_host.key.der             SSH host key of the log terminal (ECDSA P-256, SEC1 DER)
+  ssh_client.key.pem/.key.der  SSH client key (ECDSA P-256) for tests: PEM for OpenSSH
+  ssh_client.pub               its authorized_keys line ("ecdsa-sha2-nistp256 AAAA... rtoos-test")
 
 The server certificate is (re)issued only if it is missing, does not verify strictly
 (RFC 5280 profile, -x509_strict) against the current CA, lacks the SAN, or expires
@@ -30,6 +33,7 @@ configure is cheap. FOR DEVELOPMENT AND
 TESTS ONLY: the server key is stored unencrypted in the output directory (git-ignored).
 """
 import argparse
+import base64
 import pathlib
 import secrets
 import shutil
@@ -105,6 +109,33 @@ def issue_rsa(openssl: str, out: pathlib.Path, name: str, cn: str, san: str, eku
         f.unlink()
 
 
+def ssh_blob(openssl: str, key: pathlib.Path) -> bytes:
+    """SSH wire blob of an ECDSA P-256 public key (RFC 5656 3.1)."""
+    spki = subprocess.run([openssl, "ec", "-in", str(key), "-pubout", "-outform", "DER"],
+                          check=True, capture_output=True).stdout
+    point = spki[-65:]  # uncompressed point at the end of the SubjectPublicKeyInfo
+    assert point[0] == 4
+    def string(b: bytes) -> bytes:
+        return len(b).to_bytes(4, "big") + b
+    return string(b"ecdsa-sha2-nistp256") + string(b"nistp256") + string(point)
+
+
+def ssh_keys(openssl: str, out: pathlib.Path) -> None:
+    """Host key and a test client key for the SSH log terminal (created once)."""
+    if not (out / "ssh_host.key.der").exists():
+        pem = out / "ssh_host.key.pem"
+        run(openssl, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(pem))
+        run(openssl, "ec", "-in", str(pem), "-outform", "DER", "-out", str(out / "ssh_host.key.der"))
+        pem.unlink()
+    if not (out / "ssh_client.pub").exists():
+        pem = out / "ssh_client.key.pem"
+        run(openssl, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(pem))
+        run(openssl, "ec", "-in", str(pem), "-outform", "DER", "-out", str(out / "ssh_client.key.der"))
+        blob = ssh_blob(openssl, pem)
+        (out / "ssh_client.pub").write_text(
+            "ecdsa-sha2-nistp256 " + base64.b64encode(blob).decode() + " rtoos-test\n", newline="\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("openssl")
@@ -147,6 +178,8 @@ def main() -> None:
                   ca_crt, ca_key)
     if not (out / "opcua_rogue.der").exists():
         issue_rsa(openssl, out, "opcua_rogue", "rogue client", "URI:urn:rogue", "clientAuth", None, None)
+
+    ssh_keys(openssl, out)
 
     if server_cert_valid(openssl, out, ca_crt, host, ip):
         return

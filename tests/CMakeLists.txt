@@ -24,6 +24,7 @@ add_executable(rtos_tests
     tcp_server_test.cpp
     dhcp_server_test.cpp
     tls_test.cpp
+    ssh_test.cpp
     http_ws_test.cpp
     websocket_outbox_test.cpp
     fuzz_test.cpp
@@ -50,3 +51,7 @@ target_link_options(rtos_tests PRIVATE -static)
 
 include(GoogleTest)
 gtest_discover_tests(rtos_tests)
+# ssh_test.cpp includes wolfSSH's headers (see cmake/wolfssh.cmake)
+if(RTOS_WOLFSSH_HOST_FLAGS)
+    set_source_files_properties(ssh_test.cpp PROPERTIES COMPILE_OPTIONS "${RTOS_WOLFSSH_HOST_FLAGS}")
+endif()

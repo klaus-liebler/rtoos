@@ -74,6 +74,7 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
 #define ECC_TIMING_RESISTANT
 #define TFM_TIMING_RESISTANT
 #define HAVE_CURVE25519
+#define HAVE_ED25519                 /* SSH: ssh-ed25519 client keys (log terminal) */
 #define HAVE_AESGCM
 #define GCM_TABLE_4BIT
 #define HAVE_CHACHA
@@ -118,6 +119,17 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
     #define WOLFSSL_ARMASM_NO_HW_CRYPTO
     #define WOLFSSL_ARMASM_NO_NEON
 #endif
+
+/* ---- wolfSSH (log terminal, net/ssh.hpp) --------------------------------------------------
+ * Server side only in use; I/O through rtoos' TCP connections; no file system. Small packets
+ * and window: the terminal carries log lines and keystrokes, and every buffer comes from the
+ * static pool (RFC 4253 6.1 asks for 32 KB packets; the channel's maximum packet, which the
+ * server announces, bounds the client's data packets, and KEX packets stay below 2 KB). */
+#define WOLFSSL_WOLFSSH              /* wolfSSL parts wolfSSH needs */
+#define WOLFSSH_USER_IO
+#define WOLFSSH_NO_TIMESTAMP
+#define DEFAULT_WINDOW_SZ (8 * 1024)
+#define DEFAULT_MAX_PACKET_SZ 2048
 
 #ifdef __cplusplus
 }

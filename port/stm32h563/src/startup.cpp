@@ -7,6 +7,12 @@
 // -fcontract-evaluation-semantic=quick_enforce, i.e. a violated contract calls
 // std::terminate() directly (no violation handler) -> abort() below. Defining
 // abort() here keeps newlib's version (raise/signal/malloc) out of the image.
+//
+// No heap at run time: newlib-nano's printf family references malloc (the log journal's
+// vsnprintf never needs it for integers and strings), so _sbrk exists - and always refuses.
+// A malloc() anywhere therefore returns nullptr instead of growing into the stacks.
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 
 extern "C" {
@@ -32,6 +38,11 @@ int main();
     main();
     for (;;) {
     }
+}
+
+void* _sbrk(std::ptrdiff_t) noexcept {
+    errno = ENOMEM;
+    return reinterpret_cast<void*>(-1);
 }
 
 [[noreturn]] void abort() noexcept {

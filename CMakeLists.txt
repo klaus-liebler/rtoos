@@ -44,6 +44,7 @@ target_link_options(rtos_kernel INTERFACE -fcontracts)
 
 # ---- third party ------------------------------------------------------------
 include(cmake/wolfssl.cmake)
+include(cmake/wolfssh.cmake)
 include(cmake/filex.cmake)
 include(cmake/littlefs.cmake)
 
@@ -84,8 +85,11 @@ function(rtos_certificates target)
     target_compile_options(${target} INTERFACE --embed-dir=${C_DIR})
 endfunction()
 
-add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp)
-target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
+add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp src/net/ssh.cpp)
+target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl rtos_wolfssh)
+if(RTOS_WOLFSSH_HOST_FLAGS)  # see cmake/wolfssh.cmake
+    set_source_files_properties(src/net/ssh.cpp PROPERTIES COMPILE_OPTIONS "${RTOS_WOLFSSH_HOST_FLAGS}")
+endif()
 
 # ---- OPC UA (the FCU's opcua_native library; crypto: wolfCrypt RSA-2048) ----------
 add_library(rtos_opcua STATIC

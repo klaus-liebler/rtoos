@@ -31,6 +31,8 @@
 //            Basic256Sha256 Sign or SignAndEncrypt with a client certificate signed by the CA: read and
 //            write; SecurityPolicy None: read only. RSA-2048 (OPC UA only, see CLAUDE.md).
 //            Subscriptions (data changes) on every variable.
+//   SSH      log terminal on port 22: ssh -i certs/ssh_client.key.pem log@fcu.local shows the
+//            log journal (boot log, then live lines); key: certs/ssh_client.pub
 //
 // One network thread owns the whole stack: it runs Stack::poll() whenever the ETH
 // interrupt signals it (notify_from_isr) or the next protocol timer is due.
@@ -51,13 +53,16 @@
 #include "fcu_net_config.hpp"
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/dns_resolver.hpp"
+#include "rtos/log/log.hpp"
 #include "rtos/modbus/register_bank.hpp"
 #include "rtos/net/https_server.hpp"
+#include "rtos/net/log_terminal.hpp"
 #include "rtos/net/modbus_tcp_server.hpp"
 #include "rtos/net/opcua_server.hpp"
 #include "rtos/net/service.hpp"
 #include "rtos/net/mdns.hpp"
 #include "rtos/net/sntp.hpp"
+#include "rtos/net/ssh.hpp"
 #include "rtos/net/stack.hpp"
 #include "rtos/net/tls.hpp"
 #include "rtos/net/tls_memory.hpp"
@@ -115,6 +120,12 @@ constexpr unsigned char opcua_private_key[] = {
 constexpr unsigned char ca_certificate[] = {
 #embed "ca.der"
 };
+constexpr unsigned char ssh_host_key[] = {
+#embed "ssh_host.key.der"
+};
+constexpr char ssh_client_pub[] = {
+#embed "ssh_client.pub"
+    , '\0'};
 
 template <std::size_t N>
 std::span<const std::byte> as_span(const unsigned char (&a)[N]) {
@@ -129,8 +140,8 @@ struct NetConfig : net::DefaultStackConfig {
     static constexpr std::size_t udp_sockets = 6;  // DHCP, mDNS, SNTP, 2 DNS queries, spare
     // Browsers open several connections per page (spare sockets, keep-alive, the
     // WebSocket); closing ones linger in TIME_WAIT. Plus Modbus and OPC UA clients.
-    static constexpr std::size_t tcp_connections = 10;
-    static constexpr std::size_t tcp_listeners = 3;  // HTTPS, Modbus TCP, OPC UA
+    static constexpr std::size_t tcp_connections = 12;
+    static constexpr std::size_t tcp_listeners = 4;  // HTTPS, Modbus TCP, OPC UA, SSH
     // At most 2 downloads (bulk connections) send at a time, holding at most 2 x 5
     // transmit buffers: with the RX ring (8) and the receive reserve (8) that leaves
     // 6 of the 32 buffers for the replies of interactive connections, however many
@@ -186,6 +197,20 @@ const Server::WebSocketHandler ws_handler{nullptr, &on_ws_opened, &on_ws_message
 constexpr net::HttpsServerConfig https_config{.ws_ping_interval_ms = fcu_net_config::ws_ping_interval_ms,
                                               .ws_pong_timeout_ms = fcu_net_config::ws_pong_timeout_ms};
 Server server{stack, tls_context, resources, "/ws", ws_handler, https_config};
+
+// ---- log journal, SSH log terminal -------------------------------------------------------
+using Journal = rtos::log::Journal<64, 120, Kernel::Lock>;
+Journal journal;
+// wolfSSH static pool for 2 terminals, from the Renode net_test peaks: a session holds two
+// 8 KB blocks (packet buffers) and the session (2.5 KB) and handshake (4.2 KB) objects;
+// 69 KB of blocks plus wolfSSL's per-block headers.
+constexpr std::array<std::uint32_t, 8> ssh_bucket_sizes{64, 128, 256, 512, 1024, 2560, 4352, 8192};
+constexpr std::array<std::uint32_t, 8> ssh_bucket_counts{48, 16, 16, 8, 4, 4, 2, 4};
+alignas(16) std::array<std::byte, 80 * 1024> ssh_memory;
+net::SshServerContext ssh_context;
+const std::array<std::string_view, 1> ssh_authorized{
+    std::string_view(ssh_client_pub).substr(0, std::string_view(ssh_client_pub).find('\n'))};
+net::LogTerminal<Stack, Journal, 2> log_terminal{stack, ssh_context, journal};
 
 // ---- Modbus TCP -----------------------------------------------------------------------
 // The register bank is shared with application threads: every access takes the
@@ -376,6 +401,9 @@ void use_time_server(net::Ipv4Address from_dhcp) noexcept {
 }
 
 void on_dhcp_bound(void*, const net::DhcpLease& lease, bool renewed) noexcept {
+    const unsigned a = lease.config.address.value;
+    RTOS_LOG_INFO("dhcp: %s %u.%u.%u.%u", renewed ? "renewed" : "bound", a >> 24, (a >> 16) & 0xFF, (a >> 8) & 0xFF,
+                  a & 0xFF);
     board::print(renewed ? "dhcp: renewed " : "dhcp: bound ");
     print_ip(lease.config.address);
     board::print(" mask ");
@@ -474,6 +502,7 @@ void send_status() {
 }
 
 void on_ws_opened(void*, Server::SessionId id) noexcept {
+    RTOS_LOG_INFO("ws: client %u connected", static_cast<unsigned>(id));
     board::print("ws: client ");
     board::print_dec(id);
     board::print(" connected\n");
@@ -698,6 +727,15 @@ void net_main(void*) {
     }
     ua::registers::Bind(registers);
 
+    if (const auto r = ssh_context.init(ssh_memory, {as_span(ssh_host_key), ssh_authorized}, 2,
+                                        {ssh_bucket_sizes, ssh_bucket_counts});
+        r != net::SshInitResult::Ok) {
+        board::print("ssh: init failed, step ");
+        board::print_dec(static_cast<std::uint32_t>(r));
+        board::print("\n");
+        return;
+    }
+
     mdns.start(net::InterfaceSet::all(), &on_mdns_renamed);
     dhcp.start();
     sntp.start();
@@ -724,6 +762,11 @@ void net_main(void*) {
         board::print("opcua: listen failed\n");
     }
     runtime.add(opcua, "opcua");
+    if (!log_terminal.start(22)) {
+        board::print("ssh: listen failed\n");
+    }
+    runtime.add(log_terminal, "ssh");
+    RTOS_LOG_INFO("net: services up, log terminal on port 22");
     runtime.set_cycle_counter([]() noexcept { return cm33::CycleCounter::now(); });
     for (;;) {
         const std::uint32_t wake = runtime.run_once(kernel.now());
@@ -744,6 +787,8 @@ extern "C" void ETH_IRQHandler() noexcept {
 int main() {
     board::init();
     board::print("\nrtoos net - STM32H563 / Factory Control Unit\n");
+    rtos::log::set_sink(journal.sink([]() noexcept { return kernel.now(); }));
+    RTOS_LOG_INFO("rtoos net - STM32H563 / Factory Control Unit");
     cm33::CycleCounter::enable();
     Port::configure(board::sysclk_hz, 1000);
     std::ranges::fill(net_stack, stack_paint);

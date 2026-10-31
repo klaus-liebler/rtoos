@@ -16,7 +16,9 @@ boots the firmware in Renode connected to the TAP adapter "rtoos-tap", and check
   rejection of a cross-origin WebSocket, Modbus TCP, and OPC UA (asyncua: SecurityPolicy
   None read-only, Basic256Sha256/Sign with the client certificate certs/opcua_client.*
   signed by the CA, a self-signed client rejected), and the latency of WebSocket, Modbus
-  and OPC UA requests while 5 downloads run.
+  and OPC UA requests while 5 downloads run, and the SSH log terminal (port 22) with the
+  system's OpenSSH client: the boot log and live lines with the key certs/ssh_client.*,
+  'q' ends the session, a key that is not authorized is refused.
 Exit code 0 if every check passed, 77 (CTest: skipped) if the TAP adapter with
 192.168.77.1 is missing - run emulation/renode/setup-tap.ps1 once as administrator.
 """
@@ -41,6 +43,47 @@ RENODE = Path("C:/opt/renode/renode.exe")
 SKIPPED = 77
 
 results: list[tuple[str, bool, str]] = []
+
+
+def ssh_terminal(key: Path, wait_for: str, seconds: float = 60) -> tuple[bool, str, int | None]:
+    """OpenSSH client against the log terminal: True if `wait_for` appears; then sends 'q'
+    and returns the output and the client's exit code (None if it did not end)."""
+    if os.name == "nt":  # Windows OpenSSH refuses a private key others may read
+        subprocess.run(["icacls", str(key), "/inheritance:r", "/grant:r", f"{os.environ['USERNAME']}:R"],
+                       capture_output=True)
+    proc = subprocess.Popen(["ssh", "-T", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+                             "-o", "StrictHostKeyChecking=no", "-o", f"UserKnownHostsFile={os.devnull}",
+                             "-o", "ConnectTimeout=30", f"log@{DEVICE_IP}"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out = bytearray()
+    found = threading.Event()
+
+    def reader() -> None:
+        while chunk := proc.stdout.read1(4096):
+            out.extend(chunk)
+            if wait_for.encode() in out:
+                found.set()
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    found.wait(seconds)
+    code = None
+    if found.is_set():
+        proc.stdin.write(b"q")
+        proc.stdin.flush()
+        try:
+            code = proc.wait(15)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        try:
+            code = proc.wait(1)
+        except subprocess.TimeoutExpired:
+            pass
+    if code is None:
+        proc.kill()
+        proc.wait()
+    t.join(2)
+    return found.is_set(), out.decode(errors="replace"), code
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -732,6 +775,19 @@ def main() -> int:
             ua_reader.disconnect()
         if mb is not None:
             mb.close()
+        # SSH log terminal (port 22): the journal's boot record first, then live lines
+        # its own connect line is logged after the history: proves both
+        ssh_ok, ssh_out, ssh_code = ssh_terminal(certs / "ssh_client.key.pem", "log terminal: log connected")
+        check("SSH log terminal: boot log and live lines over OpenSSH",
+              ssh_ok and "rtoos net - STM32H563" in ssh_out, ssh_out.strip()[-160:])
+        check("SSH log terminal: 'q' ends the session", ssh_code is not None, f"client exit {ssh_code}")
+        rogue_key = Path(os.environ.get("TEMP", "/tmp")) / "rtoos_rogue_ed25519"
+        for f in (rogue_key, rogue_key.with_suffix(".pub")):
+            f.unlink(missing_ok=True)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(rogue_key)], check=True)
+        rogue_ok, rogue_out, _ = ssh_terminal(rogue_key, "rtoos net - STM32H563", 20)
+        check("SSH log terminal: a key that is not authorized is refused",
+              not rogue_ok and "Permission denied" in rogue_out, rogue_out.strip()[-120:])
         steps = [line for line in console.lines if "longest step" in line]
         check("firmware reports service/step latency", bool(steps), steps[-1].strip() if steps else "no report")
         if ws:

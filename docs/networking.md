@@ -83,6 +83,28 @@ outbox.send(session, reply);
 
 Posting copies the message into a byte ring under one short lock. When the ring is full, the message is refused and counted (`stats().dropped`). At delivery, a session whose transmit queue is full misses the message (`stats().undelivered`): status messages are superseded by the next ones anyway.
 
+## SSH log terminal
+
+[log_terminal.hpp](../include/rtos/net/log_terminal.hpp) is an SSH server whose sessions show the log journal ([Logging](logging.md)): first the records the journal still holds (the boot log), then every new line, coloured by level. Ctrl-C, Ctrl-D or `q` end a session.
+
+```
+ssh -i certs/ssh_client.key.pem log@fcu.local       # any user name; the key decides
+```
+
+```cpp
+net::SshServerContext ssh;                                  // host key, authorized keys, own pool
+ssh.init(ssh_memory, {.host_key_der = host_key, .authorized_keys = keys}, 2, {sizes, counts});
+net::LogTerminal<Stack, Journal, 2> terminal{stack, ssh, journal};
+terminal.start(22);
+runtime.add(terminal, "ssh");
+```
+
+- **wolfSSH 1.6.0** ([ssh.hpp](../include/rtos/net/ssh.hpp), [ssh.cpp](../src/net/ssh.cpp)) on rtoos' wolfSSL, archive pinned and its signature checked ([cmake/wolfssh.cmake](../cmake/wolfssh.cmake)). The I/O goes through rtoos' TCP connections; memory comes from a static pool of its own, so a terminal never takes memory from HTTPS.
+- **Login by public key only**: the OpenSSH `authorized_keys` lines given at init (`ssh-ed25519`, `ecdsa-sha2-nistp256`). wolfSSH checks the signature, rtoos checks that the key is one of the list. No passwords.
+- **Host key**: ECDSA P-256. `tools/make_certs.py` creates `certs/ssh_host.key.der` and a test client key (`ssh_client.key.pem`, `ssh_client.pub`) for the examples and tests.
+- **Fairness**: the key exchange (ECDH, ECDSA signature) is background work; a pass writes at most 8 lines per terminal and only while wolfSSH holds no unsent data, so a slow client never makes the device buffer more than one SSH packet.
+- Packets and window are small (2 KB, 8 KB): the terminal carries log lines and keystrokes. OpenSSH 10 warns that the key exchange is not post-quantum (no ML-KEM yet).
+
 ## Fairness in one thread
 
 All servers share the network thread. A web app download must not delay the answer of a Modbus or OPC UA server. Three mechanisms ensure this ([service.hpp](../include/rtos/net/service.hpp)):

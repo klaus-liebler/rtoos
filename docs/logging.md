@@ -58,6 +58,8 @@ void console_main(void*) {
 
 A network reader (e.g. a WebSocket log mirror) is a service in the network thread with its own cursor; it sends the records that are new since its last pass.
 
+Readers: the console (a low-priority thread) and the SSH log terminal ([Networking](networking.md#ssh-log-terminal)), which shows the journal to every connected `ssh` client.
+
 ## Tests
 
 [log_test.cpp](../tests/log_test.cpp): formatting and record data, level filter, cut texts, lost records of a slow reader, independent cursors, blocks, the listener, the console format.
