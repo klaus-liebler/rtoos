@@ -40,6 +40,8 @@ struct ClockTree {
     [[nodiscard]] constexpr std::uint32_t timer1_hz() const noexcept { return apb1_div == 1 ? pclk1_hz() : 2 * pclk1_hz(); }
     [[nodiscard]] constexpr std::uint32_t timer2_hz() const noexcept { return apb2_div == 1 ? pclk2_hz() : 2 * pclk2_hz(); }
     [[nodiscard]] constexpr std::uint32_t pll1_q_hz() const noexcept { return pll1.q_hz(); }
+    /// UCPD kernel clock: HSI / 4 (HSI keeps running, it feeds PLL1).
+    [[nodiscard]] constexpr std::uint32_t ucpd_hz() const noexcept { return hsi_hz / 4; }
 
     [[nodiscard]] static constexpr std::uint32_t hpre(std::uint32_t div) noexcept {
         switch (div) {

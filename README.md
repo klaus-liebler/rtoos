@@ -14,6 +14,7 @@ Built in:
 - **Modbus TCP**
 - **OPC UA** (binary, opc.tcp): Basic256Sha256 (Sign, SignAndEncrypt), sessions, browse, subscriptions
 - **USB device stack** with CDC-ACM (virtual serial port), CDC-NCM (Ethernet over USB) and a **Modbus RTU server** over the CDC serial port
+- **USB Power Delivery sink** on the UCPD: asks a USB-C supply for the voltage the board needs
 
 All network services share one thread. Expensive work (TLS handshakes, large downloads, RSA) runs in bounded background steps, so short requests are not kept waiting.
 
@@ -53,7 +54,7 @@ cmake --preset board && cmake --build --preset board
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
-| [USB](docs/usb.md) | device stack, CDC-ACM, CDC-NCM, Modbus RTU over USB |
+| [USB](docs/usb.md) | device stack, CDC-ACM, CDC-NCM, Modbus RTU over USB, USB Power Delivery sink |
 | [Security](docs/security.md) | certificates and CA, TLS, OPC UA trust, ARP hardening |
 | [Testing](docs/testing.md) | host tests, fuzzing, QEMU, Renode, network test |
 | [Design decisions](docs/decisions.md) | decisions backed by measurements (zero-copy TLS, memory pool) |

@@ -8,12 +8,14 @@
 
 #include "board/fcu.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
+#include "rtos/port/stm32h5/cache.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
+#include "rtos/port/stm32h5/ucpd.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
 #include "rtos/port/stm32h5/usb_device.hpp"
 
@@ -40,6 +42,10 @@ h5::UsbDrdFs<> usb_fs;
 using LedDma = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
                                 .direction = h5::DmaDirection::MemoryToPeripheral, .memory_bytes = 2, .peripheral_bytes = 2}>;
 std::array<std::uint16_t, 24> led_bits{};
+using PdClock = h5::MicrosecondTimer<h5::TimerId::Tim5, board::clocks.timer1_hz()>;
+PdClock pd_clock;
+RTOS_DMA_BUFFER h5::Ucpd<{.kernel_hz = board::clocks.ucpd_hz()}> ucpd;
+rtos::usb_pd::Sink<decltype(ucpd), PdClock> pd_sink{ucpd, pd_clock};
 }  // namespace
 
 void drivers_check() noexcept {
@@ -109,6 +115,15 @@ void drivers_check() noexcept {
     (void)LedDma::start(Leds::compare_address<1>(), led_bits.data(), led_bits.size());
     (void)LedDma::done();
     LedDma::stop();
+
+    PdClock::init();
+    ucpd.start();
+    (void)pd_sink.request_power(12'000);
+    ucpd.on_irq(pd_sink);
+    if (PdClock::take()) {
+        pd_sink.on_timer();
+    }
+    pd_sink.poll([](rtos::usb_pd::SinkEvent) {});
 
     Spi2::init();
     (void)Spi2::transfer(b, b);

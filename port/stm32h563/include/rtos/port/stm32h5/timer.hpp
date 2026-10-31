@@ -219,6 +219,37 @@ public:
         DIER::write(DIER::read() | (1u << (8 + Ch)));  // CCxDE
     }
 
+    // ---- compare interrupt (deadlines on a free-running counter) ---------------------------
+    // With the channel in its reset mode (output compare, frozen), CCxIF is set when CNT
+    // reaches CCRx; set_compare<Ch>() moves the deadline.
+
+    template <unsigned Ch>
+    static void enable_compare_irq() noexcept {
+        static_assert(Ch >= 1 && Ch <= info.channels, "timer has no such channel");
+        DIER::write(DIER::read() | (1u << Ch));  // CCxIE
+    }
+    template <unsigned Ch>
+    static void disable_compare_irq() noexcept {
+        static_assert(Ch >= 1 && Ch <= info.channels, "timer has no such channel");
+        DIER::write(DIER::read() & ~(1u << Ch));
+    }
+    /// In the ISR: true (and acknowledged) if channel `Ch` matched.
+    template <unsigned Ch>
+    [[nodiscard]] static bool take_compare() noexcept {
+        static_assert(Ch >= 1 && Ch <= info.channels, "timer has no such channel");
+        if ((SR::read() & (1u << Ch)) == 0) {
+            return false;
+        }
+        SR::write(~(1u << Ch));  // rc_w0: only CCxIF cleared
+        return true;
+    }
+    /// Raise the compare event of channel `Ch` by software (EGR.CCxG).
+    template <unsigned Ch>
+    static void trigger_compare() noexcept {
+        static_assert(Ch >= 1 && Ch <= info.channels, "timer has no such channel");
+        EGR::write(1u << Ch);
+    }
+
     /// DMA burst: `length` registers from offset `base_offset` (bytes) through DMAR at the event
     /// `source` (1 update, 2..5 CC1..CC4; RM0481 TIMx_DCR.DBSS).
     static void configure_dma_burst(std::uint32_t base_offset, std::uint32_t length, std::uint32_t source) noexcept {
@@ -248,6 +279,39 @@ private:
     using CCR = PReg<info.offset + 0x34 + 4 * (Ch - 1)>;
     using BDTR = PReg<info.offset + 0x44>;
     using DCR = PReg<info.offset + 0x3DC>;
+};
+
+/// A free-running 1 MHz clock on a 32-bit timer with one deadline (compare channel `Ch`):
+/// arm(at) raises the timer interrupt at `at`, at once if `at` already passed. It satisfies
+/// usb_pd::DeadlineTimer.
+///
+///   using Clock = MicrosecondTimer<TimerId::Tim2, board::clocks.timer1_hz()>;
+///   Clock::init();
+///   TIM2 IRQ: if (Clock::take()) { ... }
+template <TimerId Id, std::uint32_t KernelHz, unsigned Ch = 1>
+class MicrosecondTimer {
+    using Tim = Timer<Id, TimerConfig{.kernel_hz = KernelHz, .tick_hz = 1'000'000, .preload = false}>;
+    static_assert(Tim::max_period == 0xFFFF'FFFFu, "needs a 32-bit timer (TIM2, TIM5)");
+
+public:
+    static constexpr std::uint8_t irq = Tim::irq;
+
+    static void init() noexcept {
+        Tim::init();
+        Tim::start();
+    }
+    [[nodiscard]] std::uint32_t now() const noexcept { return Tim::counter(); }
+    void arm(std::uint32_t at) noexcept {
+        Tim::template set_compare<Ch>(at);
+        (void)Tim::template take_compare<Ch>();  // a stale match from an earlier wrap
+        Tim::template enable_compare_irq<Ch>();
+        if (static_cast<std::int32_t>(at - Tim::counter()) <= 0) {
+            Tim::template trigger_compare<Ch>();  // passed while arming
+        }
+    }
+    void disarm() noexcept { Tim::template disable_compare_irq<Ch>(); }
+    /// In the ISR: true (and acknowledged) if the deadline caused it.
+    [[nodiscard]] static bool take() noexcept { return Tim::template take_compare<Ch>(); }
 };
 
 }  // namespace rtos::port::stm32h5

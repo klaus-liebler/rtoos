@@ -15,6 +15,7 @@
 #include "rtos/port/stm32h5/rcc.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
+#include "rtos/port/stm32h5/ucpd.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
 
 namespace {
@@ -235,6 +236,25 @@ TEST(DmaConfig, TransferRegistersFromTheConfiguration) {
                                   .direction = h5::DmaDirection::PeripheralToMemory};
     EXPECT_EQ(h5::dma_tr1(pd_rx), 1u << 19) << "bytes, DINC";
     EXPECT_EQ(h5::dma_tr2(pd_rx), 112u) << "REQSEL UCPD1_RX, no DREQ";
+}
+
+TEST(UcpdTiming, DividersFromTheKernelClock) {
+    // FCU: HSI / 4 = 16 MHz
+    static_assert(h5::rcc::ClockTree{.pll1 = {.m = 32, .n = 250, .p = 2, .q = 5}}.ucpd_hz() == 16'000'000);
+    constexpr auto t = h5::ucpd_timing({.kernel_hz = 16'000'000});
+    static_assert(t.valid);
+    EXPECT_EQ(t.psc, 1u) << "ucpd_clk 8 MHz";
+    EXPECT_EQ(t.hbit_div, 13u);
+    EXPECT_EQ(t.bit_rate, 307'692u) << "within 270-330 kbit/s";
+    EXPECT_EQ(t.transwin_div, 8u);
+    EXPECT_EQ(t.transwin_ns, 13'000u) << "12-20 us";
+    EXPECT_EQ(t.ifrgap_div, 17u) << "ST's reference at 8 MHz";
+    // CFGR1: HBITCLKDIV 5:0, IFRGAP 10:6, TRANSWIN 15:11, PSC_USBPDCLK 19:17, each field minus one
+    EXPECT_EQ(t.cfgr1(), 12u | (16u << 6) | (7u << 11) | (1u << 17));
+    EXPECT_EQ(h5::ucpd_timing({.kernel_hz = 64'000'000}).psc, 3u);
+    EXPECT_TRUE(h5::ucpd_timing({.kernel_hz = 64'000'000}).valid);
+    EXPECT_FALSE(h5::ucpd_timing({.kernel_hz = 4'000'000}).valid) << "ucpd_clk below 6 MHz";
+    EXPECT_FALSE(h5::ucpd_timing({.kernel_hz = 16'000'000, .bit_rate = 400'000}).valid);
 }
 
 }  // namespace

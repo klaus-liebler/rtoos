@@ -68,3 +68,37 @@ The tests follow the USBX regression tests: a simulated host ([usb_fixture.hpp](
 - **Controller** ([usb_drd_fs_test.cpp](../tests/usb_drd_fs_test.cpp)): the driver against a simulated USB_DRD_FS with the hardware's register semantics (toggle and clear-on-0 bits, NAK and toggle after each transaction, packet memory with buffer descriptors), driven by a simulated host at token level. It covers bus reset, SETUP, IN with a zero-length packet, OUT ending with a short packet or a full buffer, data toggles, STALL and CLEAR_FEATURE, early EP0 OUT data, packet memory allocation, and a full enumeration with bulk echo through `usb::Device`.
 
 Bugs these tests found and that are fixed: standard requests with the wrong direction or a forbidden data stage; IN requests with `wLength 0`; NDP loops that delivered datagrams several times.
+
+## USB Power Delivery sink
+
+[include/rtos/usb_pd](../include/rtos/usb_pd) makes the board a USB PD sink: it asks a USB-C power supply for a voltage (fixed or PPS) and keeps the contract. It is ported from Manuel Bleichenbacher's [USB Power Delivery for Arduino](https://github.com/manuelbl/usb-pd-arduino) (MIT License), without heap, `std::function`, busy waits or a global instance.
+
+| Part | File | Contents |
+|---|---|---|
+| Messages | [message.hpp](../include/rtos/usb_pd/message.hpp) | header fields, data objects, wire bytes |
+| Capabilities | [source_capability.hpp](../include/rtos/usb_pd/source_capability.hpp) | parse Source_Capabilities (fixed, variable, battery, SPR PPS), build the Request data object |
+| Sink | [sink.hpp](../include/rtos/usb_pd/sink.hpp) | protocol layer (message IDs, GoodCRC, `nRetryCount` retries after `tReceive`) and policy: request the wanted voltage, fall back to 5 V, ask with Get_Source_Cap and finally a Hard Reset if the source stays silent, answer Wait, Soft Reset and unsupported requests, refresh PPS contracts every 8 s |
+| PHY | [ucpd.hpp](../port/stm32h563/include/rtos/port/stm32h5/ucpd.hpp) | UCPD1 with GPDMA (RX channel 0, TX channel 1); dividers computed and checked at compile time from the kernel clock (HSI / 4 = 16 MHz) |
+| Deadlines | `MicrosecondTimer` in [timer.hpp](../port/stm32h563/include/rtos/port/stm32h5/timer.hpp) | free-running 1 MHz 32-bit timer (TIM2 or TIM5) with a compare interrupt |
+
+```cpp
+namespace h5 = rtos::port::stm32h5;
+using PdClock = h5::MicrosecondTimer<h5::TimerId::Tim5, board::clocks.timer1_hz()>;
+PdClock pd_clock;
+RTOS_DMA_BUFFER h5::Ucpd<{.kernel_hz = board::clocks.ucpd_hz()}> ucpd;   // DMA buffers inside
+rtos::usb_pd::Sink<decltype(ucpd), PdClock, Kernel::Lock> sink{ucpd, pd_clock};
+
+extern "C" void UCPD1_IRQHandler() noexcept { ucpd.on_irq(sink); }
+extern "C" void TIM5_IRQHandler() noexcept { if (PdClock::take()) sink.on_timer(); }
+
+PdClock::init();
+sink.request_power(12'000);      // remembered until a source offers it
+ucpd.start();                    // Rd on CC1/CC2; then enable both IRQs at the same priority
+// in a thread:
+sink.poll([](rtos::usb_pd::SinkEvent e) { /* capabilities, voltage changed, rejected */ });
+const auto s = sink.status();    // attached, connected, active_mv, active_ma, capabilities
+```
+
+The UCPD and timer interrupts must have the same priority: the protocol runs in both and they must not preempt each other. Application calls run under the `Guard` (`Kernel::Lock` masks kernel-aware interrupts). The CC pins (PB13, PB14) go into the board's pin list as analog pins.
+
+**Tests** ([usb_pd_test.cpp](../tests/usb_pd_test.cpp)): the sink against a simulated source that plays its protocol layer and policy: negotiation, 5 V fallback, retries without GoodCRC, repeated message IDs, Reject, Wait, Get_Source_Cap with Hard Reset escalation, a request deferred while the transmitter is busy, PPS refresh, Soft Reset, a lost GoodCRC, detach. The UCPD dividers are checked in [port_config_test.cpp](../tests/port_config_test.cpp). Neither emulator models the UCPD, so the PHY has not run outside the board yet.
