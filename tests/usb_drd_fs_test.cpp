@@ -91,6 +91,8 @@ struct SimulatedUsb {
 
 /// The Regs policy over the simulation.
 struct SimRegs {
+    static constexpr std::uint8_t irq = h5::UsbHardware::irq;
+    static constexpr std::size_t pma_bytes = h5::UsbHardware::pma_bytes;
     SimulatedUsb* s = nullptr;
     struct Masked {};
     std::uint32_t chep(unsigned n) noexcept { return s->chep[n]; }

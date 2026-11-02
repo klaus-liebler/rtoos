@@ -43,7 +43,9 @@ add_executable(rtos_tests
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_filex rtos_littlefs rtos_certs GTest::gtest_main)
 # The chip drivers' compile-time configuration (constexpr register values) is tested on the host.
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-                           ${PROJECT_SOURCE_DIR}/port/stm32h563/include ${PROJECT_SOURCE_DIR}/port/cortex_m33/include)
+                           ${PROJECT_SOURCE_DIR}/port/cortex_m/include ${PROJECT_SOURCE_DIR}/port/stm32/include
+                           ${PROJECT_SOURCE_DIR}/port/stm32h563/include ${PROJECT_SOURCE_DIR}/port/cortex_m33/include
+                           ${PROJECT_SOURCE_DIR}/port/stm32g431/include)
 # UBSan in trap mode needs no runtime library; static linking makes the test
 # executable independent of the toolchain's DLLs.
 target_compile_options(rtos_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "rtos/port/stm32/rcc.hpp"
 #include "rtos/port/stm32h5/chip.hpp"
 
 namespace rtos::port::stm32h5::rcc {
@@ -115,72 +116,48 @@ inline void enable_hsi48() noexcept {
 
 // ---- peripheral clock gates (SVD v1.8, RCC_xxxENR; RCC_xxxRSTR = ENR - 0x28) --------------
 
-/// A peripheral's bit in one of the RCC_xxxENR registers.
-struct Gate {
-    std::uint16_t enr;  ///< offset of the enable register in RCC
-    std::uint8_t bit;
-};
+using stm32::rcc::ClockSelection, stm32::rcc::Gate, stm32::rcc::KernelClock;
+using stm32::rcc::disable, stm32::rcc::enable, stm32::rcc::reset, stm32::rcc::select;
 
 namespace detail {
-inline volatile std::uint32_t& rcc_reg(std::uintptr_t offset) noexcept {
-    return *reinterpret_cast<volatile std::uint32_t*>(periph_alias + 0x0402'0C00 + offset);
-}
+inline constexpr std::uintptr_t base = periph_alias + 0x0402'0C00;
 inline constexpr std::uint16_t ahb1 = 0x88, ahb2 = 0x8C, ahb4 = 0x94, apb1l = 0x9C, apb1h = 0xA0, apb2 = 0xA4, apb3 = 0xA8;
 inline constexpr std::uint16_t enr_to_rstr = 0x28;
+[[nodiscard]] constexpr Gate gate(std::uint16_t enr, std::uint8_t bit) noexcept {
+    return {base + enr, base + enr - enr_to_rstr, bit};
+}
 }  // namespace detail
 
 namespace gate {
-using detail::ahb1, detail::ahb2, detail::ahb4, detail::apb1l, detail::apb1h, detail::apb2, detail::apb3;
-inline constexpr Gate gpdma1{ahb1, 0}, gpdma2{ahb1, 1}, crc{ahb1, 12};
-inline constexpr Gate adc12{ahb2, 10};
-inline constexpr Gate sdmmc1{ahb4, 11}, sdmmc2{ahb4, 12};
-inline constexpr Gate tim2{apb1l, 0}, tim3{apb1l, 1}, tim4{apb1l, 2}, tim5{apb1l, 3}, tim6{apb1l, 4}, tim7{apb1l, 5};
-inline constexpr Gate crs{apb1l, 24};
-inline constexpr Gate spi2{apb1l, 14}, spi3{apb1l, 15}, usart2{apb1l, 17}, usart3{apb1l, 18}, uart4{apb1l, 19},
-                      uart5{apb1l, 20}, i2c1{apb1l, 21}, i2c2{apb1l, 22}, uart7{apb1l, 30}, uart8{apb1l, 31};
-inline constexpr Gate uart9{apb1h, 0}, uart12{apb1h, 1}, dts{apb1h, 3}, fdcan12{apb1h, 9}, ucpd1{apb1h, 23};
-inline constexpr Gate tim1{apb2, 11}, spi1{apb2, 12}, tim8{apb2, 13}, usart1{apb2, 14}, tim15{apb2, 16},
-                      tim16{apb2, 17}, tim17{apb2, 18}, spi4{apb2, 19}, usbfs{apb2, 24};
-inline constexpr Gate sbs{apb3, 1}, i2c3{apb3, 7}, i2c4{apb3, 8};
+using detail::ahb1, detail::ahb2, detail::ahb4, detail::apb1l, detail::apb1h, detail::apb2, detail::apb3, detail::gate;
+inline constexpr Gate gpdma1 = gate(ahb1, 0), gpdma2 = gate(ahb1, 1), crc = gate(ahb1, 12);
+inline constexpr Gate adc12 = gate(ahb2, 10), rng = gate(ahb2, 18);
+inline constexpr Gate sdmmc1 = gate(ahb4, 11), sdmmc2 = gate(ahb4, 12);
+inline constexpr Gate tim2 = gate(apb1l, 0), tim3 = gate(apb1l, 1), tim4 = gate(apb1l, 2), tim5 = gate(apb1l, 3),
+                      tim6 = gate(apb1l, 4), tim7 = gate(apb1l, 5);
+inline constexpr Gate crs = gate(apb1l, 24);
+inline constexpr Gate spi2 = gate(apb1l, 14), spi3 = gate(apb1l, 15), usart2 = gate(apb1l, 17),
+                      usart3 = gate(apb1l, 18), uart4 = gate(apb1l, 19), uart5 = gate(apb1l, 20),
+                      i2c1 = gate(apb1l, 21), i2c2 = gate(apb1l, 22), uart7 = gate(apb1l, 30), uart8 = gate(apb1l, 31);
+inline constexpr Gate uart9 = gate(apb1h, 0), uart12 = gate(apb1h, 1), dts = gate(apb1h, 3), fdcan12 = gate(apb1h, 9),
+                      ucpd1 = gate(apb1h, 23);
+inline constexpr Gate tim1 = gate(apb2, 11), spi1 = gate(apb2, 12), tim8 = gate(apb2, 13), usart1 = gate(apb2, 14),
+                      tim15 = gate(apb2, 16), tim16 = gate(apb2, 17), tim17 = gate(apb2, 18), spi4 = gate(apb2, 19),
+                      usbfs = gate(apb2, 24);
+inline constexpr Gate sbs = gate(apb3, 1), i2c3 = gate(apb3, 7), i2c4 = gate(apb3, 8);
 }  // namespace gate
-
-inline void enable(Gate g) noexcept {
-    detail::rcc_reg(g.enr) = detail::rcc_reg(g.enr) | (1u << g.bit);
-    [[maybe_unused]] const std::uint32_t settle = detail::rcc_reg(g.enr);  // RM0481: 2 cycles after enabling
-}
-
-inline void disable(Gate g) noexcept { detail::rcc_reg(g.enr) = detail::rcc_reg(g.enr) & ~(1u << g.bit); }
-
-/// Pulse the peripheral's reset: every register back to its reset value (e.g. a stuck I2C).
-inline void reset(Gate g) noexcept {
-    auto& rstr = detail::rcc_reg(g.enr - detail::enr_to_rstr);
-    rstr = rstr | (1u << g.bit);
-    rstr = rstr & ~(1u << g.bit);
-}
 
 // ---- kernel clock selection (RCC_CCIPRx) ---------------------------------------------------
 
-struct KernelClock {
-    std::uint16_t ccipr;  ///< register offset
-    std::uint8_t pos;
-    std::uint8_t width;
-};
-
 namespace kernel_clock {
-inline constexpr KernelClock spi2{0xE0, 3, 3};       ///< 0: pll1_q (reset), 4: per_ck
-inline constexpr KernelClock usbfs{0xE4, 4, 2};      ///< 0: none (reset), 1: pll1_q, 3: hsi48
-inline constexpr KernelClock adcdac{0xE8, 0, 3};     ///< 0: hclk (reset), 1: sys_ck, 4: hsi_ker
-inline constexpr KernelClock fdcan12{0xE8, 8, 2};    ///< 0: hse (reset), 1: pll1_q
+inline constexpr KernelClock spi2{detail::base + 0xE0, 3, 3};       ///< 0: pll1_q (reset), 4: per_ck
+inline constexpr KernelClock usbfs{detail::base + 0xE4, 4, 2};      ///< 0: none (reset), 1: pll1_q, 3: hsi48
+inline constexpr KernelClock adcdac{detail::base + 0xE8, 0, 3};     ///< 0: hclk (reset), 1: sys_ck, 4: hsi_ker
+inline constexpr KernelClock fdcan12{detail::base + 0xE8, 8, 2};    ///< 0: hse (reset), 1: pll1_q
 inline constexpr std::uint32_t usbfs_hsi48 = 3, fdcan_pll1_q = 1;
 }  // namespace kernel_clock
 
-inline void select(KernelClock k, std::uint32_t value) noexcept {
-    auto& r = detail::rcc_reg(k.ccipr);
-    const std::uint32_t mask = ((1u << k.width) - 1u) << k.pos;
-    r = (r & ~mask) | ((value << k.pos) & mask);
-}
-
-enum class GpioPort : std::uint8_t { A, B, C, D, E, F, G, H, I };
+using GpioPort = stm32::GpioPort;
 
 inline void enable(GpioPort port) noexcept {
     AHB2ENR::set(1u << static_cast<std::uint32_t>(port));

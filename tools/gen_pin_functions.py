@@ -1,23 +1,51 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Generate port/stm32h563/include/rtos/port/stm32h5/pin_functions.hpp from ST's pin database.
+"""Generate a chip's pin_functions.hpp from ST's pin database.
 
-    python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" > port/.../pin_functions.hpp
+    python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" h5 > port/stm32h563/include/rtos/port/stm32h5/pin_functions.hpp
+    python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" g4 > port/stm32g431/include/rtos/port/stm32g4/pin_functions.hpp
 
 Sources (STM32CubeMX database, the data behind ST's open pin data):
-  STM32H563VITx.xml                    the pins of the LQFP100 package and their signals
-  IP/GPIO-STM32H56x_gpio_v1_0_Modes.xml  the alternate function number of each pin signal
+  <part>.xml                 the pins of a package and their signals
+  IP/GPIO-<family>_Modes.xml the alternate function number of each pin signal
 
 A signal with an AF number is an alternate function (MODER = AF, AFR = the number); a signal
 without one is an additional function (analog: ADC inputs, UCPD CC lines, USB DP/DM, ...).
+
+A chip with one package (h5: the FCU's LQFP100) gets plain tables. A chip whose packages the
+board chooses (g4) gets the union of all packages, every entry with a mask of the packages
+that have it: smaller packages lack pins and, on some pins, functions (G431 LQFP48: no UART4_CTS
+on PB7). gpio.hpp of the chip filters the tables for the selected package at compile time.
 """
 import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-PART = "STM32H563VITx"
-MODES = "IP/GPIO-STM32H56x_gpio_v1_0_Modes.xml"
+CHIPS = {
+    "h5": {
+        "ns": "stm32h5",
+        "modes": "IP/GPIO-STM32H56x_gpio_v1_0_Modes.xml",
+        "packages": [("LQFP100", "STM32H563VITx")],
+    },
+    "g4": {
+        "ns": "stm32g4",
+        "modes": "IP/GPIO-STM32G43x_gpio_v1_0_Modes.xml",
+        # (enum name, CubeMX part file); LQFP32 = UFQFPN32 and LQFP64 = UFBGA64 pin for pin,
+        # the "...TxZ" order codes are left out.
+        "packages": [
+            ("LQFP32", "STM32G431K(6-8-B)Tx"),
+            ("UFQFPN32", "STM32G431K(6-8-B)Ux"),
+            ("LQFP48", "STM32G431C(6-8-B)Tx"),
+            ("UFQFPN48", "STM32G431C(6-8-B)Ux"),
+            ("WLCSP49", "STM32G431CBYx"),
+            ("LQFP64", "STM32G431R(6-8-B)Tx"),
+            ("UFBGA64", "STM32G431R(6-8-B)Ix"),
+            ("LQFP80", "STM32G431M(6-8-B)Tx"),
+            ("LQFP100", "STM32G431V(6-8-B)Tx"),
+        ],
+    },
+}
 
 
 def ident(signal):
@@ -29,12 +57,14 @@ def strip(tag):
     return tag.split('}', 1)[-1]
 
 
-def main():
-    sys.stdout.reconfigure(newline="\n")  # LF on Windows too (.gitattributes)
-    db = Path(sys.argv[1])
-    mcu = ET.parse(db / f"{PART}.xml").getroot()
-    pins = {}  # "PA0" -> [signals]
-    for e in mcu:
+def pin_key(name):
+    return (name[1], int(name[2:]))
+
+
+def read_package(db, part):
+    """{"PA0": [signals]} of the I/O pins of one package."""
+    pins = {}
+    for e in ET.parse(db / f"{part}.xml").getroot():
         if strip(e.tag) != "Pin":
             continue
         m = re.match(r"P([A-I])(\d+)", e.get("Name"))
@@ -42,9 +72,12 @@ def main():
             continue
         name = f"P{m.group(1)}{m.group(2)}"
         pins[name] = [s.get("Name") for s in e if strip(s.tag) == "Signal" and s.get("Name") != "GPIO"]
+    return pins
 
+
+def read_af(db, modes):
     af = {}  # (pin, signal) -> number
-    for e in ET.parse(db / MODES).getroot().iter():
+    for e in ET.parse(db / modes).getroot().iter():
         if strip(e.tag) != "GPIO_Pin":
             continue
         pin = re.match(r"P[A-I]\d+", e.get("Name"))
@@ -56,18 +89,39 @@ def main():
             for v in sig.iter():
                 if strip(v.tag) == "PossibleValue" and v.text and v.text.startswith("GPIO_AF"):
                     af[(pin.group(0), sig.get("Name"))] = int(re.match(r"GPIO_AF(\d+)_", v.text).group(1))
+    return af
 
-    signals = sorted({s for sig in pins.values() for s in sig})
-    entries = []
-    for name in sorted(pins, key=lambda n: (n[1], int(n[2:]))):
-        for s in sorted(pins[name]):
-            entries.append((name[1], int(name[2:]), s, af.get((name, s), 0xFF)))
+
+def main():
+    sys.stdout.reconfigure(newline="\n")  # LF on Windows too (.gitattributes)
+    db = Path(sys.argv[1])
+    chip = CHIPS[sys.argv[2]]
+    ns = chip["ns"]
+    packages = [(name, part, read_package(db, part)) for name, part in chip["packages"]]
+    af = read_af(db, chip["modes"])
+    single = len(packages) == 1
+
+    functions = {}  # (pin, signal) -> package mask
+    pins = {}  # pin -> package mask
+    for bit, (_, _, package_pins) in enumerate(packages):
+        for pin, signals in package_pins.items():
+            pins[pin] = pins.get(pin, 0) | (1 << bit)
+            for s in signals:
+                functions[(pin, s)] = functions.get((pin, s), 0) | (1 << bit)
+    signals = sorted({s for _, s in functions})
+    entries = sorted(functions, key=lambda k: (pin_key(k[0]), k[1]))
+    pin_list = sorted(pins, key=pin_key)
 
     out = sys.stdout
+    sources = ", ".join(f"{part}.xml" for _, part, _ in packages)
+    if single:
+        what = f"The functions of every I/O pin of the {packages[0][1]} ({packages[0][0]})"
+    else:
+        what = "The functions of every I/O pin of every package (mask: the packages that have it)"
     out.write(f"""// SPDX-License-Identifier: MIT
 //
-// GENERATED by tools/gen_pin_functions.py from ST's pin database (STM32CubeMX db: {PART}.xml,
-// {MODES}) - do not edit. The functions of every I/O pin of the {PART} (LQFP100):
+// GENERATED by tools/gen_pin_functions.py from ST's pin database (STM32CubeMX db: {sources},
+// {chip["modes"]}) - do not edit. {what}:
 // alternate functions with their AF number, additional functions (analog: ADC inputs, UCPD,
 // USB, ...) with af == additional. gpio.hpp looks pins up here at compile time.
 #pragma once
@@ -76,35 +130,61 @@ def main():
 #include <cstdint>
 #include <utility>
 
-#include "rtos/port/stm32h5/rcc.hpp"
+#include "rtos/port/stm32/gpio.hpp"
 
-namespace rtos::port::stm32h5::gpio {{
+namespace rtos::port::{ns}::gpio {{
+
+using stm32::GpioPort;
+using stm32::gpio::additional;
 
 /// Peripheral signals as ST names them (datasheet, reference manual).
 enum class Signal : std::uint16_t {{
 """)
     for s in signals:
         out.write(f"    {ident(s)},\n")
-    out.write(f"""}};
+    out.write("};\n\nusing PinFunction = stm32::gpio::PinFunction<Signal>;\n\n")
 
-struct PinFunction {{
-    rcc::GpioPort port;
+    if single:
+        out.write(f"inline constexpr std::array<PinFunction, {len(entries)}> pin_functions{{{{\n")
+        for pin, s in entries:
+            a = af.get((pin, s), 0xFF)
+            out.write(f"    {{GpioPort::{pin[1]}, {int(pin[2:])}, Signal::{ident(s)}, {'additional' if a == 0xFF else a}}},\n")
+        out.write("}};\n\n")
+        out.write(f"/// Every I/O pin of the package ({len(pin_list)}).\n")
+        out.write(f"inline constexpr std::array<std::pair<GpioPort, std::uint8_t>, {len(pin_list)}> package_pins{{{{\n")
+        for pin in pin_list:
+            out.write(f"    {{GpioPort::{pin[1]}, {int(pin[2:])}}},\n")
+        out.write("}};\n")
+    else:
+        out.write("/// The packages, as bits of the masks below.\n")
+        out.write("enum class Package : std::uint8_t {\n")
+        for bit, (name, part, package_pins) in enumerate(packages):
+            out.write(f"    {name} = {bit},  ///< {part}: {len(package_pins)} I/O pins\n")
+        out.write("};\n\n")
+        out.write("""struct PackagedPinFunction {
+    PinFunction function;
+    std::uint16_t packages;  ///< bit Package: this package has the function on this pin
+};
+
+struct PackagedPin {
+    GpioPort port;
     std::uint8_t number;
-    Signal signal;
-    std::uint8_t af;  ///< 0..15, or additional
-}};
-inline constexpr std::uint8_t additional = 0xFF;
+    std::uint16_t packages;
+};
 
-inline constexpr std::array<PinFunction, {len(entries)}> pin_functions{{{{
 """)
-    for port, num, s, a in entries:
-        out.write(f"    {{rcc::GpioPort::{port}, {num}, Signal::{ident(s)}, {'additional' if a == 0xFF else a}}},\n")
-    out.write("}};\n\n")
-    out.write(f"/// Every I/O pin of the package ({len(pins)}).\n")
-    out.write(f"inline constexpr std::array<std::pair<rcc::GpioPort, std::uint8_t>, {len(pins)}> package_pins{{{{\n")
-    for name in sorted(pins, key=lambda n: (n[1], int(n[2:]))):
-        out.write(f"    {{rcc::GpioPort::{name[1]}, {int(name[2:])}}},\n")
-    out.write("}};\n\n}  // namespace rtos::port::stm32h5::gpio\n")
+        out.write(f"inline constexpr std::array<PackagedPinFunction, {len(entries)}> all_pin_functions{{{{\n")
+        for pin, s in entries:
+            a = af.get((pin, s), 0xFF)
+            out.write(f"    {{{{GpioPort::{pin[1]}, {int(pin[2:])}, Signal::{ident(s)}, {'additional' if a == 0xFF else a}}}, "
+                      f"0x{functions[(pin, s)]:03X}}},\n")
+        out.write("}};\n\n")
+        out.write(f"/// Every I/O pin of any package ({len(pin_list)}).\n")
+        out.write(f"inline constexpr std::array<PackagedPin, {len(pin_list)}> all_pins{{{{\n")
+        for pin in pin_list:
+            out.write(f"    {{GpioPort::{pin[1]}, {int(pin[2:])}, 0x{pins[pin]:03X}}},\n")
+        out.write("}};\n")
+    out.write(f"\n}}  // namespace rtos::port::{ns}::gpio\n")
 
 
 if __name__ == "__main__":

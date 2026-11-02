@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// Freestanding start-up for STM32H563: Reset_Handler and abort(). The vector table
-// is generated (vectors.cpp). No CMSIS, no newlib start files.
+// Freestanding start-up for the Cortex-M chips (STM32H5, STM32G4): Reset_Handler and abort().
+// The vector table is the chip's (generated vectors.cpp). No CMSIS, no newlib start files.
 //
 // Contract violations: the firmware is built with
 // -fcontract-evaluation-semantic=quick_enforce, i.e. a violated contract calls
