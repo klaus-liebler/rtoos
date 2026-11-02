@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Build QEMU with the STM32H563 SoC and the "fcu" machine (Factory Control Unit).
+# Build QEMU with the STM32H563 SoC and the "fcu" machine (Factory Control Unit) and the
+# STM32G431 SoC with the "stm32g431" machine (the bare chip).
 #
 # Run in an MSYS2 UCRT64 environment (cmd.exe, from the repository root):
 #   set MSYSTEM=UCRT64& C:\opt\msys64\usr\bin\bash -l emulation/qemu/build-qemu.sh
@@ -77,5 +78,5 @@ for exe in "$PREFIX"/qemu-system-arm.exe; do
         cp -u "$dll" "$PREFIX/"
     done
 done
-"$PREFIX/qemu-system-arm.exe" -M help | grep -E "^fcu "
+"$PREFIX/qemu-system-arm.exe" -M help | grep -E "^(fcu|stm32g431) "
 echo "installed to $PREFIX"

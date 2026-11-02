@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Run rtoos firmware for the Factory Control Unit in QEMU or Renode.
+"""Run rtoos firmware in QEMU or Renode: the Factory Control Unit (STM32H563) or a bare STM32G431.
 
   run.py qemu   build/arm/apps/fcu_selftest.elf            # self-test, exit code = result
   run.py renode build/arm/apps/fcu_selftest.elf --allow-unsupported "stack limit"
   run.py qemu   build/arm/apps/fcu_demo.elf --interactive  # console until Ctrl+C
+  run.py renode build/arm-g431/apps/stm32g431/g431_selftest.elf --platform stm32g431
 
-The console (USART3) is streamed to stdout. In test mode the run ends at the line
+The console (fcu: USART3, stm32g431: USART1) is streamed to stdout. In test mode the run ends at the line
 "SELFTEST RESULT: ..." (or at the timeout). The test passes if the result is PASS
 and every UNSUPPORTED test is covered by --allow-unsupported (emulator features
 known to be missing, e.g. Renode does not enforce PSPLIM).
@@ -27,6 +28,12 @@ DEFAULT_QEMU = Path("C:/opt/qemu-stm32h5/qemu-system-arm.exe")
 DEFAULT_RENODE = Path("C:/opt/renode/renode.exe")
 UNSUPPORTED = re.compile(r"\[selftest\] UNSUPPORTED (.*)")
 
+# platform -> QEMU machine, Renode script, Renode console UART
+PLATFORMS = {
+    "fcu": ("fcu", "fcu.resc", "usart3"),
+    "stm32g431": ("stm32g431", "stm32g431.resc", "usart1"),
+}
+
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -34,27 +41,28 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_qemu(exe: Path, elf: Path) -> tuple[subprocess.Popen, object]:
+def start_qemu(exe: Path, elf: Path, platform: str) -> tuple[subprocess.Popen, object]:
     proc = subprocess.Popen(
-        # -icount shift=2: one instruction = 4 ns, i.e. 250 MIPS at the firmware's
-        # 250 MHz SYSCLK. Virtual time (SysTick, DWT_CYCCNT) then follows the executed
-        # code instead of the host clock; sleep=off jumps idle time straight to the
-        # next timer. Otherwise the coarse Windows host timer makes SysTick periods
-        # merge (lost ticks: 20 ticks took ~32 ms of CYCCNT time).
-        [str(exe), "-M", "fcu", "-icount", "shift=2,sleep=off", "-display", "none", "-monitor", "none",
+        # -icount shift=2: one instruction = 4 ns, i.e. 250 MIPS (the FCU's 250 MHz SYSCLK;
+        # the STM32G431 at 170 MHz runs faster than CPI 1). Virtual time (SysTick, DWT_CYCCNT)
+        # then follows the executed code instead of the host clock; sleep=off jumps idle time
+        # straight to the next timer. Otherwise the coarse Windows host timer makes SysTick
+        # periods merge (lost ticks: 20 ticks took ~32 ms of CYCCNT time).
+        [str(exe), "-M", PLATFORMS[platform][0], "-icount", "shift=2,sleep=off", "-display", "none", "-monitor", "none",
          "-serial", "stdio", "-kernel", str(elf)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     return proc, proc.stdout
 
 
-def start_renode(exe: Path, elf: Path) -> tuple[subprocess.Popen, object]:
+def start_renode(exe: Path, elf: Path, platform: str) -> tuple[subprocess.Popen, object]:
     port = free_port()
-    resc = (HERE / "renode" / "fcu.resc").as_posix()
+    _, script, console = PLATFORMS[platform]
+    resc = (HERE / "renode" / script).as_posix()
     commands = "; ".join([
         f"$bin=@{elf.as_posix()}",
         f"include @{resc}",
         f'emulation CreateServerSocketTerminal {port} "console" false',
-        "connector Connect sysbus.usart3 console",
+        f"connector Connect sysbus.{console} console",
         "start",
     ])
     proc = subprocess.Popen(
@@ -77,6 +85,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("emulator", choices=["qemu", "renode"])
     ap.add_argument("elf", type=Path)
+    ap.add_argument("--platform", choices=sorted(PLATFORMS), default="fcu", help="emulated board/chip")
     ap.add_argument("--exe", type=Path, help="emulator executable (default: C:/opt/...)")
     ap.add_argument("--timeout", type=float, default=60.0, help="seconds (test mode)")
     ap.add_argument("--allow-unsupported", action="append", default=[], metavar="TEXT",
@@ -92,7 +101,7 @@ def main() -> int:
         print(f"error: {exe} not found", file=sys.stderr)
         return 2
     starter = start_qemu if args.emulator == "qemu" else start_renode
-    proc, stream = starter(exe, args.elf.resolve())
+    proc, stream = starter(exe, args.elf.resolve(), args.platform)
 
     result = None
     unsupported: list[str] = []

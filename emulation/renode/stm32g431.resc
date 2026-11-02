@@ -1,0 +1,16 @@
+:name: STM32G431 (bare chip)
+:description: rtoos firmware on an STM32G431xB, console USART1. Set $bin to the ELF to run.
+
+$name?="stm32g431"
+$bin?=@build/arm-g431/apps/stm32g431/g431_selftest.elf
+
+using sysbus
+mach create $name
+machine LoadPlatformDescription $ORIGIN/stm32g431.repl
+
+macro reset
+"""
+    sysbus LoadELF $bin
+    cpu VectorTableOffset 0x08000000
+"""
+runMacro $reset

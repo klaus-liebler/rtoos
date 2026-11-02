@@ -44,7 +44,8 @@ The targets you link:
 | Target | Brings in |
 |---|---|
 | `rtos_kernel` | the headers (kernel, net, modbus, opcua, usb) and the contract flags `-fcontracts -fcontract-evaluation-semantic=…`. Every other rtoos target depends on it. |
-| `rtos_stm32h563` | chip drivers and the linker script; pulls in the CPU port `rtos_port_cm33` |
+| `rtos_stm32h563` | chip drivers and the linker script; pulls in the CPU port `rtos_port_cm33` and the shared drivers `rtos_stm32` |
+| `rtos_stm32g431` | the same for the STM32G431 (CPU port `rtos_port_cm4`); `RTOS_STM32G431_PACKAGE` names the package of the board's chip (e.g. `UFQFPN48` for an STM32G431CBU6) |
 | `rtos_board_fcu` | the FCU board package (only when you build for the FCU) |
 | `rtos_tls` | TLS, HTTPS, WebSocket (wolfSSL glue, static pool tracking) |
 | `rtos_opcua` | the OPC UA server |
@@ -71,7 +72,7 @@ Use the rtoos toolchain files and copy the structure of [CMakePresets.json](../C
 }
 ```
 
-The toolchain sets the Cortex-M33 flags, `-fno-exceptions -fno-rtti` and `nano.specs`. rtoos stops the configure step for any compiler other than GCC 16 or newer. Always build through a preset (`cmake --build --preset board`): the preset puts the GCC DLLs on the PATH.
+One build tree builds for one chip: the cache variable `RTOS_CHIP` (`stm32h563`, the default, or `stm32g431`) selects the CPU flags (Cortex-M33 or Cortex-M4) for everything in the tree, wolfSSL and littlefs included. The toolchain sets those flags, `-fno-exceptions -fno-rtti` and `nano.specs`. rtoos stops the configure step for any compiler other than GCC 16 or newer. Always build through a preset (`cmake --build --preset board`): the preset puts the GCC DLLs on the PATH.
 
 Set `RTOS_CONTRACT_SEMANTIC` to `quick_enforce` on the target. A violated precondition then traps at once, and no library code for reporting is linked.
 
@@ -118,7 +119,11 @@ Bring the board up in this order:
 2. `fcu_selftest`: `SELFTEST RESULT: PASS` proves the CPU port, SysTick and interrupt priorities.
 3. The network firmware.
 
-A different STM32H5 part with the same peripherals needs only its own linker script. A different MCU needs its own chip package under `port/` that provides the same drivers, and a CPU port that satisfies `rtos::CpuPort`.
+A different STM32H5 part with the same peripherals needs only its own linker script. A different MCU needs its own chip package under `port/` and a CPU port that satisfies `rtos::CpuPort`. Peripheral IP it shares with the H5 or G4 comes from `port/stm32` (`rtos::port::stm32`): the chip only binds the instances (address, clock gate, IRQ, kernel clock), as [port/stm32g431](../port/stm32g431) does. A Cortex-M core shares everything but the context switch with the existing ports (`port/cortex_m`).
+
+### STM32G431 boards
+
+[port/stm32g431](../port/stm32g431) is a chip package without a board: the board package (clock tree with the board's HSE, pins, console) comes with the product. Build with `RTOS_CHIP=stm32g431` (preset `arm-g431` for the emulators) and set `RTOS_STM32G431_PACKAGE`; the pin database then rejects pins and functions the package lacks (the LQFP48 has no PC4, PC6, PC10, PC11; the UFQFPN48 has them). The clock tree runs the PLL from HSI16 or HSE up to 170 MHz (range 1 boost mode above 150 MHz, wait states from ST's table). The G431 has no data cache, so DMA buffers need no special section; its DMA is DMA1/DMA2 behind the DMAMUX (`stm32g4::DmaChannel`, the same interface as the H5's GPDMA driver). The Cortex-M4 has no stack limit register: size the thread stacks from the deepest call path. [apps/selftest/stm32g431](../apps/selftest/stm32g431) shows the minimal bring-up (clock tree, console pins, USART).
 
 ## 4. The firmware: putting the services together
 

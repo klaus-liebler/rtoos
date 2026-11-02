@@ -8,7 +8,7 @@ rtoos is tested on three levels. Each level covers what the level below it canno
 | 2: QEMU | own machine `fcu` | the kernel on the real CPU mechanisms: PendSV, lazy FPU, interrupt priorities and BASEPRI, SysTick, PSPLIM | `ctest --preset arm` (`selftest_qemu`) |
 | 3: Renode | FCU platform with Ethernet, timers and an SD card, on a TAP network | everything that involves the CPU's peripherals: the same self-test, the end-to-end network test of the real firmware, the stepper ramp measured on the STEP pin, the SD card driver against a card image | `ctest --preset arm` (`selftest_renode`, `net_renode`, `stepper_renode`, `sdcard_renode`) |
 
-Every change to the kernel, a port, the chip or the board must pass `ctest --preset host` and `ctest --preset arm`. `net_renode` reports *skipped* without the TAP adapter, and a skip does not count as a pass for network changes.
+Every change to the kernel, a port, the chip or the board must pass `ctest --preset host` and `ctest --preset arm`; a change to the kernel, the shared code (`port/cortex_m`, `port/stm32`) or the STM32G431 also `ctest --preset arm-g431` (the self-test on the Cortex-M4 in both emulators). `net_renode` reports *skipped* without the TAP adapter, and a skip does not count as a pass for network changes.
 
 ## Level 1: host unit tests
 
@@ -41,9 +41,9 @@ $env:RTOS_FUZZ_ITERATIONS=2000000; $env:RTOS_FUZZ_SEED=7; build/host/tests/rtos_
 
 ## Levels 2 and 3: emulation
 
-Both emulators model the FCU: Cortex-M33 with FPU, MPU and DWT cycle counter, flash, SRAM, RCC, PWR (voltage scaling), FLASH_ACR, GPIO and USART1–3 (the console is USART3). Cache registers read 0 ("not busy"), so the real drivers run unchanged. Renode also models the Ethernet controller with the PHY.
+Both emulators model two targets. The FCU: Cortex-M33 with FPU, MPU and DWT cycle counter, flash, SRAM, RCC, PWR (voltage scaling), FLASH_ACR, GPIO and USART1–3 (the console is USART3). Cache registers read 0 ("not busy"), so the real drivers run unchanged. Renode also models the Ethernet controller with the PHY. The bare STM32G431 (QEMU machine `stm32g431`, Renode [stm32g431.repl](../emulation/renode/stm32g431.repl)): Cortex-M4 with FPU, MPU and DWT, 128 KB flash, 32 KB SRAM, RCC, PWR (range 1, boost), FLASH_ACR, GPIOA-G and USART1-3 (the console is USART1); `g431_selftest` runs the kernel tests there (`ctest --preset arm-g431`).
 
-Both run at 250 MIPS, one instruction per clock at 250 MHz: Renode through `PerformanceInMips`, QEMU through `-icount shift=2,sleep=off` (set by `emulation/run.py`; without it, QEMU on Windows loses SysTick periods because the host clock is too coarse). SysTick and `DWT_CYCCNT` agree, but the values count instructions, not real clock cycles with flash wait states. Never quote emulator cycle counts as hardware performance.
+For the FCU both run at 250 MIPS, one instruction per clock at 250 MHz: Renode through `PerformanceInMips`, QEMU through `-icount shift=2,sleep=off` (set by `emulation/run.py`; without it, QEMU on Windows loses SysTick periods because the host clock is too coarse). SysTick and `DWT_CYCCNT` agree, but the values count instructions, not real clock cycles with flash wait states. Never quote emulator cycle counts as hardware performance. The STM32G431 firmware runs at 170 MHz SYSCLK: Renode executes 170 MIPS, QEMU 250 MIPS (`-icount shift=2`; the icount step is a power of two), so in QEMU the core runs faster than CPI 1. SysTick and DWT agree in both.
 
 ### QEMU
 
@@ -52,6 +52,7 @@ QEMU with the machine `fcu` is built from source ([emulation/qemu](../emulation/
 ```
 set MSYSTEM=UCRT64& C:\opt\msys64\usr\bin\bash -l emulation/qemu/build-qemu.sh
 python emulation/run.py qemu build/arm/apps/fcu_selftest.elf
+python emulation/run.py qemu build/arm-g431/apps/stm32g431/g431_selftest.elf --platform stm32g431
 C:\opt\qemu-stm32h5\qemu-system-arm.exe -M fcu -icount shift=2,sleep=off -nographic -kernel build\arm\apps\fcu_demo.elf -trace "led_*"
 ```
 
@@ -64,6 +65,7 @@ The platform is [emulation/renode/fcu.repl](../emulation/renode/fcu.repl) (on to
 ```
 python emulation/run.py renode build/arm/apps/fcu_selftest.elf --allow-unsupported "stack limit"
 python emulation/run.py renode build/arm/apps/fcu_demo.elf --interactive
+python emulation/run.py renode build/arm-g431/apps/stm32g431/g431_selftest.elf --platform stm32g431
 ```
 
 With the GUI: start `renode`, then `$bin=@build/arm/apps/fcu_demo.elf; include @emulation/renode/fcu.resc; showAnalyzer usart3; start`.

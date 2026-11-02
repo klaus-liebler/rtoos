@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: MIT
+//
+// STM32G431xB (Cortex-M4F, 128 KB flash, 32 KB SRAM) for Renode, as a bare chip.
+// Addresses and IRQ numbers: ST SVD STM32G431 v1.8 / ST's stm32g431xx.h / RM0440.
+//
+// Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM (SRAM1 + SRAM2 +
+// CCM SRAM contiguous at 0x20000000), RCC (register file with ready/status flags), PWR (range 1
+// and boost mode: ready at once), FLASH_ACR, GPIOA..G, USART1..3, TIM2-4 (time base and update
+// interrupt), RNG, UID/package data area.
+// Tagged (reads 0, writes logged): EXTI, SYSCFG, DBGMCU.
+//
+// Clock: the firmware runs SYSCLK = HCLK = PCLK1/2 = 170 MHz from the PLL (range 1 boost);
+// the CPU executes 170 MIPS (CPI 1), so cycle counts from DWT_CYCCNT are consistent with
+// SysTick but not cycle-accurate.
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    nvic: nvic
+    PerformanceInMips: 170
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    // SysTick with CLKSOURCE = processor clock: SYSCLK = 170 MHz
+    systickFrequency: 170000000
+    IRQ -> cpu@0
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 170000000
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x20000
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x8000
+
+// CCM SRAM at its own address (the same 10 KB as 0x20005800 on the chip; not aliased here)
+ccmsram: Memory.MappedMemory @ sysbus 0x10000000
+    size: 0x2800
+
+// System memory: UID at 0x1FFF7590, package, flash size; zero-filled
+system: Memory.MappedMemory @ sysbus 0x1FFF7000
+    size: 0x1000
+
+usart1: UART.STM32F7_USART @ sysbus 0x40013800
+    frequency: 170000000
+    IRQ -> nvic@37
+
+usart2: UART.STM32F7_USART @ sysbus 0x40004400
+    frequency: 170000000
+    IRQ -> nvic@38
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 170000000
+    IRQ -> nvic@39
+
+// Timers: Renode's STM32 timer model (PSC, ARR, CNT, update event and interrupt, CEN, UG);
+// compare outputs and DMA are not modelled. Timer clock 170 MHz (APB prescalers 1).
+tim2: Timers.STM32_Timer @ sysbus 0x40000000
+    frequency: 170000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@28
+
+tim3: Timers.STM32_Timer @ sysbus 0x40000400
+    frequency: 170000000
+    initialLimit: 0xFFFF
+    -> nvic@29
+
+tim4: Timers.STM32_Timer @ sysbus 0x40000800
+    frequency: 170000000
+    initialLimit: 0xFFFF
+    -> nvic@30
+
+gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x48000000, +0x400>
+    modeResetValue: 0xABFFFFFF
+    outputSpeedResetValue: 0x0C000000
+    pullUpPullDownResetValue: 0x64000000
+    numberOfAFs: 16
+
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x48000400, +0x400>
+    modeResetValue: 0xFFFFFEBF
+    outputSpeedResetValue: 0x000000C0
+    pullUpPullDownResetValue: 0x00000100
+    numberOfAFs: 16
+
+gpioPortC: GPIOPort.STM32_GPIOPort @ sysbus <0x48000800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortD: GPIOPort.STM32_GPIOPort @ sysbus <0x48000C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortE: GPIOPort.STM32_GPIOPort @ sysbus <0x48001000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortF: GPIOPort.STM32_GPIOPort @ sysbus <0x48001400, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortG: GPIOPort.STM32_GPIOPort @ sysbus <0x48001800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+rng: Miscellaneous.STM32_RNG @ sysbus 0x50060800
+    // no G4 variant in Renode's STM32_RNG; the L5 model (as for the H5) has the same CR.RNGEN,
+    // SR and DR - the configuration fields the G4 lacks stay at reset
+    series: STM32Series.L5
+    -> nvic@90
+
+// RCC: plain register file with the hardware's reset values (SVD v1.8). Ready flags follow
+// their enable bits immediately (CR: HSIRDY, HSERDY, PLLRDY; CRRCR: HSI48RDY), CFGR.SWS
+// mirrors CFGR.SW. Must match QEMU's stm32g4_rcc.c.
+rcc: Python.PythonPeripheral @ sysbus 0x40021000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00000563, 0x004: 0x40000000, 0x008: 0x00000005, 0x00C: 0x00001000,
+            0x048: 0x00000100, 0x058: 0x00000400, 0x094: 0x0C000000}
+elif request.IsWrite:
+    value = request.Value & 0xFFFFFFFF
+    if request.Offset == 0x000:
+        for on, rdy in ((8, 10), (16, 17), (24, 25)):
+            if value & (1 << on):
+                value = value | (1 << rdy)
+            else:
+                value = value & ~(1 << rdy)
+    elif request.Offset == 0x008:
+        value = (value & ~(3 << 2)) | ((value & 3) << 2)
+    elif request.Offset == 0x098:
+        value = (value | 2) if value & 1 else (value & ~2)
+    regs[request.Offset] = value
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// PWR: register file (SVD reset values CR1 0x200, CR3 0x8000, CR5 0x100); a new voltage
+// range is ready at once (SR2.VOSF reads 0).
+pwr: Python.PythonPeripheral @ sysbus 0x40007000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00000200, 0x008: 0x00008000, 0x080: 0x00000100}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value & 0xFFFFFFFF
+elif request.IsRead:
+    request.Value = 0 if request.Offset == 0x014 else regs.get(request.Offset, 0)
+'''
+
+// FLASH interface: ACR as a register file (reset 0x00040601: the new latency reads back at once).
+flashInterface: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00040601}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value & 0xFFFFFFFF
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+sysbus:
+    init:
+        Tag <0x40010000 0x30> "SYSCFG"
+        Tag <0x40010400 0x400> "EXTI"
+        Tag <0xE0042000 0x400> "DBGMCU"

@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: MIT
 //
-// On-target self-test of the core scheduler. Runs on the Factory Control Unit and
-// in the emulators (QEMU machine "fcu", Renode platform fcu.repl); reports over the
-// console (USART3) and ends with exactly one line
+// On-target self-test of the core scheduler. Runs on the targets (Factory Control Unit,
+// STM32G431) and in the emulators (QEMU machines "fcu" and "stm32g431", Renode platforms
+// fcu.repl and stm32g431.repl); reports over the console and ends with exactly one line
 //
 //     SELFTEST RESULT: PASS (n/n)      or      SELFTEST RESULT: FAIL (k/n)
 //
 // The tests exercise what the host unit tests can only simulate: real PendSV
 // context switches, FPU lazy stacking, interrupts above the kernel's BASEPRI mask,
 // SysTick timing, the kernel objects driven from interrupts of both classes
-// (kernel-aware and zero-latency), the PSPLIM hardware stack limit, the DWT
-// cycle counter against SysTick (both count SYSCLK cycles) and the DTS temperature
-// sensor (driver against the behaviour measured on the FCU).
+// (kernel-aware and zero-latency), the DWT cycle counter against SysTick (both count
+// SYSCLK cycles). The target adds what only its chip has (selftest.hpp, <target>/target.cpp:
+// on the STM32H563 the PSPLIM hardware stack limit and the DTS temperature sensor).
 //
 // A test whose hardware mechanism the platform does not implement (e.g. an
 // emulator without PSPLIM enforcement) is reported as UNSUPPORTED, not as FAIL:
 //
 //     SELFTEST RESULT: PASS (11/11, 1 unsupported)
+
 #include <array>
 #include <atomic>
 #include <contracts>
@@ -24,39 +25,20 @@
 #include <cstdint>
 #include <string_view>
 
-#include "board/fcu.hpp"
-#include "rtos/port/cm33/cycle_counter.hpp"
-#include "rtos/port/cm33/port.hpp"
-#include "rtos/port/stm32h5/chip.hpp"
-#include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/cortex_m/cycle_counter.hpp"
+#include "rtos/port/cortex_m/registers.hpp"
 #include "rtos/rtos.hpp"
 #include "rtos/sync/message_queue.hpp"
 #include "rtos/sync/object_pool.hpp"
 #include "rtos/sync/semaphore.hpp"
+#include "selftest.hpp"
 
-namespace {
+selftest::Kernel kernel;
 
-struct Config : rtos::DefaultConfig {
-    static constexpr std::size_t max_threads = 16;
-    static constexpr std::size_t notify_slots = 2;
-};
+namespace selftest {
 
-using Port = rtos::port::cm33::Cm33Port;
-using Kernel = rtos::Kernel<Port, Config>;
+namespace cortex_m = rtos::port::cortex_m;
 using rtos::NotifyAction;
-
-}  // namespace
-
-Kernel kernel;
-RTOS_CM33_BIND_KERNEL(kernel)
-
-namespace {
-
-namespace cm33 = rtos::port::cm33;
-namespace h5 = rtos::port::stm32h5;
-
-constexpr std::size_t slot_notify = 0;  // test-specific signalling
-constexpr std::size_t slot_done = 1;    // "test thread finished" -> runner
 
 // ---------------------------------------------------------------------------
 // Infrastructure
@@ -71,9 +53,8 @@ std::size_t slots_used = 0;
 
 Kernel::Thread* runner = nullptr;
 
-Kernel::Thread& spawn(const char* name, Kernel::Entry entry, std::uint8_t priority,
-                      std::uint8_t threshold = Kernel::no_threshold, std::uint32_t time_slice = 0,
-                      void* arg = nullptr) {
+Kernel::Thread& spawn(const char* name, Kernel::Entry entry, std::uint8_t priority, std::uint8_t threshold,
+                      std::uint32_t time_slice, void* arg) {
     contract_assert(slots_used < slots.size());
     ThreadSlot& s = slots[slots_used++];
     kernel.create_thread(s.tcb, {.name = name,
@@ -86,10 +67,9 @@ Kernel::Thread& spawn(const char* name, Kernel::Entry entry, std::uint8_t priori
     return s.tcb;
 }
 
-/// Called by test threads when they are done; the runner waits for it.
 void signal_done() { kernel.notify(*runner, slot_done, 0, NotifyAction::Increment); }
 
-void wait_done(std::uint32_t count = 1) {
+void wait_done(std::uint32_t count) {
     std::uint32_t seen = 0;
     while (seen < count) {
         auto n = kernel.notify_wait(slot_done, 1000);
@@ -115,47 +95,47 @@ unsigned unsupported = 0;
 
 void report(std::string_view name, bool ok) {
     ok ? ++passed : ++failed;
-    board::print(ok ? "[selftest] PASS " : "[selftest] FAIL ");
-    board::print_dec(passed + failed);
-    board::print(" ");
-    board::print(name);
-    board::print("\n");
-    board::led_info_toggle();
+    target::print(ok ? "[selftest] PASS " : "[selftest] FAIL ");
+    target::print_dec(passed + failed);
+    target::print(" ");
+    target::print(name);
+    target::print("\n");
+    target::led_toggle();
 }
 
 void report_unsupported(std::string_view name) {
     ++unsupported;
-    board::print("[selftest] UNSUPPORTED ");
-    board::print(name);
-    board::print("\n");
+    target::print("[selftest] UNSUPPORTED ");
+    target::print(name);
+    target::print("\n");
 }
 
 [[noreturn]] void finish() {
     __asm volatile("cpsid i" ::: "memory");
-    board::print(failed == 0 ? "SELFTEST RESULT: PASS (" : "SELFTEST RESULT: FAIL (");
-    board::print_dec(passed);
-    board::print("/");
-    board::print_dec(passed + failed);
+    target::print(failed == 0 ? "SELFTEST RESULT: PASS (" : "SELFTEST RESULT: FAIL (");
+    target::print_dec(passed);
+    target::print("/");
+    target::print_dec(passed + failed);
     if (unsupported != 0) {
-        board::print(", ");
-        board::print_dec(unsupported);
-        board::print(" unsupported");
+        target::print(", ");
+        target::print_dec(unsupported);
+        target::print(" unsupported");
     }
-    board::print(")\n");
-    board::flush();
+    target::print(")\n");
+    target::flush();
     for (;;) {
         __asm volatile("wfi");
     }
 }
 
 [[noreturn]] void fatal(std::string_view what) {
-    board::print("\n[selftest] ");
-    board::print(what);
-    board::print(" CFSR=");
-    board::print_hex(cm33::scb::CFSR::read());
-    board::print(" HFSR=");
-    board::print_hex(cm33::scb::HFSR::read());
-    board::print("\n");
+    target::print("\n[selftest] ");
+    target::print(what);
+    target::print(" CFSR=");
+    target::print_hex(cortex_m::scb::CFSR::read());
+    target::print(" HFSR=");
+    target::print_hex(cortex_m::scb::HFSR::read());
+    target::print("\n");
     ++failed;
     finish();
 }
@@ -253,11 +233,11 @@ void t4_wait(void*) {
 }
 
 void test_isr_notify() {
-    constexpr unsigned irq = static_cast<unsigned>(h5::Irq::TIM2);  // software-triggered
+    const unsigned irq = target::spare_irqs[0];  // software-triggered
     t4_target = &spawn("t4", &t4_wait, 8);
-    cm33::nvic::ipr(irq) = 2u << (8 - RTOS_CM33_PRIO_BITS);  // never masked by the kernel
-    cm33::nvic::enable(irq);
-    cm33::nvic::pend(irq);
+    cortex_m::nvic::ipr(irq) = target::Port::priority(2);  // never masked by the kernel
+    cortex_m::nvic::enable(irq);
+    cortex_m::nvic::pend(irq);
     wait_done();
     report("notify from zero-latency ISR", t4_value == 0xA5);
 }
@@ -313,20 +293,20 @@ void test_round_robin() {
 //   zero-latency ISR  : priority 1 (never masked, lock-free services only)
 // ---------------------------------------------------------------------------
 
-constexpr std::uint8_t kernel_aware_priority = 6u << (8 - RTOS_CM33_PRIO_BITS);
-constexpr std::uint8_t zero_latency_priority = 1u << (8 - RTOS_CM33_PRIO_BITS);
+constexpr std::uint8_t kernel_aware_priority = target::Port::priority(6);
+constexpr std::uint8_t zero_latency_priority = target::Port::priority(1);
 
-void trigger(h5::Irq irq, std::uint8_t priority) {
-    const auto n = static_cast<unsigned>(irq);
-    cm33::nvic::ipr(n) = priority;
-    cm33::nvic::enable(n);
-    cm33::nvic::pend(n);
+void trigger(unsigned index, std::uint8_t priority) {
+    const unsigned n = target::spare_irqs[index];
+    cortex_m::nvic::ipr(n) = priority;
+    cortex_m::nvic::enable(n);
+    cortex_m::nvic::pend(n);
 }
 
 rtos::Semaphore<Kernel> isr_semaphore{kernel, 0, 1};
 
 void test_semaphore_from_isr() {
-    trigger(h5::Irq::TIM3, kernel_aware_priority);  // runs at once, gives
+    trigger(1, kernel_aware_priority);  // runs at once, gives
     const bool first = isr_semaphore.take(10);
     const bool second = isr_semaphore.take(5);  // nothing more given: timeout
     report("semaphore give_from_isr", first && !second);
@@ -335,7 +315,7 @@ void test_semaphore_from_isr() {
 rtos::MessageQueue<Kernel, std::uint32_t, 4> isr_queue{kernel};
 
 void test_queue_from_isr() {
-    trigger(h5::Irq::TIM4, kernel_aware_priority);  // sends 11, 22, 33
+    trigger(2, kernel_aware_priority);  // sends 11, 22, 33
     const auto m1 = isr_queue.receive(10);
     const auto m2 = isr_queue.receive(10);
     const auto m3 = isr_queue.receive(10);
@@ -358,99 +338,29 @@ void t10_allocator(void*) {
 void test_pool_free_from_zero_latency_isr() {
     pool_block_held_by_isr = pool.try_make(1u).release();
     spawn("t10", &t10_allocator, 9);  // more urgent than the runner: blocks at once
-    trigger(h5::Irq::TIM5, zero_latency_priority);  // frees lock-free, defers the wake
+    trigger(3, zero_latency_priority);  // frees lock-free, defers the wake
     wait_done();
     report("pool free from zero-latency ISR wakes allocator", t10_tag == 0xC0FFEEu && pool.available() == 1);
 }
 
 // ---------------------------------------------------------------------------
-// 11. Hardware stack-limit check (PSPLIM -> UsageFault STKOF), non-destructive:
-//    the thread raises its own PSPLIM 256 bytes below the current SP (still inside
-//    its real stack; room for the exception frame) and then allocates 512 bytes.
-//    The UsageFault handler lowers PSPLIM back to the real limit and returns; the
-//    allocation is re-executed and succeeds. Nothing outside the stack is touched,
-//    on any platform.
-// ---------------------------------------------------------------------------
-
-std::atomic<bool> stkof_armed{false};
-std::atomic<bool> stkof_seen{false};
-std::uint32_t t8_result = 0;
-
-[[gnu::noinline]] std::uint32_t use_512_bytes_of_stack() {
-    std::array<volatile std::uint8_t, 512> buffer{};
-    buffer[0] = 1;
-    buffer[511] = 2;
-    return buffer[0] + buffer[511];
-}
-
-void set_psplim(std::uintptr_t limit) { __asm volatile("msr psplim, %0 \n isb" ::"r"(limit) : "memory"); }
-
-void t8_stack_limit(void*) {
-    std::uintptr_t psp;
-    __asm volatile("mrs %0, psp" : "=r"(psp));
-    stkof_armed = true;
-    set_psplim((psp - 256) & ~std::uintptr_t{7});
-    t8_result = use_512_bytes_of_stack();
-    set_psplim(kernel.current()->stack_limit);
-    stkof_armed = false;
-    signal_done();
-}
-
-void test_stack_limit() {
-    spawn("t8", &t8_stack_limit, 7);
-    wait_done();
-    if (t8_result != 3) {
-        report("stack limit (PSPLIM)", false);
-    } else if (stkof_seen) {
-        report("stack limit (PSPLIM)", true);
-    } else {
-        report_unsupported("stack limit (PSPLIM not enforced by this platform)");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 12. DWT cycle counter: 20 SysTick periods = 20 ms = sysclk_hz / 50 cycles
+// 11. DWT cycle counter: 20 SysTick periods = 20 ms = sysclk_hz / 50 cycles
 // ---------------------------------------------------------------------------
 
 void test_cycle_counter() {
-    if (!cm33::CycleCounter::enable()) {
+    if (!cortex_m::CycleCounter::enable()) {
         report("cycle counter (DWT_CYCCNT)", false);
         return;
     }
     kernel.sleep(1);  // align to a tick boundary
-    const std::uint32_t c0 = cm33::CycleCounter::now();
+    const std::uint32_t c0 = cortex_m::CycleCounter::now();
     kernel.sleep(20);
-    const std::uint32_t cycles = cm33::CycleCounter::now() - c0;
-    constexpr std::uint32_t expected = board::sysclk_hz / 50;
-    board::print("[selftest]   20 ms = ");
-    board::print_dec(cycles);
-    board::print(" cycles\n");
+    const std::uint32_t cycles = cortex_m::CycleCounter::now() - c0;
+    constexpr std::uint32_t expected = target::sysclk_hz / 50;
+    target::print("[selftest]   20 ms = ");
+    target::print_dec(cycles);
+    target::print(" cycles\n");
     report("cycle counter vs. SysTick (+-10 %)", cycles > expected / 10 * 9 && cycles < expected / 10 * 11);
-}
-
-// ---------------------------------------------------------------------------
-// 13. DTS temperature sensor. Regression: TS1_RDY reads 0 while the sensor
-//     measures continuously (TS1_START = 1); the driver once read DR only with
-//     TS1_RDY set and never delivered a temperature after start(). The emulators
-//     model the FCU's behaviour (DR of about 28.6 degC with its factory values).
-// ---------------------------------------------------------------------------
-
-void test_cpu_temperature() {
-    using Temperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
-    Temperature::init();
-    for (int i = 0; i < 10 && !Temperature::ready(); ++i) {
-        kernel.sleep(1);
-    }
-    const bool was_ready = Temperature::ready();
-    Temperature::start();
-    kernel.sleep(5);
-    const bool busy = !Temperature::ready();
-    const auto t = Temperature::centi_celsius();
-    board::print("[selftest]   CPU temperature ");
-    board::print_dec(t ? static_cast<std::uint32_t>(*t) : 0u);
-    board::print(" 1/100 degC\n");
-    report("DTS temperature while measuring continuously (20..40 degC)",
-           was_ready && busy && t && *t > 2000 && *t < 4000);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,42 +376,32 @@ void runner_main(void*) {
     test_semaphore_from_isr();
     test_queue_from_isr();
     test_pool_free_from_zero_latency_isr();
-    test_stack_limit();
     test_cycle_counter();
-    test_cpu_temperature();
+    target_tests();
     finish();
 }
 
-}  // namespace
-
-extern "C" {
-void TIM2_IRQHandler() noexcept { kernel.notify_from_isr(*t4_target, slot_notify, 0xA5, NotifyAction::SetBits); }
-void TIM3_IRQHandler() noexcept { (void)isr_semaphore.give_from_isr(); }
-void TIM4_IRQHandler() noexcept {
-    for (std::uint32_t i = 1; i <= 3; ++i) {
-        (void)isr_queue.try_send_from_isr(i * 11);
+void spare_irq(unsigned index) noexcept {
+    switch (index) {
+        case 0: kernel.notify_from_isr(*t4_target, slot_notify, 0xA5, NotifyAction::SetBits); break;
+        case 1: (void)isr_semaphore.give_from_isr(); break;
+        case 2:
+            for (std::uint32_t i = 1; i <= 3; ++i) {
+                (void)isr_queue.try_send_from_isr(i * 11);
+            }
+            break;
+        default: pool.destroy_from_isr(pool_block_held_by_isr); break;
     }
 }
-void TIM5_IRQHandler() noexcept { pool.destroy_from_isr(pool_block_held_by_isr); }
 
-void UsageFault_Handler() noexcept {
-    if (stkof_armed && (cm33::scb::CFSR::read() & cm33::scb::cfsr_stkof) != 0) {
-        cm33::scb::CFSR::write(cm33::scb::cfsr_stkof);  // write-1-to-clear
-        set_psplim(kernel.current()->stack_limit);
-        stkof_seen = true;
-        return;  // the faulting stack allocation is re-executed and now succeeds
-    }
-    fatal("UsageFault");
-}
-void HardFault_Handler() noexcept { fatal("HardFault"); }
-void MemManage_Handler() noexcept { fatal("MemManage"); }
-void BusFault_Handler() noexcept { fatal("BusFault"); }
-}
+}  // namespace selftest
 
 int main() {
-    board::init();
-    board::print("\nrtoos selftest - STM32H563 / Factory Control Unit\n");
-    Port::configure(board::sysclk_hz, 1000);
-    runner = &spawn("runner", &runner_main, 20);
+    target::init();
+    target::print("\nrtoos selftest - ");
+    target::print(target::name);
+    target::print("\n");
+    target::Port::configure(target::sysclk_hz, 1000);
+    selftest::runner = &selftest::spawn("runner", &selftest::runner_main, 20);
     kernel.start();
 }

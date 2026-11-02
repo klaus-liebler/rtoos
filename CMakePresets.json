@@ -53,6 +53,17 @@
       "inherits": "arm-base",
       "displayName": "STM32H563 firmware for the real Factory Control Unit (real network)",
       "binaryDir": "${sourceDir}/build/board"
+    },
+    {
+      "name": "arm-g431",
+      "inherits": "arm-base",
+      "displayName": "STM32G431 firmware for the emulators (QEMU, Renode) + emulator tests",
+      "binaryDir": "${sourceDir}/build/arm-g431",
+      "cacheVariables": {
+        "RTOS_CHIP": "stm32g431",
+        "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
+        "RTOS_RENODE": "C:/opt/renode/renode.exe"
+      }
     }
   ],
   "buildPresets": [
@@ -67,6 +78,10 @@
     {
       "name": "board",
       "configurePreset": "board"
+    },
+    {
+      "name": "arm-g431",
+      "configurePreset": "arm-g431"
     }
   ],
   "testPresets": [
@@ -80,6 +95,13 @@
     {
       "name": "arm",
       "configurePreset": "arm",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm-g431",
+      "configurePreset": "arm-g431",
       "output": {
         "outputOnFailure": true
       }

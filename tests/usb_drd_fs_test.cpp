@@ -17,6 +17,7 @@
 #include <optional>
 #include <vector>
 
+#include "rtos/port/stm32g4/usb_device.hpp"
 #include "rtos/port/stm32h5/usb_device.hpp"
 #include "rtos/usb/descriptors.hpp"
 #include "rtos/usb/device.hpp"
@@ -332,6 +333,30 @@ TEST_F(UsbDrdFsTest, OpenAllocatesPacketMemoryAndCloseAllFreesIt) {
     EXPECT_EQ(sim.stat_rx(1), stat_disabled);
     ASSERT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
     EXPECT_EQ(sim.rx_buffer(1), 64u + 128u) << "first buffer after the BD table and EP0";
+}
+
+/// The STM32G4 USB device has the same controller with 1 KB of packet memory.
+struct SimRegsG4 : SimRegs {
+    static constexpr std::uint8_t irq = rtos::port::stm32g4::UsbHardware::irq;
+    static constexpr std::size_t pma_bytes = rtos::port::stm32g4::UsbHardware::pma_bytes;
+};
+
+TEST(UsbFsG4, PacketMemoryEndsAt1KB) {
+    static_assert(SimRegsG4::pma_bytes == 1024);
+    SimulatedUsb sim;
+    rtos::port::stm32g4::UsbFs<SimRegsG4> drv{SimRegsG4{{.s = &sim}}};
+    drv.start();
+    sim.flags |= 1u << 10;
+    drv.on_irq();
+    // BD table 64 B + EP0 2 x 64 B, then 64-byte buffers: (1024 - 192) / 64 = 13 fit
+    unsigned opened = 0;
+    for (std::uint8_t n = 1; n < 8; ++n) {
+        opened += drv.open({n, usb::TransferType::Bulk, 64}) ? 1 : 0;
+        opened += drv.open({static_cast<std::uint8_t>(0x80 | n), usb::TransferType::Bulk, 64}) ? 1 : 0;
+    }
+    EXPECT_EQ(opened, 13u);
+    drv.close_all();
+    EXPECT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
 }
 
 // ---- the real stack over the driver ------------------------------------------------------------
