@@ -57,7 +57,7 @@ class Dts {
     static_assert(Config.smp_time >= 1 && Config.smp_time <= 15, "smp_time 1..15");
     static constexpr std::uint32_t cfgr1 = (div << 24) | (Config.smp_time << 16);  // PCLK, software trigger
     static constexpr std::uint32_t cfgr1_ts1_en = 1u << 0, cfgr1_ts1_start = 1u << 4;
-    static constexpr std::uint32_t sr_ts1_rdy = 1u << 15;
+    static constexpr std::uint32_t sr_ts1_busy = 1u << 15;  // TS1_RDY
 
 public:
     static void init() noexcept {
@@ -66,11 +66,15 @@ public:
         CFGR1::write(cfgr1 | cfgr1_ts1_en);
     }
 
-    /// No measurement or calibration in progress.
-    [[nodiscard]] static bool ready() noexcept { return (SR::read() & sr_ts1_rdy) != 0; }
+    /// No measurement in progress. TS1_RDY means the opposite of its name (SVD: "indicates that
+    /// a measurement is ongoing"); on the FCU it reads 0 between measurements while DR updates.
+    [[nodiscard]] static bool ready() noexcept { return (SR::read() & sr_ts1_busy) == 0; }
 
-    /// Start a measurement (when ready()).
-    static void start() noexcept { CFGR1::write(cfgr1 | cfgr1_ts1_en | cfgr1_ts1_start); }
+    /// Start a measurement (when ready()): TS1_START from 0 to 1.
+    static void start() noexcept {
+        CFGR1::write(cfgr1 | cfgr1_ts1_en);
+        CFGR1::write(cfgr1 | cfgr1_ts1_en | cfgr1_ts1_start);
+    }
 
     /// The temperature of the last measurement in 1/100 degC; nothing while one runs.
     [[nodiscard]] static std::optional<std::int32_t> centi_celsius() noexcept {
