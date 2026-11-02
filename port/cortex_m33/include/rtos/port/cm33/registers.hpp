@@ -21,6 +21,7 @@ struct Reg {
 namespace scb {
 using ICSR = Reg<0xE000'ED04>;   // Interrupt Control and State
 using VTOR = Reg<0xE000'ED08>;   // Vector Table Offset
+using AIRCR = Reg<0xE000'ED0C>;  // Application Interrupt and Reset Control
 using SHPR2 = Reg<0xE000'ED1C>;  // SVCall priority [31:24]
 using SHPR3 = Reg<0xE000'ED20>;  // PendSV [23:16], SysTick [31:24]
 using SHCSR = Reg<0xE000'ED24>;  // System handler control and state
@@ -28,6 +29,9 @@ using CFSR = Reg<0xE000'ED28>;   // Configurable fault status (MMFSR|BFSR|UFSR)
 using HFSR = Reg<0xE000'ED2C>;   // HardFault status
 using CPACR = Reg<0xE000'ED88>;  // Coprocessor access (CP10/CP11 = FPU)
 inline constexpr std::uint32_t icsr_pendsvset = 1u << 28;
+inline constexpr std::uint32_t aircr_vectkey = 0x05FAu << 16;    // write key
+inline constexpr std::uint32_t aircr_prigroup_mask = 0x7u << 8;  // keep on write
+inline constexpr std::uint32_t aircr_sysresetreq = 1u << 2;
 inline constexpr std::uint32_t shcsr_memfaultena = 1u << 16;
 inline constexpr std::uint32_t shcsr_busfaultena = 1u << 17;
 inline constexpr std::uint32_t shcsr_usgfaultena = 1u << 18;

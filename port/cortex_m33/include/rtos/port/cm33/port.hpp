@@ -75,6 +75,15 @@ struct Cm33Port {
     /// DWT_CYCCNT: per-thread CPU cycles (Kernel run_cycles) once CycleCounter::enable() ran.
     static std::uint32_t cycle_count() noexcept { return CycleCounter::now(); }
 
+    /// Reset the whole chip (AIRCR.SYSRESETREQ, ARMv8-M Architecture Reference Manual).
+    [[noreturn]] static void system_reset() noexcept {
+        __asm volatile("dsb" ::: "memory");
+        scb::AIRCR::write(scb::aircr_vectkey | (scb::AIRCR::read() & scb::aircr_prigroup_mask) | scb::aircr_sysresetreq);
+        __asm volatile("dsb" ::: "memory");
+        for (;;) {
+        }
+    }
+
     static void request_context_switch() noexcept {
         scb::ICSR::write(scb::icsr_pendsvset);
         // Make the pend visible before returning, so that an unlock() right after
