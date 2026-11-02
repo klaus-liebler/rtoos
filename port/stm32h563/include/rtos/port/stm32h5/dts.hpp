@@ -4,8 +4,14 @@
 //
 //   using Temperature = Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
 //   Temperature::init();
-//   Temperature::start();                         // a measurement takes a few hundred us
-//   if (auto t = Temperature::centi_celsius()) …  // once ready()
+//   if (Temperature::ready()) Temperature::start();  // once: measures continuously from then on
+//   if (auto t = Temperature::centi_celsius()) …     // the latest measurement
+//
+// Measured on the FCU (registers over SWD): TS1_START = 1 measures continuously - DR follows the
+// temperature and TS1_RDY reads 0 all the time; TS1_START = 0 stops, TS1_RDY reads 1 and DR keeps
+// the last count (0 before the first measurement). So DR is read without waiting for TS1_RDY,
+// which never comes while the sensor measures. The emulator models (QEMU stm32h5_sysctl.c,
+// Renode stm32h563.repl) behave the same; the self-test checks it.
 //
 // The sensor oscillates at a frequency FM(T) proportional to the temperature; in PCLK mode
 // (REFCLK_SEL = 0) the DTS counts PCLK cycles during TS1_SMP_TIME periods of it:
@@ -57,7 +63,7 @@ class Dts {
     static_assert(Config.smp_time >= 1 && Config.smp_time <= 15, "smp_time 1..15");
     static constexpr std::uint32_t cfgr1 = (div << 24) | (Config.smp_time << 16);  // PCLK, software trigger
     static constexpr std::uint32_t cfgr1_ts1_en = 1u << 0, cfgr1_ts1_start = 1u << 4;
-    static constexpr std::uint32_t sr_ts1_busy = 1u << 15;  // TS1_RDY
+    static constexpr std::uint32_t sr_ts1_rdy = 1u << 15;
 
 public:
     static void init() noexcept {
@@ -66,21 +72,15 @@ public:
         CFGR1::write(cfgr1 | cfgr1_ts1_en);
     }
 
-    /// No measurement in progress. TS1_RDY means the opposite of its name (SVD: "indicates that
-    /// a measurement is ongoing"); on the FCU it reads 0 between measurements while DR updates.
-    [[nodiscard]] static bool ready() noexcept { return (SR::read() & sr_ts1_busy) == 0; }
+    /// Enabled and not measuring (TS1_RDY): start() may be called. Reads false once started.
+    [[nodiscard]] static bool ready() noexcept { return (SR::read() & sr_ts1_rdy) != 0; }
 
-    /// Start a measurement (when ready()): TS1_START from 0 to 1.
-    static void start() noexcept {
-        CFGR1::write(cfgr1 | cfgr1_ts1_en);
-        CFGR1::write(cfgr1 | cfgr1_ts1_en | cfgr1_ts1_start);
-    }
+    /// Start measuring continuously (TS1_START stays 1).
+    static void start() noexcept { CFGR1::write(cfgr1 | cfgr1_ts1_en | cfgr1_ts1_start); }
 
-    /// The temperature of the last measurement in 1/100 degC; nothing while one runs.
+    /// The latest measurement in 1/100 degC; nothing before the first one (DR = 0) or without
+    /// factory calibration values.
     [[nodiscard]] static std::optional<std::int32_t> centi_celsius() noexcept {
-        if (!ready()) {
-            return std::nullopt;
-        }
         return dts_centi_celsius(Config.pclk_hz, Config.smp_time, DR::read() & 0xFFFFu, T0VALR1::read(),
                                  RAMPVALR::read());
     }

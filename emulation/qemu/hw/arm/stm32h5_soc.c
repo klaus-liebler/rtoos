@@ -13,6 +13,7 @@
  *   - DWT cycle counter (CYCCNT at SYSCLK; QEMU's core leaves DWT RAZ/WI)
  *   - RCC (register model with ready/status flags), PWR voltage scaling and
  *     FLASH_ACR (register models: new settings are ready at once)
+ *   - DTS temperature sensor (the FCU's behaviour at a fixed temperature)
  *   - GPIOA..I and USART1..3 (STM32L4x5 models, register-compatible)
  * Everything else in the peripheral space is an unimplemented device: reads
  * return 0, accesses are logged with "-d unimp". A read of 0 means "not busy"
@@ -41,6 +42,7 @@
 #define RCC_BASE_ADDRESS   0x44020C00
 #define PWR_BASE_ADDRESS   0x44020800
 #define FLASH_IF_ADDRESS   0x40022000
+#define DTS_BASE_ADDRESS   0x40008C00
 
 #define NUM_IRQ            131
 #define NUM_PRIO_BITS      4
@@ -80,6 +82,7 @@ static void stm32h5_soc_initfn(Object *obj)
     object_initialize_child(obj, "rcc", &s->rcc, TYPE_STM32H5_RCC);
     object_initialize_child(obj, "pwr", &s->pwr, TYPE_STM32H5_PWR);
     object_initialize_child(obj, "flash-if", &s->flash_if, TYPE_STM32H5_FLASH);
+    object_initialize_child(obj, "dts", &s->dts, TYPE_STM32H5_DTS);
     for (unsigned i = 0; i < STM32H5_NUM_GPIOS; i++) {
         g_autofree char *name = g_strdup_printf("gpio%c", 'a' + i);
         object_initialize_child(obj, name, &s->gpio[i], TYPE_STM32L4X5_GPIO);
@@ -171,6 +174,11 @@ static void stm32h5_soc_realize(DeviceState *dev_soc, Error **errp)
         return;
     }
     sysbus_mmio_map(busdev, 0, FLASH_IF_ADDRESS);
+    busdev = SYS_BUS_DEVICE(&s->dts);
+    if (!sysbus_realize(busdev, errp)) {
+        return;
+    }
+    sysbus_mmio_map(busdev, 0, DTS_BASE_ADDRESS);
 
     /* GPIO */
     for (unsigned i = 0; i < STM32H5_NUM_GPIOS; i++) {

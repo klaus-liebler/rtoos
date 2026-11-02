@@ -194,6 +194,31 @@ elif request.IsRead:
     request.Value = regs.get(request.Offset, 0)
 '''
 
+// DTS temperature sensor, as measured on the FCU (SWD register dumps): TS1_START = 1 measures
+// continuously - TS1_RDY reads 0, DR follows the temperature; TS1_START = 0: TS1_RDY = 1 (when
+// enabled), DR keeps the last count (0 before the first measurement). Fixed temperature: the
+// FCU's sensor at about 28.6 degC (FM 716.625 kHz) counted with PCLK1 = 125 MHz; factory values
+// T0VALR1 = 0x1C1B, RAMPVALR = 0x7CB of that chip. Must match QEMU's stm32h5_sysctl.c.
+dts: Python.PythonPeripheral @ sysbus 0x40008C00
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x08: 0x00001C1B, 0x10: 0x000007CB}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value & 0xFFFFFFFF
+    cfgr1 = regs.get(0x00, 0)
+    if (cfgr1 & 0x11) == 0x11:
+        smp = (cfgr1 >> 16) & 0xF
+        regs[0x1C] = 125000000 * (smp if smp else 1) // 716625
+elif request.IsRead:
+    cfgr1 = regs.get(0x00, 0)
+    if request.Offset == 0x20:
+        request.Value = (1 << 15) if (cfgr1 & 0x11) == 0x01 else 0
+    else:
+        request.Value = regs.get(request.Offset, 0)
+'''
+
 // FLASH interface: own model STM32H5_FLASH.cs (fcu.resc compiles it): ACR, unlock keys, sector
 // erase; the CPU programs by writing to the flash memory.
 flashController: MTD.STM32H5_FLASH @ sysbus 0x40022000

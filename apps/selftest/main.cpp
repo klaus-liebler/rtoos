@@ -9,8 +9,9 @@
 // The tests exercise what the host unit tests can only simulate: real PendSV
 // context switches, FPU lazy stacking, interrupts above the kernel's BASEPRI mask,
 // SysTick timing, the kernel objects driven from interrupts of both classes
-// (kernel-aware and zero-latency), the PSPLIM hardware stack limit and the DWT
-// cycle counter against SysTick (both count SYSCLK cycles).
+// (kernel-aware and zero-latency), the PSPLIM hardware stack limit, the DWT
+// cycle counter against SysTick (both count SYSCLK cycles) and the DTS temperature
+// sensor (driver against the behaviour measured on the FCU).
 //
 // A test whose hardware mechanism the platform does not implement (e.g. an
 // emulator without PSPLIM enforcement) is reported as UNSUPPORTED, not as FAIL:
@@ -27,6 +28,7 @@
 #include "rtos/port/cm33/cycle_counter.hpp"
 #include "rtos/port/cm33/port.hpp"
 #include "rtos/port/stm32h5/chip.hpp"
+#include "rtos/port/stm32h5/dts.hpp"
 #include "rtos/rtos.hpp"
 #include "rtos/sync/message_queue.hpp"
 #include "rtos/sync/object_pool.hpp"
@@ -427,6 +429,31 @@ void test_cycle_counter() {
 }
 
 // ---------------------------------------------------------------------------
+// 13. DTS temperature sensor. Regression: TS1_RDY reads 0 while the sensor
+//     measures continuously (TS1_START = 1); the driver once read DR only with
+//     TS1_RDY set and never delivered a temperature after start(). The emulators
+//     model the FCU's behaviour (DR of about 28.6 degC with its factory values).
+// ---------------------------------------------------------------------------
+
+void test_cpu_temperature() {
+    using Temperature = h5::Dts<{.pclk_hz = board::clocks.pclk1_hz()}>;
+    Temperature::init();
+    for (int i = 0; i < 10 && !Temperature::ready(); ++i) {
+        kernel.sleep(1);
+    }
+    const bool was_ready = Temperature::ready();
+    Temperature::start();
+    kernel.sleep(5);
+    const bool busy = !Temperature::ready();
+    const auto t = Temperature::centi_celsius();
+    board::print("[selftest]   CPU temperature ");
+    board::print_dec(t ? static_cast<std::uint32_t>(*t) : 0u);
+    board::print(" 1/100 degC\n");
+    report("DTS temperature while measuring continuously (20..40 degC)",
+           was_ready && busy && t && *t > 2000 && *t < 4000);
+}
+
+// ---------------------------------------------------------------------------
 
 void runner_main(void*) {
     test_priority_preemption();
@@ -441,6 +468,7 @@ void runner_main(void*) {
     test_pool_free_from_zero_latency_isr();
     test_stack_limit();
     test_cycle_counter();
+    test_cpu_temperature();
     finish();
 }
 

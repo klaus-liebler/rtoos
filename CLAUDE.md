@@ -7,6 +7,10 @@
 - Use standard features directly: `pre()`/`post()`/`contract_assert` (C++26 contracts), `std::inplace_vector`, Concepts, `std::span`, and so on.
 - If a feature is missing or broken, update the compiler. Never re-implement the feature in the project.
 
+## Regression tests (binding)
+- A fix that is not obvious, because the bug came from a combination of individual causes, always gets an automated regression test. The test must fail without the fix (check this once) and pass with it.
+- The test sits where the bug can occur: host test, on-target self-test in the emulators (with an emulator model that behaves like the hardware as measured), or a web UI test. The comment names the combination of causes.
+
 ## Workarounds for compiler bugs
 A workaround is allowed only when it
 1. is as narrow as possible (preferably a single build flag, no code change),

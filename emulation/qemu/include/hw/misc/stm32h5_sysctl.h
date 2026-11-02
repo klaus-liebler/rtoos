@@ -1,5 +1,6 @@
 /*
- * STM32H5 power control (voltage scaling) and flash interface (ACR) models
+ * STM32H5 power control (voltage scaling), flash interface (ACR) and DTS
+ * temperature sensor models
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -29,6 +30,16 @@ struct Stm32h5PwrState {
 OBJECT_DECLARE_SIMPLE_TYPE(Stm32h5FlashState, STM32H5_FLASH)
 
 struct Stm32h5FlashState {
+    SysBusDevice parent_obj;
+
+    MemoryRegion mmio;
+    uint32_t regs[STM32H5_SYSCTL_SIZE / 4];
+};
+
+#define TYPE_STM32H5_DTS "stm32h5-dts"
+OBJECT_DECLARE_SIMPLE_TYPE(Stm32h5DtsState, STM32H5_DTS)
+
+struct Stm32h5DtsState {
     SysBusDevice parent_obj;
 
     MemoryRegion mmio;

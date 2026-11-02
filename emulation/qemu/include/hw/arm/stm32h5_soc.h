@@ -34,6 +34,7 @@ struct Stm32h5SocState {
     Stm32h5RccState rcc;
     Stm32h5PwrState pwr;
     Stm32h5FlashState flash_if;
+    Stm32h5DtsState dts;
     /* The STM32L4x5 GPIO and USART register layouts match the STM32H5's. */
     Stm32l4x5GpioState gpio[STM32H5_NUM_GPIOS];
     Stm32l4x5UsartBaseState usart[STM32H5_NUM_USARTS];
