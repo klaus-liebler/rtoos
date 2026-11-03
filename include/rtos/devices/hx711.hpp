@@ -6,6 +6,8 @@
 // second half of each pulse (bits 6, 4, 2, 0 of each received byte). Six bytes clock the 24
 // data bits; the seventh selects channel and gain for the next conversion (1, 2 or 3 extra
 // pulses), the eighth keeps MOSI low (datasheet: PD_SCK high > 60 us powers the chip down).
+// The 8 bytes must go out without a pause: the SPI driver queues them all in its TxFIFO before
+// it starts (Spi::fifo_frames >= 8, checked below), so no interrupt can stretch a clock pulse.
 //
 //   using Scale = rtos::devices::Hx711<Spi2, data_ready_pin_reader, Hx711Gain::A128, 8>;
 //   Scale::init();
@@ -50,11 +52,14 @@ namespace hx711 {
 }
 }  // namespace hx711
 
-/// `Spi`: static transfer(tx, rx) and write(tx); `DataReady`: a function returning true while
-/// DOUT is low (a conversion is ready).
+/// `Spi`: static transfer(tx, rx) and write(tx), and fifo_frames (frames a transfer sends
+/// without software involvement); `DataReady`: a function returning true while DOUT is low
+/// (a conversion is ready).
 template <class Spi, bool (*DataReady)() noexcept, Hx711Gain Gain = Hx711Gain::A128, std::size_t Average = 8>
 class Hx711 {
     static_assert(Average >= 1);
+    static_assert(Spi::fifo_frames >= 8,
+                  "the 8 clock bytes must fit the TxFIFO: a pause with PD_SCK high powers the HX711 down");
 
 public:
     /// Drive MOSI low (some SPI blocks leave it high between transfers until the first one).

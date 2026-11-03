@@ -5,7 +5,7 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, SDMMC1, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, USART1..3, SPI1..4, SDMMC1, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
 // SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
@@ -131,6 +131,29 @@ gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
 //   sysbus.sdmmc1 InsertCard @<image> <true: SDHC | false: SDSC>
 sdmmc1: SD.STM32H5_SDMMC @ sysbus 0x46008000
     IRQ -> nvic@79
+
+// SPI1-4: own model STM32H5_SPI.cs (fcu.resc compiles it): master, bit-timed MOSI/SCK/MISO
+// as GPIOs, FIFOs of 16 frames (SPI1-3) and 8 frames (SPI4). Kernel clocks as the board sets
+// them: pll1_q = 100 MHz for SPI1-3 (RCC_CCIPR3 reset selection), PCLK2 = 250 MHz for SPI4.
+spi1: SPI.STM32H5_SPI @ sysbus 0x40013000
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@55
+
+spi2: SPI.STM32H5_SPI @ sysbus 0x40003800
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@56
+
+spi3: SPI.STM32H5_SPI @ sysbus 0x40003C00
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@57
+
+spi4: SPI.STM32H5_SPI @ sysbus 0x40014C00
+    kernelFrequency: 250000000
+    fifoSize: 8
+    IRQ -> nvic@82
 
 // Note: with MACCR.SARC = 000 the model logs "Attempted to use external MAC address"
 // for every TX frame and leaves the frame unchanged - which is what the STM32

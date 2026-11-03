@@ -5,7 +5,18 @@
 //   LED      LED_INFO on PH1, active low
 //   Ethernet LAN8742A at MDIO address 0 (register values as Renode's nucleo_h753zi,
 //            which carries the same PHY): link up, 100BASE-TX full duplex
+//   HX711    load cell ADC (own model HX711.cs): PD_SCK on SPI2_MOSI (PC3), DOUT on
+//            SPI2_MISO (PC2), read as a GPIO too (data ready); RATE tied low: 10 Hz.
+//            Channel A carries a fixed reading that apps/hx711 checks.
 using "stm32h563.repl"
+
+hx711: Sensors.HX711 @ gpioPortC 2
+    outputDataRate: 10
+    channelA: -2775642
+    DOUT -> spi2@0 | gpioPortC@2
+
+spi2:
+    MOSI -> hx711@0
 
 led_info: Miscellaneous.LED @ gpioPortH 1
     invert: true

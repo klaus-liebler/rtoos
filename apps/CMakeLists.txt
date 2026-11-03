@@ -4,6 +4,7 @@ rtos_add_firmware(fcu_net SOURCES net/main.cpp LIBRARIES rtos_board_fcu rtos_tls
 rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos_tls)
 rtos_add_firmware(fcu_stepper SOURCES stepper/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_sdcard SOURCES sdcard/main.cpp LIBRARIES rtos_board_fcu rtos_filex)
+rtos_add_firmware(fcu_hx711 SOURCES hx711/main.cpp LIBRARIES rtos_board_fcu)
 # littlefs in the last 256 KB of bank 2: the image must stay below it
 rtos_add_firmware(fcu_flashfs SOURCES flashfs/main.cpp LIBRARIES rtos_board_fcu rtos_littlefs
                   FLASH_DATA_START 0x081C0000)
@@ -111,4 +112,10 @@ if(EXISTS "${RTOS_RENODE}")
              COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:fcu_flashfs> --exe ${RTOS_RENODE}
                      --result "FLASHFS RESULT")
     set_tests_properties(flashfs_renode PROPERTIES TIMEOUT 120)
+    # HX711 behind the bit-timed SPI model: readings with interrupts during the transfer
+    # (PD_SCK on MOSI: a pause with MOSI high > 60 us powers the chip down).
+    add_test(NAME hx711_renode
+             COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:fcu_hx711> --exe ${RTOS_RENODE}
+                     --result "HX711 RESULT" --timeout 240)
+    set_tests_properties(hx711_renode PROPERTIES TIMEOUT 300)
 endif()
