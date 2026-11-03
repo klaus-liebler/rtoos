@@ -118,7 +118,7 @@ void main_thread(void*) {
     if (!Supply::init()) {
         finish("INA226 init");
     }
-    kernel.sleep(40);  // one conversion: 16 x (1.1 ms + 1.1 ms)
+    kernel.sleep(20);  // one conversion: 4 x (1.1 ms + 1.1 ms)
     const auto m = Supply::read();
     if (!m || m->bus_mv != 24'000 || m->shunt_uv != 5'000 || m->current_ma < 495 || m->current_ma > 505) {
         finish("INA226 measurement");

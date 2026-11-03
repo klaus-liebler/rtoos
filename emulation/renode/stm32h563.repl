@@ -5,10 +5,10 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, SPI1..4, I2C1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, EXTI, USART1..3, SPI1..4, I2C1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
-// SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
+// SBS. A read of 0 means "not busy" for the cache status registers, so the
 // cache drivers run unchanged.
 //
 // Clock: the firmware runs SYSCLK = HCLK = PCLK2/3 = 250 MHz from PLL1, PCLK1 = 125 MHz
@@ -133,6 +133,38 @@ i2c4: I2C.STM32H5_I2C @ sysbus 0x44002C00
     frequency: 250000000
     EventIRQ -> nvic@125
     ErrorIRQ -> nvic@126
+
+// EXTI lines 0-15: own model STM32H5_EXTI.cs (fcu.resc compiles it): EXTICR port selection,
+// rising/falling pending registers. Every GPIO pin reaches it (input = port x 16 + pin).
+exti: IRQControllers.STM32H5_EXTI @ sysbus 0x44022000
+    [0-15] -> nvic@[11-26]
+
+gpioPortA:
+    [0-15] -> exti@[0-15]
+
+gpioPortB:
+    [0-15] -> exti@[16-31]
+
+gpioPortC:
+    [0-15] -> exti@[32-47]
+
+gpioPortD:
+    [0-15] -> exti@[48-63]
+
+gpioPortE:
+    [0-15] -> exti@[64-79]
+
+gpioPortF:
+    [0-15] -> exti@[80-95]
+
+gpioPortG:
+    [0-15] -> exti@[96-111]
+
+gpioPortH:
+    [0-15] -> exti@[112-127]
+
+gpioPortI:
+    [0-15] -> exti@[128-143]
 
 // GPDMA1: own model STM32H5_GPDMA.cs: channels 0-7, linear blocks, hardware requests from the
 // timers above, software requests (memory to memory).
@@ -306,5 +338,4 @@ sysbus:
         Tag <0x40030400 0x400> "ICACHE"
         Tag <0x40031400 0x400> "DCACHE1"
         Tag <0x44000400 0x400> "SBS"
-        Tag <0x44022000 0x400> "EXTI"
         Tag <0x44024000 0x400> "DBGMCU"

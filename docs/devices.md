@@ -21,4 +21,10 @@ The HX711 has no SPI. Its clock input PD_SCK hangs on MOSI, and every byte `0x55
 - between transfers: the last byte of every transfer is `0x00`, `init()` drives MOSI low once, and the SPI keeps its pins driven while disabled (`AFCNTR`), at the level of the last bit;
 - during a transfer: `SpiMaster` fills the TxFIFO before it sets `CSTART`. A master whose TxFIFO runs empty mid-transfer suspends SCK with MOSI at the last bit, and every `0x55` ends with a 1: an interrupt of more than 60 µs between two TXDR writes used to power the chip down. All 8 bytes now sit in the FIFO before the first bit goes out (`Hx711` checks `Spi::fifo_frames >= 8` at compile time), so the transfer runs in hardware alone.
 
-The Renode test `hx711_renode` ([apps/hx711](../apps/hx711/main.cpp)) checks both against a bit-timed SPI model and an HX711 model ([Testing](testing.md#hx711-test-renode)).
+Without polling at all: the DOUT falling edge (conversion ready) raises an EXTI interrupt (`stm32h5::ExtiLine`), whose handler calls `start_read()` - the 8 bytes into the TxFIFO, `CSTART`, return. The SPI's end-of-transfer interrupt calls `complete()`: the RxFIFO holds the 64 sampled bits, they are decoded and stored, the average is published (an atomic: `average()` is safe from any thread). Mask the DOUT line between the two, the data bits toggle DOUT.
+
+The Renode test `hx711_renode` ([apps/hx711](../apps/hx711/main.cpp)) checks all of this against a bit-timed SPI model and an HX711 model ([Testing](testing.md#hx711-test-renode)).
+
+## INA226: conversion ready on ALERT
+
+`enable_conversion_ready_alert()` sets MASK/ENABLE.CNVR: ALERT (open drain, active low) goes low when a measurement is done and stays low until `acknowledge()` reads MASK/ENABLE. An EXTI interrupt on the ALERT pin tells the thread when `read()` has new values instead of reading on a fixed period. The default configuration (0x4327: 4 averages, 1.1 ms per conversion) gives a new measurement every 8.8 ms.

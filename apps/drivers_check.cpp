@@ -15,6 +15,7 @@
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/cache.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/stm32h5/exti.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
@@ -139,6 +140,17 @@ void drivers_check() noexcept {
     usb_fs.set_address(5);
     usb_fs.close_all();
 
+    using Line = h5::ExtiLine<{h5::gpio::GpioPort::C, 2}, h5::ExtiEdge::Falling>;
+    Line::init();
+    Line::enable();
+    (void)Line::take();
+    Line::trigger();
+    Line::disable();
+    (void)Scale::start_read();
+    (void)Scale::complete();
+    (void)Scale::readings();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::enable_conversion_ready_alert();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::acknowledge();
     I2c4Irq::init();
     (void)I2c4Irq::probe(0x40);
     I2c4Irq::on_event_irq();

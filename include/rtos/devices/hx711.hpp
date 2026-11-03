@@ -14,11 +14,17 @@
 //   Scale::poll();                       // when DOUT is low: one transfer (64 SPI bits)
 //   if (auto w = Scale::average()) ...   // mean of the last 8 readings
 //
+// Or entirely by interrupts - no polling of DOUT, no waiting for the bits:
+//   DOUT falling edge (EXTI):   Scale::start_read();      // the 8 bytes into the TxFIFO, CSTART
+//   SPI end of transfer:        Scale::complete();        // decode, store; the next average
+// (mask the DOUT interrupt between the two: the data bits toggle DOUT; see apps/hx711).
+//
 // The SPI bit rate must give pulses of 0.2 .. 50 us (datasheet table 3): 20 kHz .. 2.5 MHz.
 // Ported from the FCU firmware's stm32_libs/hx711.
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -66,6 +72,8 @@ public:
     static bool init() noexcept {
         constexpr std::array<std::byte, 4> zeros{};
         count_ = next_ = 0;
+        average_valid_.store(false, std::memory_order_relaxed);
+        readings_count_.store(0, std::memory_order_relaxed);
         return Spi::write(zeros);
     }
 
@@ -74,33 +82,63 @@ public:
         if (!DataReady()) {
             return std::nullopt;
         }
-        static constexpr auto tx = hx711::clock_pattern(Gain);
         std::array<std::byte, 8> rx{};
-        if (!Spi::transfer(tx, rx)) {
+        if (!Spi::transfer(tx_, rx)) {
             return std::nullopt;
         }
-        const std::int32_t v = hx711::decode(rx);
+        return store(hx711::decode(rx));
+    }
+
+    /// Interrupt-driven: start reading a ready conversion (from the DOUT-low interrupt). The
+    /// SPI runs the 64 clock bits alone; false if no conversion is ready or the SPI is busy.
+    static bool start_read() noexcept { return DataReady() && Spi::start(tx_); }
+
+    /// Interrupt-driven: in the SPI interrupt, the reading that start_read() began; nullopt if
+    /// the transfer has not ended.
+    static std::optional<std::int32_t> complete() noexcept {
+        std::array<std::byte, 8> rx{};
+        if (!Spi::finish(rx)) {
+            return std::nullopt;
+        }
+        return store(hx711::decode(rx));
+    }
+
+    /// Mean of the last `Average` readings, once that many were read (safe from any context:
+    /// the reading side - poll() or complete() - publishes it).
+    [[nodiscard]] static std::optional<std::int32_t> average() noexcept {
+        if (!average_valid_.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+        return average_.load(std::memory_order_relaxed);
+    }
+
+    /// Readings since init() (poll() or complete()).
+    [[nodiscard]] static std::uint32_t readings() noexcept { return readings_count_.load(std::memory_order_relaxed); }
+
+private:
+    static constexpr auto tx_ = hx711::clock_pattern(Gain);
+
+    static std::int32_t store(std::int32_t v) noexcept {
         readings_[next_] = v;
         next_ = (next_ + 1) % Average;
         count_ = count_ < Average ? count_ + 1 : Average;
+        if (count_ == Average) {
+            std::int64_t sum = 0;
+            for (const std::int32_t r : readings_) {
+                sum += r;
+            }
+            average_.store(static_cast<std::int32_t>(sum / static_cast<std::int64_t>(Average)), std::memory_order_relaxed);
+            average_valid_.store(true, std::memory_order_release);
+        }
+        readings_count_.fetch_add(1, std::memory_order_relaxed);
         return v;
     }
 
-    /// Mean of the last `Average` readings, once that many were read.
-    [[nodiscard]] static std::optional<std::int32_t> average() noexcept {
-        if (count_ < Average) {
-            return std::nullopt;
-        }
-        std::int64_t sum = 0;
-        for (const std::int32_t r : readings_) {
-            sum += r;
-        }
-        return static_cast<std::int32_t>(sum / static_cast<std::int64_t>(Average));
-    }
-
-private:
     static inline std::array<std::int32_t, Average> readings_{};
     static inline std::size_t next_ = 0, count_ = 0;
+    static inline std::atomic<std::int32_t> average_{0};
+    static inline std::atomic<bool> average_valid_{false};
+    static inline std::atomic<std::uint32_t> readings_count_{0};
 };
 
 }  // namespace rtos::devices

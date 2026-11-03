@@ -8,6 +8,10 @@
 //   Supply::init();
 //   if (const auto m = Supply::read()) { m->bus_mv ... }
 //
+// Event-driven: enable_conversion_ready_alert() makes ALERT (open drain, active low) go low when
+// a conversion is done; acknowledge() (a read of MASK/ENABLE) releases it. An EXTI interrupt on
+// the ALERT pin then says when read() has new values (datasheet 7.6.7, 8.2.6).
+//
 // Ported from the FCU firmware's libs/hw/ina226.
 #pragma once
 
@@ -22,7 +26,8 @@ struct Ina226Config {
     std::uint32_t shunt_micro_ohm;
     std::uint32_t max_current_ma;   ///< sets the current LSB: max / 2^15
     std::uint8_t address = 0x40;    ///< A0 = A1 = GND
-    /// CONFIG: averaging 16, conversion times 1.1 ms, shunt and bus continuous (0x4327)
+    /// CONFIG: averaging 4 (AVG = 001), conversion times 1.1 ms, shunt and bus continuous (0x4327):
+    /// a new measurement every 4 x (1.1 + 1.1) ms = 8.8 ms
     std::uint16_t config = 0x4327;
 };
 
@@ -35,7 +40,10 @@ struct Ina226Measurement {
 
 namespace ina226 {
 inline constexpr std::uint8_t config = 0x00, shunt_voltage = 0x01, bus_voltage = 0x02, power = 0x03, current = 0x04,
-                              calibration = 0x05, manufacturer_id = 0xFE, die_id = 0xFF;
+                              calibration = 0x05, mask_enable = 0x06, alert_limit = 0x07, manufacturer_id = 0xFE,
+                              die_id = 0xFF;
+// MASK/ENABLE: CNVR = ALERT on conversion ready, CVRF = conversion ready flag (cleared by a read)
+inline constexpr std::uint16_t mask_cnvr = 1u << 10, mask_cvrf = 1u << 3;
 inline constexpr std::uint16_t texas_instruments = 0x5449;  ///< "TI"
 
 /// Current LSB in nA: max current / 2^15, rounded up (datasheet equation 2).
@@ -65,6 +73,19 @@ public:
     /// Configuration and calibration (the INA226 measures continuously from then on).
     static bool init() noexcept {
         return Regs::write16(ina226::config, C.config) && Regs::write16(ina226::calibration, calibration);
+    }
+
+    /// ALERT goes low when a conversion is done, until acknowledge().
+    static bool enable_conversion_ready_alert() noexcept { return Regs::write16(ina226::mask_enable, ina226::mask_cnvr); }
+
+    /// Read MASK/ENABLE: releases ALERT and clears the conversion-ready flag. True if a
+    /// conversion was ready; nullopt if the read failed.
+    [[nodiscard]] static std::optional<bool> acknowledge() noexcept {
+        const auto m = Regs::read16(ina226::mask_enable);
+        if (!m) {
+            return std::nullopt;
+        }
+        return (*m & ina226::mask_cvrf) != 0;
     }
 
     [[nodiscard]] static std::optional<Ina226Measurement> read() noexcept {

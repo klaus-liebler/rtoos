@@ -19,6 +19,10 @@
 // the last bit - harmless for an ordinary device, fatal for one clocked by MOSI (HX711: high
 // for 60 us powers it down; regression test apps/hx711, hx711_renode).
 //
+// Transfers in hardware alone (start()/finish()): up to fifo_frames frames go into the TxFIFO,
+// CSTART, return; the end-of-transfer interrupt (irq) calls finish(), which takes the received
+// frames from the RxFIFO. No polling, no CPU while the bits move.
+//
 // Kernel clock: RCC_CCIPR3 reset selection - pll1_q for SPI1-3, PCLK2 for SPI4.
 #pragma once
 
@@ -78,6 +82,7 @@ inline constexpr std::uint32_t cr1_spe = 1u << 0, cr1_cstart = 1u << 9, cr1_ssi 
 inline constexpr std::uint32_t cfg2_master = 1u << 22, cfg2_lsbfrst = 1u << 23, cfg2_cpha = 1u << 24,
                                cfg2_cpol = 1u << 25, cfg2_ssm = 1u << 26, cfg2_afcntr = 1u << 31;
 inline constexpr std::uint32_t sr_rxp = 1u << 0, sr_txp = 1u << 1, sr_eot = 1u << 3;
+inline constexpr std::uint32_t ier_eotie = 1u << 3;
 inline constexpr std::uint32_t ifcr_all = 0xBF8u;  // EOTC..MODFC (3..9), SUSPC (11)
 }  // namespace spi_detail
 
@@ -119,6 +124,40 @@ public:
     static bool write(std::span<const std::byte> tx, std::uint32_t timeout_us = 10'000) noexcept {
         contract_assert(tx.size() <= 0xFFFF);
         return run(tx.size(), tx.data(), nullptr, timeout_us);
+    }
+
+    /// Start a transfer that runs in hardware alone: all of `tx` (at most fifo_frames) into the
+    /// TxFIFO, CSTART, the end-of-transfer interrupt on. False if one is running or tx is too long.
+    static bool start(std::span<const std::byte> tx) noexcept {
+        using namespace spi_detail;
+        if (tx.empty() || tx.size() > fifo_frames || (CR1::read() & cr1_spe) != 0) {
+            return false;
+        }
+        CR2::write(static_cast<std::uint32_t>(tx.size()));
+        CR1::write(cr1_ssi | cr1_spe);
+        for (const std::byte b : tx) {
+            txdr8() = std::to_integer<std::uint8_t>(b);
+        }
+        IFCR::write(ifcr_all);
+        IER::write(ier_eotie);
+        CR1::write(cr1_ssi | cr1_spe | cr1_cstart);
+        return true;
+    }
+
+    /// In the SPI interrupt: false if the transfer has not ended; else the received frames into
+    /// `rx` (the size start() sent), the SPI disabled, the interrupt off.
+    static bool finish(std::span<std::byte> rx) noexcept {
+        using namespace spi_detail;
+        if ((SR::read() & sr_eot) == 0) {
+            return false;
+        }
+        for (std::byte& b : rx) {
+            b = (SR::read() & sr_rxp) != 0 ? static_cast<std::byte>(rxdr8()) : std::byte{0xFF};
+        }
+        IER::write(0);
+        IFCR::write(ifcr_all);
+        CR1::write(cr1_ssi);
+        return true;
     }
 
     /// Receive only (sends `fill`).
@@ -187,6 +226,7 @@ private:
     using CR2 = PReg<info.offset + 0x04>;
     using CFG1 = PReg<info.offset + 0x08>;
     using CFG2 = PReg<info.offset + 0x0C>;
+    using IER = PReg<info.offset + 0x10>;
     using SR = PReg<info.offset + 0x14>;
     using IFCR = PReg<info.offset + 0x18>;
 

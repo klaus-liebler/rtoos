@@ -15,6 +15,9 @@
 //      100 us). The HX711 takes PD_SCK high for more than 60 us as power-down, so a transfer
 //      that pauses with MOSI high loses the reading. Every reading must still be right.
 //   3. quiet again: the chip must not have been reset (gain and data path unchanged)
+//   4. by interrupts alone: DOUT's falling edge (EXTI2) starts the transfer (start_read: the
+//      8 bytes into the TxFIFO), the SPI's end-of-transfer interrupt decodes it (complete);
+//      the thread only sleeps. One second must bring 10 readings (10 Hz), all right.
 //
 // Regression test for a combination of causes: (a) PD_SCK hangs on SPI2_MOSI, (b) the SPI
 // driver started the transfer (CSTART) before it had filled the TxFIFO, and wrote the frames
@@ -24,7 +27,7 @@
 // The fix fills the TxFIFO before CSTART: the 8 frames then run in hardware alone.
 //
 // Ends with one line:
-//     HX711 RESULT: PASS (<readings> readings, <hits> interrupts during a transfer)
+//     HX711 RESULT: PASS (<n> interrupts, <hits> during a transfer, <n> by interrupts)
 //     HX711 RESULT: FAIL <reason>
 #include <array>
 #include <cstddef>
@@ -34,6 +37,7 @@
 #include "rtos/devices/hx711.hpp"
 #include "rtos/port/cm33/cycle_counter.hpp"
 #include "rtos/port/cm33/port.hpp"
+#include "rtos/port/stm32h5/exti.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/spi.hpp"
 #include "rtos/port/stm32h5/timer.hpp"
@@ -80,6 +84,9 @@ using Burst = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz
 static_assert(Burst::tick_hz == board::sysclk_hz);
 constexpr std::uint32_t burst_cycles = board::sysclk_hz / 10'000;  // 100 us: longer than 60 us
 
+using Dout = h5::ExtiLine<dout_pin, h5::ExtiEdge::Falling>;  // conversion ready
+volatile std::uint32_t irq_readings = 0, irq_wrong = 0;
+
 using Spi2Cr1 = h5::PReg<0x0000'3800>;  // SPI2_CR1: SPE (bit 0) shows a transfer in progress
 volatile std::uint32_t bursts = 0, bursts_in_transfer = 0;
 
@@ -90,9 +97,11 @@ alignas(8) std::array<std::byte, 2048> main_stack;
     if (failure == nullptr) {
         board::print("HX711 RESULT: PASS (");
         board::print_dec(bursts);
-        board::print(" readings, ");
+        board::print(" interrupts, ");
         board::print_dec(bursts_in_transfer);
-        board::print(" interrupts during a transfer)\n");
+        board::print(" during a transfer, ");
+        board::print_dec(irq_readings);
+        board::print(" by interrupts)\n");
     } else {
         board::print("HX711 RESULT: FAIL ");
         board::print(failure);
@@ -164,10 +173,45 @@ void main_thread(void*) {
     board::print("hx711: preempted readings ok\n");
 
     quiet("wrong reading after the preempted ones");
+
+    // 4. interrupts only
+    Dout::init();
+    Dout::enable();
+    Dout::trigger();  // DOUT may be low already: the handler looks at the level
+    kernel.sleep(1000);
+    Dout::disable();
+    board::print("hx711: ");
+    board::print_dec(irq_readings);
+    board::print(" readings by interrupts in 1 s\n");
+    if (irq_wrong != 0 || irq_readings < 9 || irq_readings > 11 || Scale::average() != expected) {
+        finish("readings by interrupts (EXTI on DOUT, SPI end of transfer)", Scale::average().value_or(0),
+               irq_readings);
+    }
     finish(nullptr);
 }
 
 }  // namespace
+
+extern "C" void EXTI2_IRQHandler() noexcept {
+    if (!Dout::take()) {
+        return;
+    }
+    Dout::disable();  // the data bits toggle DOUT: no edges until the reading is done
+    if (!Scale::start_read()) {
+        Dout::enable();  // not ready (a software trigger with DOUT high)
+    }
+}
+
+extern "C" void SPI2_IRQHandler() noexcept {
+    if (const auto v = Scale::complete()) {
+        irq_readings = irq_readings + 1;
+        if (*v != expected) {
+            irq_wrong = irq_wrong + 1;
+        }
+    }
+    (void)Dout::take();  // the edges of the data bits
+    Dout::enable();
+}
 
 extern "C" void TIM2_IRQHandler() noexcept {
     if (!Burst::take_update()) {
@@ -193,6 +237,10 @@ int main() {
     // above every kernel-aware priority: nothing in the thread can hold it off
     cm33::nvic::ipr(Burst::irq) = 1u << (8 - RTOS_CM33_PRIO_BITS);
     cm33::nvic::enable(Burst::irq);
+    for (const unsigned irq : {unsigned{Dout::irq}, unsigned{Spi2::irq}}) {
+        cm33::nvic::ipr(irq) = 6u << (8 - RTOS_CM33_PRIO_BITS);
+        cm33::nvic::enable(irq);
+    }
     kernel.create_thread(main_tcb, {.name = "main", .entry = &main_thread, .stack = main_stack, .priority = 10});
     kernel.start();
 }
