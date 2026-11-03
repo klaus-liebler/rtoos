@@ -6,7 +6,7 @@ rtoos is tested on three levels. Each level covers what the level below it canno
 |---|---|---|---|
 | 1: host unit tests | GoogleTest on the PC | all logic: kernel (on a mock CPU port), IP stack (over simulated links), TLS, HTTPS, WebSocket, Modbus, OPC UA, USB (against a simulated host); fuzzers | `ctest --preset host` |
 | 2: QEMU | own machine `fcu` | the kernel on the real CPU mechanisms: PendSV, lazy FPU, interrupt priorities and BASEPRI, SysTick, PSPLIM | `ctest --preset arm` (`selftest_qemu`) |
-| 3: Renode | FCU platform with Ethernet, timers, SPI with an HX711 and an SD card, on a TAP network | everything that involves the CPU's peripherals: the same self-test, the end-to-end network test of the real firmware, the stepper ramp measured on the STEP pin, the SD card driver against a card image, the HX711 behind a bit-timed SPI | `ctest --preset arm` (`selftest_renode`, `net_renode`, `stepper_renode`, `sdcard_renode`, `flashfs_renode`, `hx711_renode`) |
+| 3: Renode | FCU platform with Ethernet, timers, SPI with an HX711 and an SD card, on a TAP network | everything that involves the CPU's peripherals: the same self-test, the end-to-end network test of the real firmware, the stepper ramp measured on the STEP pin, the SD card driver against a card image, the HX711 behind a bit-timed SPI, interrupt-driven I2C against an INA226 | `ctest --preset arm` (`selftest_renode`, `net_renode`, `stepper_renode`, `sdcard_renode`, `flashfs_renode`, `hx711_renode`, `i2c_renode`) |
 
 Every change to the kernel, a port, the chip or the board must pass `ctest --preset host` and `ctest --preset arm`. `net_renode` reports *skipped* without the TAP adapter, and a skip does not count as a pass for network changes.
 
@@ -77,6 +77,7 @@ An emulator gap is fixed in the emulator model where possible. Otherwise the sel
 - The flash interface is an own model, [STM32H5_FLASH.cs](../emulation/renode/STM32H5_FLASH.cs) (unlock keys, sector erase). The CPU programs by writing to flash memory, and Renode accepts such writes even without PG and more than once per erase. The "program once" rule is checked by the host tests' NOR simulation instead.
 - Renode's own STM32 SDMMC model moves data only through the FIFO (no IDMA), and its SD card answers CMD8 with the card status instead of R7. The platform therefore uses an own model, [STM32H5_SDMMC.cs](../emulation/renode/STM32H5_SDMMC.cs) (compiled by `fcu.resc`): SDMMC v2 with IDMA and an SD card that follows the Simplified Specification (states, R7 echo, SDHC/SDSC addressing, CSD 2.0/1.0, a programming phase after writes). QEMU has no SDMMC.
 - Renode's SPI models move whole frames without bus time. The platform uses an own model, [STM32H5_SPI.cs](../emulation/renode/STM32H5_SPI.cs): master, TSIZE/CSTART, FIFOs of 16 (SPI1-3) or 8 (SPI4) frames, each bit shifted in virtual time with MOSI, SCK and MISO as GPIOs, and a clock that stops while the TxFIFO is empty mid-transfer. RM0481 does not document the MOSI level while the clock stands or the SPI is disabled; the model keeps the last bit (ST community reports), and its MOSI starts high (the worst case for a device clocked on MOSI). QEMU has no SPI.
+- Renode's I2C controllers move bytes without bus time. The platform uses an own model, [STM32H5_I2C.cs](../emulation/renode/STM32H5_I2C.cs): master, nine SCL periods per byte (SCL from TIMINGR), clock stretching until TXDR is written or RXDR read, NACK with the automatic STOP, the event and error interrupts; devices are Renode I2C peripherals, e.g. [INA226.cs](../emulation/renode/INA226.cs) (registers, calibration, conversion times, alert functions on the ALERT pin). No slave mode, RELOAD, SMBus or DMA.
 - Renode's timer model has no compare outputs, DMA requests or one-pulse mode, and its period is ARR ticks instead of ARR + 1. The platform uses own models: [STM32H5_TIM.cs](../emulation/renode/STM32H5_TIM.cs) (up-counting, preload, one-pulse mode, compare outputs as GPIOs, update/compare DMA requests, exact ARR + 1) and [STM32H5_GPDMA.cs](../emulation/renode/STM32H5_GPDMA.cs) (linear blocks, hardware and software requests; no linked lists). QEMU has no timers.
 
 ### Network test (Renode over TAP)
@@ -133,6 +134,14 @@ ctest --preset arm -R hx711_renode -V
 [`fcu_hx711`](../apps/hx711/main.cpp) reads the HX711 model ([HX711.cs](../emulation/renode/HX711.cs): PD_SCK on SPI2_MOSI, DOUT on SPI2_MISO and on PC2, 10 Hz, settling time, gain selection by 25/26/27 pulses, power-down after 60 µs with PD_SCK high) through the driver with gain 64. The first reading is the gain-128 code (the chip's reset state), every later one half of it, so a chip that was reset in between shows. Phases: quiet readings, then 65 readings each with a 100 µs interrupt armed 1..1500 CPU cycles into the transfer, then quiet readings again. Without the TxFIFO fill before `CSTART` the reading with the interrupt 93 cycles in comes back as `0xFFEFFFFF`: the chip powered down after the first bits.
 
 The model's counters can be read in the Renode monitor: `sysbus.gpioPortC.hx711 PowerDowns`, `TimingViolations`, `Readings`; `sysbus.spi2 Stalls`, `FramesTransferred`.
+
+### I2C test (Renode)
+
+```
+ctest --preset arm -R i2c_renode -V
+```
+
+[`fcu_i2c`](../apps/i2c/main.cpp) runs the interrupt-driven `I2cMaster` (an `I2cWait` policy on a semaphore) against the INA226 model on I2C4: probe and NACK on an empty address, the INA226 driver's IDs, configuration and measurement (24000 mV, about 500 mA), a register written and read back. Then 20 register reads with the polled driver and 20 with the interrupt-driven one while a less urgent thread counts: busy-waiting holds it off completely (0), sleeping on the interrupt lets it run.
 
 ### Testing with a browser
 

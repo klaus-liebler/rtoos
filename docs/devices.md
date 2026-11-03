@@ -1,6 +1,6 @@
 # External chips
 
-[include/rtos/devices](../include/rtos/devices) has drivers for the chips around the FCU, ported from its firmware. They are templates over a bus: an I2C bus with a static `write_read()` (`stm32h5::I2cMaster<Id, Config>`), an SPI master, or a byte channel (`BufferedUart`) with a clock. Configuration values (shunt, current range, integration time, gain) are template arguments and become register values at compile time. Every driver is tested on the host against a simulated bus ([devices_test.cpp](../tests/devices_test.cpp)) and instantiated with the real buses in [drivers_check.cpp](../apps/drivers_check.cpp).
+[include/rtos/devices](../include/rtos/devices) has drivers for the chips around the FCU, ported from its firmware. They are templates over a bus: an I2C bus with a static `write_read()` (`stm32h5::I2cMaster<Id, Config>`, polled, or `I2cMaster<Id, Config, Wait>` interrupt-driven: the calling thread sleeps while the bytes move), an SPI master, or a byte channel (`BufferedUart`) with a clock. Configuration values (shunt, current range, integration time, gain) are template arguments and become register values at compile time. Every driver is tested on the host against a simulated bus ([devices_test.cpp](../tests/devices_test.cpp)) and instantiated with the real buses in [drivers_check.cpp](../apps/drivers_check.cpp).
 
 | Chip | Header | Bus | What it does |
 |---|---|---|---|

@@ -12,6 +12,8 @@ include $ORIGIN/STM32H5_SPI.cs
 include $ORIGIN/HX711.cs
 include $ORIGIN/STM32H5_TIM.cs
 include $ORIGIN/STM32H5_GPDMA.cs
+include $ORIGIN/STM32H5_I2C.cs
+include $ORIGIN/INA226.cs
 machine LoadPlatformDescription $ORIGIN/fcu.repl
 
 macro reset

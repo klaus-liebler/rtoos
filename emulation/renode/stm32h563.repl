@@ -5,7 +5,7 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, SPI1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, USART1..3, SPI1..4, I2C1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
 // SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
@@ -110,6 +110,29 @@ tim17: Timers.STM32H5_TIM @ sysbus 0x40014800
     IRQ -> nvic@73
     DmaCc1 -> gpdma1@100
     DmaUpdate -> gpdma1@101
+
+// I2C1-4: own model STM32H5_I2C.cs (fcu.resc compiles it): master, every byte nine SCL periods
+// long (SCL from TIMINGR), devices as Renode I2C peripherals at their 7-bit address. Kernel clocks
+// as the board sets them: PCLK1 = 125 MHz (I2C1-2), PCLK3 = 250 MHz (I2C3-4).
+i2c1: I2C.STM32H5_I2C @ sysbus 0x40005400
+    frequency: 125000000
+    EventIRQ -> nvic@51
+    ErrorIRQ -> nvic@52
+
+i2c2: I2C.STM32H5_I2C @ sysbus 0x40005800
+    frequency: 125000000
+    EventIRQ -> nvic@53
+    ErrorIRQ -> nvic@54
+
+i2c3: I2C.STM32H5_I2C @ sysbus 0x44002800
+    frequency: 250000000
+    EventIRQ -> nvic@80
+    ErrorIRQ -> nvic@81
+
+i2c4: I2C.STM32H5_I2C @ sysbus 0x44002C00
+    frequency: 250000000
+    EventIRQ -> nvic@125
+    ErrorIRQ -> nvic@126
 
 // GPDMA1: own model STM32H5_GPDMA.cs: channels 0-7, linear blocks, hardware requests from the
 // timers above, software requests (memory to memory).

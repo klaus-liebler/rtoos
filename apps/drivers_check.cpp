@@ -31,6 +31,13 @@ constexpr h5::UartConfig single_wire{.kernel_hz = board::clocks.pclk1_hz(), .bau
 h5::BufferedUart<h5::UsartId::Uart5, single_wire> uart5;
 
 using I2c4 = h5::I2cMaster<h5::I2cId::I2c4, {.kernel_hz = board::clocks.pclk3_hz(), .cpu_hz = board::sysclk_hz}>;
+struct CheckWait {  // interrupt-driven I2C: a waiting policy (here without a kernel)
+    static inline volatile bool done = false;
+    static void reset() noexcept { done = false; }
+    static bool wait(std::uint32_t) noexcept { return done; }
+    static void signal() noexcept { done = true; }
+};
+using I2c4Irq = h5::I2cMaster<h5::I2cId::I2c4, {.kernel_hz = board::clocks.pclk3_hz(), .cpu_hz = board::sysclk_hz}, CheckWait>;
 using I2c1 = h5::I2cMaster<h5::I2cId::I2c1,
                            {.kernel_hz = board::clocks.pclk1_hz(), .cpu_hz = board::sysclk_hz, .bus_hz = 400'000}>;
 using Spi2 = h5::SpiMaster<h5::SpiId::Spi2, {.kernel_hz = board::pll1_q_hz, .max_bus_hz = 1'000'000,
@@ -132,6 +139,11 @@ void drivers_check() noexcept {
     usb_fs.set_address(5);
     usb_fs.close_all();
 
+    I2c4Irq::init();
+    (void)I2c4Irq::probe(0x40);
+    I2c4Irq::on_event_irq();
+    I2c4Irq::on_error_irq();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::read();
     stepper_a.init();
     (void)stepper_a.start(100);
     stepper_a.on_dma_irq();

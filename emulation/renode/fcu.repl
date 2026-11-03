@@ -8,7 +8,14 @@
 //   HX711    load cell ADC (own model HX711.cs): PD_SCK on SPI2_MOSI (PC3), DOUT on
 //            SPI2_MISO (PC2), read as a GPIO too (data ready); RATE tied low: 10 Hz.
 //            Channel A carries a fixed reading that apps/hx711 checks.
+//   INA226   supply monitor on I2C4 at 0x40 (own model INA226.cs): 24 V, 5 mV over the
+//            10 mOhm shunt (0.5 A); ALERT (open drain, active low) on PC9 (revision 2).
 using "stm32h563.repl"
+
+ina226: Sensors.INA226 @ i2c4 0x40
+    busMillivolts: 24000
+    shuntMicrovolts: 5000
+    ALERT -> gpioPortC@9
 
 hx711: Sensors.HX711 @ gpioPortC 2
     outputDataRate: 10
