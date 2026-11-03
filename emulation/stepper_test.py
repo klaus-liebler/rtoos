@@ -4,10 +4,17 @@
 
   stepper_test.py build/arm/apps/fcu_stepper.elf [--exe C:/opt/renode/renode.exe]
 
-Runs fcu_stepper in Renode with a probe on the STEP pin (PB4): a Renode Python hook records
-every edge with its virtual time. The firmware reports its ramp parameters on the console and
-runs two moves. The test then checks the step rate over time - the reciprocal of the time
-between consecutive edges:
+Runs fcu_stepper in Renode with a probe on the STEP pin (PB4 = TIM3_CH1, the timer's compare
+output): a Renode Python hook records every edge with its virtual time. The firmware reports its
+ramp parameters on the console and runs four moves while an interrupt load (200 us busy every
+700 us, above the stepper's interrupts) runs. The test then checks:
+
+  every move
+    * exactly as many edges as steps
+    * every edge on a timer tick (1 us): the timer makes them, not an interrupt
+    * first to last edge exactly the planned time the firmware reports
+
+and the step rate over time - the reciprocal of the time between consecutive edges:
 
   long move (2000 steps)
     * every ramp step runs at the sigmoid's rate for the time it starts (within 2 %)
@@ -37,6 +44,8 @@ DEFAULT_RENODE = Path("C:/opt/renode/renode.exe")
 PARAMS = re.compile(r"stepper: tick_hz (\d+) start_hz (\d+) cruise_hz (\d+) ramp_us (\d+) steepness (\d+) "
                     r"ramp_steps (\d+)")
 DONE = "STEPPER RESULT: DONE"
+SPAN = re.compile(r"stepper: move (-?\d+) steps, edges span (\d+) ticks")
+MOVES = [2000, -101, 1, 2]
 
 # Renode Python (IronPython), run in the monitor: a probe LED on PB4 and a hook that writes
 # "<virtual time in us> <state>" for every change of the pin.
@@ -65,8 +74,8 @@ def sigmoid_rate(t_us: float, start: float, cruise: float, ramp_us: float, k: fl
 
 PROBE = """step_probe: Miscellaneous.LED @ gpioPortB 4
 
-gpioPortB:
-    4 -> step_probe@0
+tim3:
+    Ch1 -> step_probe@0
 """
 
 
@@ -148,15 +157,28 @@ def main() -> int:
         return 1
     tick_hz, start, cruise, ramp_us, k, ramp_steps = (int(g) for g in m.groups())
 
-    # The two moves: separated by the pause between them (> 100 ms without an edge).
+    # The moves: separated by the pause between them (> 100 ms without an edge).
     moves: list[list[float]] = [[]]
     for t in edges:
         if moves[-1] and t - moves[-1][-1] > 100_000:
             moves.append([])
         moves[-1].append(t)
-    check([len(mv) for mv in moves] == [2000, 101], f"edges per move {[len(mv) for mv in moves]} == [2000, 101]")
-    if len(moves) != 2 or len(moves[0]) != 2000:
+    counts = [len(mv) for mv in moves]
+    check(counts == [abs(n) for n in MOVES], f"edges per move {counts} == {[abs(n) for n in MOVES]}")
+    if counts != [abs(n) for n in MOVES]:
         return 1
+
+    # ---- hardware timing: every edge on a tick, every move exactly as long as planned -----
+    tick_us = 1e6 / tick_hz
+    # (the counter's ticks are not aligned to whole microseconds of virtual time: count from
+    # each move's first edge)
+    off_tick = [t for mv in moves for t in mv if abs((t - mv[0]) / tick_us - round((t - mv[0]) / tick_us)) > 1e-3]
+    check(not off_tick, f"every edge on a {tick_us:g} us timer tick ({len(off_tick)} off, first {off_tick[:3]})")
+    spans = {int(a): int(b) for a, b in SPAN.findall(console)}
+    for n, mv in zip(MOVES, moves):
+        want = spans.get(n)
+        got = round((mv[-1] - mv[0]) / tick_us)
+        check(want is not None and got == want, f"move {n}: edges span {got} ticks, planned {want}")
 
     # ---- long move ----------------------------------------------------------------------
     long_move = moves[0]

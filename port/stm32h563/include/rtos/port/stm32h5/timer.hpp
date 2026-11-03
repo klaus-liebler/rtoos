@@ -65,12 +65,13 @@ struct Info {
     }
     return {};
 }
-inline constexpr std::uint32_t cr1_cen = 1u << 0, cr1_arpe = 1u << 7;
+inline constexpr std::uint32_t cr1_cen = 1u << 0, cr1_opm = 1u << 3, cr1_arpe = 1u << 7;
 inline constexpr std::uint32_t dier_uie = 1u << 0, dier_ude = 1u << 8;
 inline constexpr std::uint32_t sr_uif = 1u << 0;
 inline constexpr std::uint32_t egr_ug = 1u << 0;
 inline constexpr std::uint32_t bdtr_moe = 1u << 15;
 inline constexpr std::uint32_t ocm_pwm1 = 0b0110;  // OCxM[2:0]; OCxM[3] stays 0
+inline constexpr std::uint32_t ocm_toggle = 0b0011;
 }  // namespace timer_detail
 
 /// PSC/ARR for `c` on a counter of `max_arr` (0xFFFF or 0xFFFF'FFFF).
@@ -150,6 +151,13 @@ public:
     }
 
     static void start() noexcept { CR1::write(CR1::read() | timer_detail::cr1_cen); }
+    /// One-pulse mode: the counter stops at the next update event (CEN clears itself).
+    static void set_one_pulse(bool on) noexcept {
+        CR1::write(on ? CR1::read() | timer_detail::cr1_opm : CR1::read() & ~timer_detail::cr1_opm);
+    }
+    /// Update event by software (EGR.UG): CNT = 0, preloaded ARR/PSC/CCR active, UIF set (and a
+    /// DMA request if enabled).
+    static void generate_update() noexcept { EGR::write(timer_detail::egr_ug); }
     static void stop() noexcept { CR1::write(CR1::read() & ~timer_detail::cr1_cen); }
     [[nodiscard]] static bool running() noexcept { return (CR1::read() & timer_detail::cr1_cen) != 0; }
 
@@ -212,6 +220,26 @@ public:
         set_compare<Ch>(ccr > arr && arr == max_arr ? arr : static_cast<std::uint32_t>(ccr));
     }
 
+    /// Channel `Ch` as output compare in toggle mode: the output changes at every CNT == CCR
+    /// (one edge per match), CCR without preload.
+    template <unsigned Ch>
+    static void configure_toggle() noexcept {
+        static_assert(Ch >= 1 && Ch <= info.channels, "timer has no such channel");
+        constexpr unsigned shift = ((Ch - 1) % 2) * 8;
+        constexpr std::uint32_t mode = timer_detail::ocm_toggle << (shift + 4);
+        constexpr std::uint32_t mask = (0xFFu << shift) | (1u << (16 + shift));
+        if constexpr (Ch <= 2) {
+            CCMR1::write((CCMR1::read() & ~mask) | mode);
+        } else {
+            CCMR2::write((CCMR2::read() & ~mask) | mode);
+        }
+        constexpr unsigned e = 4 * (Ch - 1);
+        CCER::write((CCER::read() & ~(3u << e)) | (1u << e));
+        if constexpr (info.advanced) {
+            BDTR::write(BDTR::read() | timer_detail::bdtr_moe);
+        }
+    }
+
     /// Channel `Ch` raises a DMA request at its compare event.
     template <unsigned Ch>
     static void enable_compare_dma() noexcept {
@@ -263,6 +291,9 @@ public:
         return periph_alias + info.offset + 0x34 + 4 * (Ch - 1);
     }
     [[nodiscard]] static constexpr std::uintptr_t dmar_address() noexcept { return periph_alias + info.offset + 0x3E0; }
+    /// ARR for DMA: with preload (ARPE) a write sets the period after the next update event.
+    [[nodiscard]] static constexpr std::uintptr_t arr_address() noexcept { return periph_alias + info.offset + 0x2C; }
+    static constexpr bool preload = Config.preload;
 
 private:
     using CR1 = PReg<info.offset + 0x00>;

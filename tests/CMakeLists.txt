@@ -15,6 +15,7 @@ add_executable(rtos_tests
     filex_media_test.cpp
     sd_card_test.cpp
     motion_test.cpp
+    timer_stepper_test.cpp
     port_config_test.cpp
     block_pool_test.cpp
     sync_test.cpp

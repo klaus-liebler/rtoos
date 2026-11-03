@@ -36,6 +36,8 @@ inline constexpr std::uint32_t gconf_i_scale_analog = 1u << 0, gconf_internal_rs
                                gconf_en_spreadcycle = 1u << 2, gconf_shaft = 1u << 3, gconf_pdn_disable = 1u << 6,
                                gconf_mstep_reg_select = 1u << 7, gconf_multistep_filt = 1u << 8;
 inline constexpr std::uint32_t chopconf_mres_pos = 24, chopconf_mres_mask = 0xFu << chopconf_mres_pos;
+/// Both STEP edges count (one microstep per edge): rtos/motion steppers toggle the pin.
+inline constexpr std::uint32_t chopconf_dedge = 1u << 29;
 inline constexpr std::uint8_t sync = 0x05, master_address = 0xFF;
 inline constexpr std::uint8_t version = 0x21;  ///< IOIN[31:24]
 inline constexpr std::uint32_t clock_hz = 12'000'000;  ///< internal oscillator
@@ -99,7 +101,8 @@ public:
     Tmc2209(Uart& uart, std::uint8_t node) noexcept : uart_(uart), node_(node) {}
 
     /// Check the chip, then GCONF (StealthChop, register micro steps, PDN_UART off, step
-    /// filter) and the micro step resolution.
+    /// filter), the micro step resolution and DEDGE (a step per STEP edge, as the rtos/motion
+    /// steppers make them: one toggle per step).
     bool init(Tmc2209Microsteps steps) noexcept {
         using namespace tmc2209;
         const auto io = read(ioin);
@@ -108,7 +111,8 @@ public:
             return false;
         }
         gconf_ = gconf_pdn_disable | gconf_mstep_reg_select | gconf_multistep_filt;
-        chopconf_ = (*chop & ~chopconf_mres_mask) | (static_cast<std::uint32_t>(steps) << chopconf_mres_pos);
+        chopconf_ = (*chop & ~chopconf_mres_mask) | (static_cast<std::uint32_t>(steps) << chopconf_mres_pos) |
+                    chopconf_dedge;
         return write(gstat, 0x07) && write(gconf, gconf_) && read(gconf) == gconf_ && write(chopconf, chopconf_);
     }
 

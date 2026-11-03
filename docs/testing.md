@@ -77,7 +77,7 @@ An emulator gap is fixed in the emulator model where possible. Otherwise the sel
 - The flash interface is an own model, [STM32H5_FLASH.cs](../emulation/renode/STM32H5_FLASH.cs) (unlock keys, sector erase). The CPU programs by writing to flash memory, and Renode accepts such writes even without PG and more than once per erase. The "program once" rule is checked by the host tests' NOR simulation instead.
 - Renode's own STM32 SDMMC model moves data only through the FIFO (no IDMA), and its SD card answers CMD8 with the card status instead of R7. The platform therefore uses an own model, [STM32H5_SDMMC.cs](../emulation/renode/STM32H5_SDMMC.cs) (compiled by `fcu.resc`): SDMMC v2 with IDMA and an SD card that follows the Simplified Specification (states, R7 echo, SDHC/SDSC addressing, CSD 2.0/1.0, a programming phase after writes). QEMU has no SDMMC.
 - Renode's SPI models move whole frames without bus time. The platform uses an own model, [STM32H5_SPI.cs](../emulation/renode/STM32H5_SPI.cs): master, TSIZE/CSTART, FIFOs of 16 (SPI1-3) or 8 (SPI4) frames, each bit shifted in virtual time with MOSI, SCK and MISO as GPIOs, and a clock that stops while the TxFIFO is empty mid-transfer. RM0481 does not document the MOSI level while the clock stands or the SPI is disabled; the model keeps the last bit (ST community reports), and its MOSI starts high (the worst case for a device clocked on MOSI). QEMU has no SPI.
-- Renode's timer model (`Timers.STM32_Timer`) has no compare outputs or DMA, and its update period is ARR ticks instead of ARR + 1 (0.1 % at 1000 ticks): `stepper_test.py` tolerates that. QEMU has no timers.
+- Renode's timer model has no compare outputs, DMA requests or one-pulse mode, and its period is ARR ticks instead of ARR + 1. The platform uses own models: [STM32H5_TIM.cs](../emulation/renode/STM32H5_TIM.cs) (up-counting, preload, one-pulse mode, compare outputs as GPIOs, update/compare DMA requests, exact ARR + 1) and [STM32H5_GPDMA.cs](../emulation/renode/STM32H5_GPDMA.cs) (linear blocks, hardware and software requests; no linked lists). QEMU has no timers.
 
 ### Network test (Renode over TAP)
 
@@ -122,7 +122,7 @@ ctest --preset arm -R sdcard_renode -V
 ctest --preset arm -R stepper_renode -V
 ```
 
-[emulation/stepper_test.py](../emulation/stepper_test.py) loads a probe LED on the STEP pin (PB4) and hooks a Renode Python handler to its state changes, which records the virtual time of every edge. From the edges of `fcu_stepper`'s two moves it checks the sigmoid ramp: each step's rate, the fit against a linear ramp, where the acceleration peaks, cruise, the mirrored deceleration and the short triangle ([Motion](motion.md#tests)).
+[emulation/stepper_test.py](../emulation/stepper_test.py) loads a probe LED on the STEP pin (TIM3_CH1 on PB4: the timer makes the edges, the GPDMA feeds ARR) and hooks a Renode Python handler to its state changes, which records the virtual time of every edge. From the edges of `fcu_stepper`'s four moves, under an interrupt load, it checks the counts, that every edge sits on a timer tick, each move's exact duration, and the sigmoid ramp: each step's rate, the fit against a linear ramp, where the acceleration peaks, cruise, the mirrored deceleration and the short triangle ([Motion](motion.md#tests)).
 
 ### HX711 test (Renode)
 

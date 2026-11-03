@@ -5,7 +5,7 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, SPI1..4, SDMMC1, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, USART1..3, SPI1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
 // SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
@@ -53,38 +53,68 @@ usart3: UART.STM32F7_USART @ sysbus 0x40004800
     frequency: 125000000
     IRQ -> nvic@60
 
-// Timers: Renode's STM32 timer model (PSC, ARR, CNT, update event and interrupt, CEN, UG);
-// compare outputs and DMA are not modelled, and the model's update period is ARR ticks (the
-// hardware's is ARR + 1). Timer clock 250 MHz: 2 x PCLK1 (APB1 / 2) and PCLK2.
-tim2: Timers.STM32_Timer @ sysbus 0x40000000
+// Timers: own model STM32H5_TIM.cs (fcu.resc compiles it): up-counting with period ARR + 1,
+// preload, one-pulse mode, compare outputs ChX (toggle, PWM, ...), update/compare DMA requests
+// to GPDMA1 (request numbers GPDMA1_REQUEST_*). Timer clock 250 MHz: 2 x PCLK1 (APB1 / 2) and
+// PCLK2. The compare outputs are wired to pins where a platform needs them (tests).
+tim2: Timers.STM32H5_TIM @ sysbus 0x40000000
     frequency: 250000000
-    initialLimit: 0xFFFFFFFF
-    -> nvic@45
+    counterWidth: 32
+    IRQ -> nvic@45
+    DmaCc1 -> gpdma1@72
+    DmaCc2 -> gpdma1@73
+    DmaCc3 -> gpdma1@74
+    DmaCc4 -> gpdma1@75
+    DmaUpdate -> gpdma1@76
 
-tim3: Timers.STM32_Timer @ sysbus 0x40000400
+tim3: Timers.STM32H5_TIM @ sysbus 0x40000400
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@46
+    IRQ -> nvic@46
+    DmaCc1 -> gpdma1@77
+    DmaCc2 -> gpdma1@78
+    DmaCc3 -> gpdma1@79
+    DmaCc4 -> gpdma1@80
+    DmaUpdate -> gpdma1@81
 
-tim4: Timers.STM32_Timer @ sysbus 0x40000800
+tim4: Timers.STM32H5_TIM @ sysbus 0x40000800
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@47
+    IRQ -> nvic@47
+    DmaCc1 -> gpdma1@83
+    DmaCc2 -> gpdma1@84
+    DmaCc3 -> gpdma1@85
+    DmaCc4 -> gpdma1@86
+    DmaUpdate -> gpdma1@87
 
-tim15: Timers.STM32_Timer @ sysbus 0x40014000
+tim5: Timers.STM32H5_TIM @ sysbus 0x40000C00
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@71
+    counterWidth: 32
+    IRQ -> nvic@48
 
-tim16: Timers.STM32_Timer @ sysbus 0x40014400
+tim15: Timers.STM32H5_TIM @ sysbus 0x40014000
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@72
+    channels: 2
+    IRQ -> nvic@71
+    DmaCc1 -> gpdma1@94
+    DmaUpdate -> gpdma1@95
 
-tim17: Timers.STM32_Timer @ sysbus 0x40014800
+tim16: Timers.STM32H5_TIM @ sysbus 0x40014400
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@73
+    channels: 1
+    IRQ -> nvic@72
+    DmaCc1 -> gpdma1@98
+    DmaUpdate -> gpdma1@99
+
+tim17: Timers.STM32H5_TIM @ sysbus 0x40014800
+    frequency: 250000000
+    channels: 1
+    IRQ -> nvic@73
+    DmaCc1 -> gpdma1@100
+    DmaUpdate -> gpdma1@101
+
+// GPDMA1: own model STM32H5_GPDMA.cs: channels 0-7, linear blocks, hardware requests from the
+// timers above, software requests (memory to memory).
+gpdma1: DMA.STM32H5_GPDMA @ sysbus 0x40020000
+    [0-7] -> nvic@[27-34]
 
 gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
     modeResetValue: 0xABFFFFFF

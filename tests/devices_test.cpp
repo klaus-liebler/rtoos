@@ -212,6 +212,8 @@ TEST(Tmc2209, InitAndCurrentOverTheLine) {
     ASSERT_TRUE(driver.init(Tmc2209Microsteps::M16));
     EXPECT_EQ(line.regs[tmc2209::gconf], 0x1C0u) << "pdn_disable, mstep_reg_select, multistep_filt";
     EXPECT_EQ(line.regs[tmc2209::chopconf] >> 24 & 0xF, 4u) << "MRES 16";
+    EXPECT_NE(line.regs[tmc2209::chopconf] & tmc2209::chopconf_dedge, 0u) << "DEDGE: one step per edge";
+    EXPECT_EQ(line.regs[tmc2209::chopconf] & 0xFFFFFF, 0x000053u) << "the chopper settings stay";
     ASSERT_TRUE(driver.set_current(4, 12, 6));
     EXPECT_EQ(line.regs[tmc2209::ihold_irun], 0x00060C04u);
 }

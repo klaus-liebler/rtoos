@@ -11,6 +11,7 @@
 #include "rtos/devices/ina226.hpp"
 #include "rtos/devices/tcs34725.hpp"
 #include "rtos/devices/vl53l0x.hpp"
+#include "rtos/motion/timer_stepper.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/cache.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
@@ -46,6 +47,16 @@ h5::UsbDrdFs<> usb_fs;
 using LedDma = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
                                 .direction = h5::DmaDirection::MemoryToPeripheral, .memory_bytes = 2, .peripheral_bytes = 2}>;
 std::array<std::uint16_t, 24> led_bits{};
+// hardware stepper: TIM2 (32 bit) and TIM3 (16 bit), ARR fed by GPDMA
+constexpr rtos::motion::SigmoidRamp step_ramp{.tick_hz = 1'000'000, .start_hz = 100, .cruise_hz = 1000, .ramp_us = 500'000};
+using StepTim2 = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 1'000'000}>;
+using StepTim3 = h5::Timer<h5::TimerId::Tim3, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 1'000'000}>;
+using StepDma4 = h5::DmaChannel<{.channel = 4, .request = h5::DmaRequest::Tim2Up, .direction = h5::DmaDirection::MemoryToPeripheral,
+                                 .memory_bytes = 4, .peripheral_bytes = 4}>;
+using StepDma5 = h5::DmaChannel<{.channel = 5, .request = h5::DmaRequest::Tim3Up, .direction = h5::DmaDirection::MemoryToPeripheral,
+                                 .memory_bytes = 2, .peripheral_bytes = 4}>;
+RTOS_DMA_BUFFER rtos::motion::TimerStepper<StepTim2, 1, StepDma4, step_ramp> stepper_a;
+RTOS_DMA_BUFFER rtos::motion::TimerStepper<StepTim3, 1, StepDma5, step_ramp> stepper_b;
 // external chips on the chip's buses (rtos/devices)
 using Supply = rtos::devices::Ina226<I2c4, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
 using Tof = rtos::devices::Vl53l0x<I2c1>;
@@ -121,6 +132,14 @@ void drivers_check() noexcept {
     usb_fs.set_address(5);
     usb_fs.close_all();
 
+    stepper_a.init();
+    (void)stepper_a.start(100);
+    stepper_a.on_dma_irq();
+    (void)stepper_a.on_timer_irq();
+    stepper_a.stop();
+    (void)stepper_a.position();
+    stepper_b.init();
+    (void)stepper_b.start(-100);
     LedDma::init();
     (void)LedDma::start(Leds::compare_address<1>(), led_bits.data(), led_bits.size());
     (void)LedDma::done();
