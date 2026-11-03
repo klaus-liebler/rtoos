@@ -49,6 +49,13 @@ constexpr std::array sdcard_pins{
 };
 
 void init() noexcept {
+    if constexpr (!has_ucpd) {
+        // After reset the UCPD's dead-battery pull-downs (Rd) sit on CC1/CC2 (PB13/PB14) and
+        // listen on DB1/DB2 (PA9/PC9). Revision 2 leaves PD to the CH224K and uses PB13 and PC9
+        // as inputs: switch the dead-battery logic off (RM0481 PWR_UCPDR.UCPD_DBDIS, SVD: "it is
+        // recommended to disable it in all case").
+        h5::pwr::UCPDR::write(h5::pwr::UCPDR::read() | h5::pwr::ucpdr_dbdis);
+    }
     h5::rcc::configure_clocks<clocks>();
 
     h5::configure_mpu({.flash_start = h5::flash_base,

@@ -7,6 +7,9 @@
 //            PCLK1 = 125 MHz (timers 250 MHz), PLL1 Q = 100 MHz
 //   Console  USART3, PD8 = TX, PD9 = RX (AF7) -> STDC14 connector J2, ST-LINK VCP
 //   LED      LED_INFO (D1), active low (anode via 1 k to 3V3): PH1 (revision 2), PE15 (revision 1)
+//   USB-PD   revision 1: UCPD1 sink on PB13/PB14 (the product starts it); revision 2: a CH224K
+//            negotiates alone, UCPD1 unused - init() switches the dead-battery pull-downs off,
+//            PB13 (CC1) and PC9 (DB2) carry other signals there
 //   Ethernet LAN8742A, RMII, PHY address 0 (PHYAD0 open -> internal pull-down),
 //            REFCLKO mode (nINTSEL pulled low by R24) -> 50 MHz on PA1;
 //            pins (AF11, ST open pin data STM32H563VITx):
@@ -37,6 +40,8 @@ inline constexpr std::uint32_t console_baud = 115'200;
 /// Hardware revision (CMake cache variable RTOS_FCU_REVISION): 1 = first boards, 2 = current PCB.
 inline constexpr unsigned revision = RTOS_FCU_REVISION;
 static_assert(revision == 1 || revision == 2);
+/// The MCU's own USB-PD sink (UCPD1 on the USB-C connector's CC lines); false: a CH224K does it.
+inline constexpr bool has_ucpd = revision == 1;
 
 inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin =
     revision == 1 ? rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::E, 15}
@@ -44,7 +49,8 @@ inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin =
 inline constexpr rtos::port::stm32h5::gpio::Pin console_tx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 8};
 inline constexpr rtos::port::stm32h5::gpio::Pin console_rx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 9};
 
-/// Clock tree, MPU, ICACHE, LED and console. Call first in main().
+/// Clock tree, MPU, ICACHE, LED and console; without UCPD (revision 2) the dead-battery
+/// pull-downs off. Call first in main().
 void init() noexcept;
 
 /// RMII pins (AF11) and a PHY reset pulse. Call before Ethernet::init().

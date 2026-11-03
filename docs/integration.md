@@ -90,7 +90,7 @@ The interface that the examples and the self-test use ([boards/fcu/include/board
 
 | Function | Does |
 |---|---|
-| `board::init()` | clock tree in the order RM0481 requires (voltage scale → flash wait states → PLL), MPU (flash, RAM, non-cacheable DMA region), ICACHE, LED, console UART. First call in `main()`. |
+| `board::init()` | clock tree in the order RM0481 requires (voltage scale → flash wait states → PLL), MPU (flash, RAM, non-cacheable DMA region), ICACHE, LED, console UART; on FCU revision 2 (CH224K, no UCPD) the UCPD dead-battery pull-downs off. First call in `main()`. |
 | `board::init_ethernet()` | RMII pins and the PHY reset pulse, before `Ethernet::init()` |
 | `board::mac_address()` | a unique, locally administered MAC from the 96-bit device UID |
 | `board::clocks` | the clock tree (`rcc::ClockTree`): PLL1, prescalers; every frequency (`pclk1_hz()`, `timer1_hz()`, `pll1_q_hz()` …) as a compile-time constant |
