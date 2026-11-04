@@ -40,7 +40,8 @@ add_executable(rtos_tests
     opcua_o6_view_test.cpp
     opcua_o6_attributes_test.cpp
     opcua_o6_subscriptions_test.cpp
-    opcua_codec_test.cpp)
+    opcua_codec_test.cpp
+    terminal_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_filex rtos_littlefs rtos_certs GTest::gtest_main)
 # The chip drivers' compile-time configuration (constexpr register values) is tested on the host.
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}

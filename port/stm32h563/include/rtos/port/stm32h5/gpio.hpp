@@ -24,6 +24,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include "rtos/port/stm32h5/chip.hpp"
@@ -39,6 +41,30 @@ struct Pin {
     std::uint8_t number;  // 0..15
     friend constexpr bool operator==(const Pin&, const Pin&) = default;
 };
+
+/// 'A' for a pin of port A, ...
+[[nodiscard]] constexpr char port_letter(Pin p) noexcept { return static_cast<char>('A' + static_cast<int>(p.port)); }
+
+/// "PC7", "pa15": a pin of the package (by name, e.g. typed into a terminal); else nullopt.
+[[nodiscard]] constexpr std::optional<Pin> parse_pin(std::string_view s) noexcept {
+    if (s.size() < 3 || s.size() > 4 || (s[0] != 'P' && s[0] != 'p')) {
+        return std::nullopt;
+    }
+    const char letter = static_cast<char>(s[1] & ~0x20);
+    unsigned number = 0;
+    for (const char c : s.substr(2)) {
+        if (c < '0' || c > '9') {
+            return std::nullopt;
+        }
+        number = number * 10 + static_cast<unsigned>(c - '0');
+    }
+    for (const auto& [port, n] : package_pins) {
+        if (letter == port_letter({port, n}) && number == n) {
+            return Pin{port, n};
+        }
+    }
+    return std::nullopt;
+}
 
 enum class Mode : std::uint8_t { Input = 0, Output = 1, Alternate = 2, Analog = 3 };
 enum class Speed : std::uint8_t { Low = 0, Medium = 1, High = 2, VeryHigh = 3 };

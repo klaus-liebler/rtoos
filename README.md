@@ -55,6 +55,7 @@ cmake --preset board && cmake --build --preset board
 | [External chips](docs/devices.md) | INA226, VL53L0X, TCS34725, HX711, TMC2209, Feetech servos, WS2812 |
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, SSH log terminal, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
+| [Command terminal](docs/terminal.md) | text commands from a generated catalog: handlers, compile-time completeness check, helpers |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
 | [USB](docs/usb.md) | device stack, CDC-ACM, CDC-NCM, Modbus RTU over USB, USB Power Delivery sink |
 | [Security](docs/security.md) | certificates and CA, TLS, OPC UA trust, ARP hardening |
