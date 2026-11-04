@@ -111,11 +111,11 @@ public:
     // "fullCloMessage" is exactly one complete CLO message. There is no response either way
     // (Part 4 5.5.3); returns false only if the message didn't even verify/decode (caller closes
     // the connection regardless).
-    bool HandleClose(std::span<const Byte> fullCloMessage);
+    bool HandleClose(std::span<Byte> fullCloMessage);
 
     // Verifies the HMAC-SHA256 signature and strips padding from a complete MSG/CLO message,
     // exposing the plaintext service body via "out". Requires IsOpen().
-    bool VerifyAndUnwrapSymmetric(std::span<const Byte> fullMessage, ParsedSecureMessage &out);
+    bool VerifyAndUnwrapSymmetric(std::span<Byte> fullMessage, ParsedSecureMessage &out);
 
     // Pairs with BeginSymmetricMessage(): appends PaddingSize+Padding+HMAC-SHA256 signature to
     // the response service body already written into "w" from "startPos", then backfills the

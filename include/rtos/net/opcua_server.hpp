@@ -239,7 +239,7 @@ private:
         /// Process the complete message at the front of rx, then drop it.
         void handle(std::size_t size) noexcept {
             ++owner->stats_.messages;
-            protocol.HandleMessage(std::span<const opcua::Byte>(rx).first(size));
+            protocol.HandleMessage(std::span(rx).first(size));  // consumed: MSG/CLO decrypted in place
             std::copy(rx.begin() + static_cast<std::ptrdiff_t>(size), rx.begin() + static_cast<std::ptrdiff_t>(rx_size),
                       rx.begin());
             rx_size -= size;

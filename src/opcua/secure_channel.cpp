@@ -5,8 +5,11 @@
 #include "rtos/opcua/clock.hpp"
 #include "rtos/opcua/codec.hpp"
 #include "rtos/opcua/node_ids.hpp"
+#include "scratch.hpp"
 
 namespace rtos::opcua {
+
+scratch::Area scratch::area;
 
 namespace {
 
@@ -21,23 +24,10 @@ const ServerIdentity *g_serverIdentity = nullptr;
 using security::RsaPrivateKey;
 using security::RsaPublicKey;
 
-// rtoos: buffers of HandleOpen as one static scratch area instead of ~11 KB of stack (the
-// network thread runs every OPC UA connection, one message at a time -- never concurrently).
-constexpr size_t MAX_CERT_DER = 2000;
-constexpr size_t MAX_PLAIN = 1536;
-constexpr size_t MAX_SIGNED = MAX_CERT_DER + MAX_PLAIN + 64;
-struct OpenScratch {
-    Byte plainBuf[MAX_PLAIN];
-    Byte signedBuf[MAX_SIGNED];
-    Byte plaintext[MAX_PLAIN];
-    Byte toSign[MAX_SIGNED];
-    Byte clientModulus[security::MAX_RSA_MODULUS_BYTES];
-    Byte clientExponent[8];
-};
-OpenScratch g_scratch;
-
-// SignAndEncrypt: decrypted copy of the message being handled (one at a time).
-Byte g_decrypted[8192];
+// rtoos: buffers of HandleOpen in the static scratch area (scratch.hpp)
+using scratch::MAX_CERT_DER;
+using scratch::MAX_PLAIN;
+using scratch::MAX_SIGNED;
 // MSG/CLO: message header (8), SecureChannelId (4), TokenId (4) stay in clear text
 constexpr size_t SYMMETRIC_CLEAR_HEADER = 16;
 // derived key material per direction: signing key, encrypting key, IV (Part 6 6.7.5)
@@ -50,8 +40,8 @@ security::CertificateCheck CheckClientCertificate(std::string_view certDer, RsaP
     const UInt64 unixNow = IsSynced() ? static_cast<UInt64>((now - DATETIME_UNIX_EPOCH) / DATETIME_SEC) : 0;
     return security::CheckClientCertificate(
         std::span<const Byte>(reinterpret_cast<const Byte *>(certDer.data()), certDer.size()), unixNow,
-        std::span<Byte, security::MAX_RSA_MODULUS_BYTES>(g_scratch.clientModulus),
-        std::span<Byte, 8>(g_scratch.clientExponent), outKey);
+        std::span<Byte, security::MAX_RSA_MODULUS_BYTES>(scratch::area.open.clientModulus),
+        std::span<Byte, 8>(scratch::area.open.clientExponent), outKey);
 }
 
 // HMAC-SHA256 sign/verify for symmetric (MSG/CLO) messages -- Sign mode, no padding (Part 6
@@ -129,7 +119,7 @@ bool SecureChannel::SignAndFinishSymmetric(ByteWriter &w, size_t startPos) {
     return security::AesCbcEncrypt(server_.encrypting, server_.iv, w.WrittenFrom(startPos + SYMMETRIC_CLEAR_HEADER));
 }
 
-bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSecureMessage &out) {
+bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<Byte> msg, ParsedSecureMessage &out) {
     if(!isOpen_) return false;
     ByteReader r(msg);
     if(!DecodeTcpHeader(r, out.header)) return false;
@@ -140,18 +130,14 @@ bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSe
     if(!r.ReadUInt32(out.tokenId)) return false;
     if(!r.Ok()) return false;
 
-    // SignAndEncrypt: everything after the cleartext header is encrypted -- decrypt into the
-    // scratch buffer (the network thread handles one message at a time) and go on from there.
-    std::span<const Byte> plain = msg;
+    // SignAndEncrypt: everything after the cleartext header is encrypted -- decrypt in place:
+    // the message is consumed (the caller drops it afterwards), no copy, no second 8 KB buffer.
+    const std::span<const Byte> plain = msg;
     if(Encrypted()) {
-        if(msg.size() > sizeof g_decrypted || msg.size() <= SYMMETRIC_CLEAR_HEADER ||
-           (msg.size() - SYMMETRIC_CLEAR_HEADER) % security::AES_BLOCK_SIZE != 0)
+        if(msg.size() <= SYMMETRIC_CLEAR_HEADER || (msg.size() - SYMMETRIC_CLEAR_HEADER) % security::AES_BLOCK_SIZE != 0)
             return false;
-        std::memcpy(g_decrypted, msg.data(), msg.size());
-        if(!security::AesCbcDecrypt(client_.encrypting, client_.iv,
-                                    std::span<Byte>(g_decrypted + SYMMETRIC_CLEAR_HEADER, msg.size() - SYMMETRIC_CLEAR_HEADER)))
+        if(!security::AesCbcDecrypt(client_.encrypting, client_.iv, msg.subspan(SYMMETRIC_CLEAR_HEADER)))
             return false;
-        plain = std::span<const Byte>(g_decrypted, msg.size());
     }
     ByteReader seq(plain.subspan(SYMMETRIC_CLEAR_HEADER));
     if(!seq.ReadUInt32(out.sequenceNumber)) return false;
@@ -184,7 +170,7 @@ bool SecureChannel::VerifyAndUnwrapSymmetric(std::span<const Byte> msg, ParsedSe
     return true;
 }
 
-bool SecureChannel::HandleClose(std::span<const Byte> fullCloMessage) {
+bool SecureChannel::HandleClose(std::span<Byte> fullCloMessage) {
     ParsedSecureMessage parsed;
     bool ok = VerifyAndUnwrapSymmetric(fullCloMessage, parsed) &&
              parsed.channelId == channelId_ && parsed.tokenId == tokenId_;
@@ -309,7 +295,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
 
     size_t plainLen = (ciphertext.size() / ourModLen) * ourPlainBlock;
     if(plainLen > MAX_PLAIN || plainLen < NONCE_SIZE + 1 + clientModLen) return false;
-    Byte *plainBuf = g_scratch.plainBuf;
+    Byte *plainBuf = scratch::area.open.plainBuf;
     if(!security::RsaOaepDecryptBlocks(ourKey, ciphertext, std::span<Byte>(plainBuf, plainLen))) return false;
 
     // --- Locate Signature/Padding/SeqHeader+Body within the decrypted plaintext ---
@@ -331,7 +317,7 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     // certificate bytes, capped by MAX_CERT_DER above) and the response-sign concatenation
     // further below (headerSecHeaderLen, dominated by OUR OWN certificate bytes).
     if(cleartextLen + signatureStart > MAX_SIGNED) return false;
-    Byte *signedBuf = g_scratch.signedBuf;
+    Byte *signedBuf = scratch::area.open.signedBuf;
     std::memcpy(signedBuf, fullOpnMessage.data(), cleartextLen);
     std::memcpy(signedBuf + cleartextLen, plainBuf, signatureStart);
     if(!security::RsaSha256Verify(clientKey, std::span<const Byte>(signedBuf, cleartextLen + signatureStart),
@@ -460,13 +446,13 @@ bool SecureChannel::HandleOpen(std::span<const Byte> fullOpnMessage, UInt32 assi
     if(!w.Ok() || w.Position() != headerSecHeaderLen) return false; // sanity-check the precomputed length
 
     if(plaintextLen > MAX_PLAIN) return false;
-    Byte *plaintext = g_scratch.plaintext;
+    Byte *plaintext = scratch::area.open.plaintext;
     std::memcpy(plaintext, bodyBuf, seqHeaderPlusRespBodyLen);
     AppendAsymmetricPadding(plaintext + seqHeaderPlusRespBodyLen, pad);
     // Sign over [already-written header+secheader in w, now with the FINAL size][seqHeader+body+padding].
     size_t toSignLen = headerSecHeaderLen + seqHeaderPlusRespBodyLen + 1 + pad;
     if(toSignLen > MAX_SIGNED) return false;
-    Byte *toSign = g_scratch.toSign;
+    Byte *toSign = scratch::area.open.toSign;
     std::memcpy(toSign, w.Written().data(), headerSecHeaderLen);
     std::memcpy(toSign + headerSecHeaderLen, plaintext, seqHeaderPlusRespBodyLen + 1 + pad);
     Byte signature[security::MAX_RSA_MODULUS_BYTES];

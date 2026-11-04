@@ -8,6 +8,7 @@
 #include "rtos/opcua/node_ids.hpp"
 #include "rtos/opcua/secure_channel.hpp"
 #include "rtos/opcua/service_header.hpp"
+#include "scratch.hpp"
 
 namespace rtos::opcua {
 
@@ -51,8 +52,8 @@ std::span<const Byte> Bytes(std::string_view s) { return {reinterpret_cast<const
 // (here: leaf + CA); clients differ in whether they sign the chain or only the leaf (asyncua
 // uses the leaf from the endpoint), so both are accepted -- either way the client proved it
 // holds the private key of the certificate the channel was opened with.
-// Static scratch: the network thread serves one message at a time.
-Byte g_signInput[2600];
+// Static scratch: the network thread serves one message at a time (scratch.hpp).
+Byte (&g_signInput)[2600] = scratch::area.signInput;
 bool ClientSignatureValid(const SecureChannel &channel, const SignatureData &sig, std::span<const Byte> serverNonce) {
     if(sig.algorithm.isNull || sig.algorithm.value != RSA_SHA256_URI || sig.signatureIsNull) return false;
     const auto &id = GetServerIdentity();
