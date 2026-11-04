@@ -16,6 +16,12 @@ else()
     set(rtos_top_level OFF)
 endif()
 option(RTOS_BUILD_EXAMPLES "Build the rtoos example firmware (apps/) and host tests (tests/)" ${rtos_top_level})
+# SSH (wolfSSH, net/ssh.hpp, the log terminal) and what only it needs in wolfSSL: Ed25519 and
+# SHA-512 (~70 KB flash). A product without the log terminal switches it off.
+option(RTOS_SSH "SSH server support (wolfSSH; wolfSSL with Ed25519 and SHA-512)" ON)
+if(RTOS_BUILD_EXAMPLES AND NOT RTOS_SSH)
+    message(FATAL_ERROR "RTOS_SSH=OFF: the rtoos examples and tests use the SSH log terminal")
+endif()
 
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
     message(FATAL_ERROR "rtoos requires GCC 16 or newer (found ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION})")
@@ -44,7 +50,9 @@ target_link_options(rtos_kernel INTERFACE -fcontracts)
 
 # ---- third party ------------------------------------------------------------
 include(cmake/wolfssl.cmake)
-include(cmake/wolfssh.cmake)
+if(RTOS_SSH)
+    include(cmake/wolfssh.cmake)
+endif()
 include(cmake/filex.cmake)
 include(cmake/littlefs.cmake)
 
@@ -85,10 +93,14 @@ function(rtos_certificates target)
     target_compile_options(${target} INTERFACE --embed-dir=${C_DIR})
 endfunction()
 
-add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp src/net/ssh.cpp)
-target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl rtos_wolfssh)
-if(RTOS_WOLFSSH_HOST_FLAGS)  # see cmake/wolfssh.cmake
-    set_source_files_properties(src/net/ssh.cpp PROPERTIES COMPILE_OPTIONS "${RTOS_WOLFSSH_HOST_FLAGS}")
+add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp)
+target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
+if(RTOS_SSH)
+    target_sources(rtos_tls PRIVATE src/net/ssh.cpp)
+    target_link_libraries(rtos_tls PUBLIC rtos_wolfssh)
+    if(RTOS_WOLFSSH_HOST_FLAGS)  # see cmake/wolfssh.cmake
+        set_source_files_properties(src/net/ssh.cpp PROPERTIES COMPILE_OPTIONS "${RTOS_WOLFSSH_HOST_FLAGS}")
+    endif()
 endif()
 
 # ---- OPC UA (the FCU's opcua_native library; crypto: wolfCrypt RSA-2048) ----------

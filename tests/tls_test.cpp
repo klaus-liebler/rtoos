@@ -313,7 +313,6 @@ TEST_P(TlsCipherTest, DataBothDirections) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Suites, TlsCipherTest,
-                         ::testing::Values("TLS13-CHACHA20-POLY1305-SHA256", "TLS13-AES128-GCM-SHA256",
-                                           "TLS13-AES256-GCM-SHA384"));
+                         ::testing::Values("TLS13-CHACHA20-POLY1305-SHA256", "TLS13-AES128-GCM-SHA256"));
 
 }  // namespace

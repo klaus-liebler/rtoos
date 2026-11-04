@@ -21,7 +21,7 @@ my_product/
 
 ## 2. CMake
 
-rtoos detects that it is a subproject and then builds only its libraries: no example firmware, no tests (`RTOS_BUILD_EXAMPLES` defaults to `OFF`).
+rtoos detects that it is a subproject and then builds only its libraries: no example firmware, no tests (`RTOS_BUILD_EXAMPLES` defaults to `OFF`). Without the SSH log terminal, `set(RTOS_SSH OFF)` before `add_subdirectory(rtoos)` saves about 70 KB of flash ([networking](networking.md#ssh-log-terminal)).
 
 ```cmake
 cmake_minimum_required(VERSION 3.28)

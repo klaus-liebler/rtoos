@@ -7,8 +7,9 @@
  *   key exchange   X25519, ECDHE P-256          (browsers offer X25519 first)
  *   certificate    ECDSA P-256 / SHA-256 (TLS); RSA-2048 only for OPC UA
  *   ciphers        TLS_CHACHA20_POLY1305_SHA256 (constant time, fast without AES HW)
- *                  TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384
- *                  (AES T-tables + 4-bit GHASH tables: lookup-table speed)
+ *                  TLS_AES_128_GCM_SHA256 (AES T-tables + 4-bit GHASH tables)
+ *                  -- the two every browser offers; TLS_AES_256_GCM_SHA384 would add
+ *                  SHA-384/512 (~14 KB) for nothing
  *   memory         WOLFSSL_STATIC_MEMORY + WOLFSSL_NO_MALLOC: every allocation comes
  *                  from the bucketed pool handed to wolfSSL_CTX_load_static_memory()
  *   entropy        rtos_tls_seed() (STM32H5 TRNG on the target)
@@ -59,9 +60,9 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
 #define HAVE_TLS_EXTENSIONS
 #define HAVE_SUPPORTED_CURVES
 #define HAVE_HKDF
-#define HAVE_SNI
-#define HAVE_ENCRYPT_THEN_MAC
 #define WOLFSSL_NO_TLS13_EARLY_DATA
+/* no WOLFSSL_NO_CLIENT_AUTH: it removes wolfSSL_CertManagerVerifyBuffer(), which checks the
+ * OPC UA client certificates (opcua/security_crypto.cpp) */
 
 /* The host build keeps the client: unit tests run a wolfSSL client against our server. */
 #if defined(__arm__)
@@ -74,14 +75,11 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
 #define ECC_TIMING_RESISTANT
 #define TFM_TIMING_RESISTANT
 #define HAVE_CURVE25519
-#define HAVE_ED25519                 /* SSH: ssh-ed25519 client keys (log terminal) */
 #define HAVE_AESGCM
 #define GCM_TABLE_4BIT
 #define HAVE_CHACHA
 #define HAVE_POLY1305
 #define HAVE_ONE_TIME_AUTH
-#define WOLFSSL_SHA384
-#define WOLFSSL_SHA512
 #define WOLFSSL_ASN_TEMPLATE
 #define WOLFSSL_BASE64_ENCODE        /* WebSocket handshake */
 /* RSA-2048 only for OPC UA (SecurityPolicy Basic256Sha256: OAEP-SHA1, PKCS#1 v1.5 SHA-256;
@@ -120,16 +118,22 @@ extern int rtos_tls_seed(unsigned char* output, unsigned int size);
     #define WOLFSSL_ARMASM_NO_NEON
 #endif
 
-/* ---- wolfSSH (log terminal, net/ssh.hpp) --------------------------------------------------
+/* ---- wolfSSH (log terminal, net/ssh.hpp; CMake option RTOS_SSH) ---------------------------
+ * Ed25519 (ssh-ed25519 client keys) and SHA-512 only exist for SSH: ~70 KB flash, and with
+ * HAVE_ED25519 wolfSSL's certificate and key code links them even without SSH in use.
  * Server side only in use; I/O through rtoos' TCP connections; no file system. Small packets
  * and window: the terminal carries log lines and keystrokes, and every buffer comes from the
  * static pool (RFC 4253 6.1 asks for 32 KB packets; the channel's maximum packet, which the
  * server announces, bounds the client's data packets, and KEX packets stay below 2 KB). */
-#define WOLFSSL_WOLFSSH              /* wolfSSL parts wolfSSH needs */
-#define WOLFSSH_USER_IO
-#define WOLFSSH_NO_TIMESTAMP
-#define DEFAULT_WINDOW_SZ (8 * 1024)
-#define DEFAULT_MAX_PACKET_SZ 2048
+#ifdef RTOS_SSH
+    #define HAVE_ED25519
+    #define WOLFSSL_SHA512
+    #define WOLFSSL_WOLFSSH          /* wolfSSL parts wolfSSH needs */
+    #define WOLFSSH_USER_IO
+    #define WOLFSSH_NO_TIMESTAMP
+    #define DEFAULT_WINDOW_SZ (8 * 1024)
+    #define DEFAULT_MAX_PACKET_SZ 2048
+#endif
 
 #ifdef __cplusplus
 }
