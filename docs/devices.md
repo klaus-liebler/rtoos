@@ -8,7 +8,7 @@
 | ST VL53L0X | [vl53l0x.hpp](../include/rtos/devices/vl53l0x.hpp) | I2C | single-shot distance, non-blocking (`start()`, `poll()`) |
 | ams TCS34725 | [tcs34725.hpp](../include/rtos/devices/tcs34725.hpp) | I2C | clear/red/green/blue in one block read; ATIME from the integration time |
 | Avia HX711 | [hx711.hpp](../include/rtos/devices/hx711.hpp) | SPI (MOSI clocks, MISO samples) | 24-bit load cell readings, moving average; the 8 clock bytes run from the TxFIFO without a pause (see below) |
-| Trinamic TMC2209 | [tmc2209.hpp](../include/rtos/devices/tmc2209.hpp) | single-wire UART (with echo) | init (micro steps, StealthChop), currents, internal step generator, sensorless homing with StallGuard |
+| Trinamic TMC2209 | [tmc2209.hpp](../include/rtos/devices/tmc2209.hpp) | single-wire UART (with echo) | init (micro steps, StealthChop), currents, internal step generator, sensorless homing with StallGuard4 (StealthChop, CoolStep off, as the datasheet requires): SG_RESULT polled over UART and/or the DIAG output by edge interrupt (stop ~1 ms after the stall; DIAG from a driver error, reset or charge pump undervoltage fails the homing); `velocity()` in full steps/s at the set microstep resolution |
 | Feetech STS servos | [feetech_sts.hpp](../include/rtos/devices/feetech_sts.hpp) | UART (1 Mbit/s) | sync write of positions, feedback, torque |
 | WS2812 LEDs | [ws2812.hpp](../include/rtos/devices/ws2812.hpp) | timer + DMA | timing from the timer clock, bit slots for the compare register |
 

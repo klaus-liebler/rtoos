@@ -161,9 +161,10 @@ TEST(Tmc2209, DatagramsAndCrc) {
     EXPECT_FALSE(tmc2209::parse_reply(reply, 0x07).has_value()) << "other register";
     reply[5] ^= 1;
     EXPECT_FALSE(tmc2209::parse_reply(reply, 0x06).has_value()) << "CRC";
-    // VACTUAL: 200 full steps/s * 256 * 2^24 / 12 MHz = 71583
-    EXPECT_EQ(tmc2209::vactual_value(200), 71'582u);
-    EXPECT_EQ(tmc2209::vactual_value(-200), 0x00FF'FFFFu - 71'582u + 1u);
+    // VACTUAL in microsteps of the set resolution (datasheet 14): 200 full steps/s * 16 * 2^24 / 12 MHz
+    EXPECT_EQ(tmc2209::vactual_value(200, 16), 4'473u);
+    EXPECT_EQ(tmc2209::vactual_value(-200, 16), 0x00FF'FFFFu - 4'473u + 1u);
+    EXPECT_EQ(tmc2209::vactual_value(200, 256), 71'582u);
 }
 
 /// Single-wire line with a TMC2209 on it: every byte written comes back (echo); a read request
@@ -176,7 +177,12 @@ struct TmcLine {
         std::vector<std::uint8_t> b;
         for (auto x : d) b.push_back(std::to_integer<std::uint8_t>(x));
         if (b.size() == 8 && (b[2] & 0x80) != 0) {
-            regs[b[2] & 0x7F] = (std::uint32_t{b[3]} << 24) | (b[4] << 16) | (b[5] << 8) | b[6];
+            const std::uint32_t v = (std::uint32_t{b[3]} << 24) | (b[4] << 16) | (b[5] << 8) | b[6];
+            if ((b[2] & 0x7F) == tmc2209::gstat) {
+                regs[tmc2209::gstat] &= ~v;  // write 1 to clear
+            } else {
+                regs[b[2] & 0x7F] = v;
+            }
         } else if (b.size() == 4) {
             std::array<std::uint8_t, 8> r{0x05, 0xFF, b[2]};
             const std::uint32_t v = regs[b[2]];
@@ -218,6 +224,9 @@ TEST(Tmc2209, InitAndCurrentOverTheLine) {
     EXPECT_EQ(line.regs[tmc2209::ihold_irun], 0x00060C04u);
 }
 
+// Homing that could not work: StallGuard4 measures in StealthChop only, but the homing switched to
+// SpreadCycle and turned CoolStep on (spurious stalls, 12.3); and VACTUAL counts microsteps of the
+// set resolution, not 1/256 steps, so at 16 microsteps "200 full steps/s" ran at 3200.
 TEST(Tmc2209, SensorlessHomingStopsAtTheStall) {
     TmcLine line;
     line.regs[tmc2209::ioin] = 0x21000000;
@@ -225,8 +234,11 @@ TEST(Tmc2209, SensorlessHomingStopsAtTheStall) {
     ASSERT_TRUE(driver.init(Tmc2209Microsteps::M16));
     std::uint32_t now = 0;
     ASSERT_TRUE(driver.start_homing({.speed = -200, .stall_threshold = 100}, now));
-    EXPECT_EQ(line.regs[tmc2209::vactual], tmc2209::vactual_value(200)) << "first away from the end stop";
-    EXPECT_NE(line.regs[tmc2209::gconf] & tmc2209::gconf_en_spreadcycle, 0u);
+    EXPECT_EQ(line.regs[tmc2209::vactual], tmc2209::vactual_value(200, 16)) << "first away from the end stop";
+    EXPECT_EQ(line.regs[tmc2209::vactual], 4'473u) << "200 full steps/s at 16 microsteps";
+    EXPECT_EQ(line.regs[tmc2209::gconf] & tmc2209::gconf_en_spreadcycle, 0u) << "StallGuard4: StealthChop";
+    EXPECT_EQ(line.regs[tmc2209::coolconf], 0u) << "CoolStep off while homing";
+    EXPECT_EQ(line.regs[tmc2209::tcoolthrs], 450u);
     line.regs[tmc2209::sg_result] = 400;  // load low: no stall
     using R = Tmc2209<TmcLine, TestClock>::HomingResult;
     R r = R::InProgress;
@@ -234,11 +246,56 @@ TEST(Tmc2209, SensorlessHomingStopsAtTheStall) {
         r = driver.tick_homing(now);
     }
     EXPECT_EQ(r, R::InProgress);
-    EXPECT_EQ(line.regs[tmc2209::vactual], tmc2209::vactual_value(-200)) << "towards the end stop";
-    line.regs[tmc2209::sg_result] = 150;  // < 2 x 100: stall
+    EXPECT_EQ(line.regs[tmc2209::vactual], tmc2209::vactual_value(-200, 16)) << "towards the end stop";
+    line.regs[tmc2209::sg_result] = 200;  // = 2 x 100: a stall already (SG_RESULT <= SGTHRS*2)
     EXPECT_EQ(driver.tick_homing(now), R::Done);
     EXPECT_EQ(line.regs[tmc2209::vactual], 0u);
-    EXPECT_EQ(line.regs[tmc2209::gconf] & tmc2209::gconf_en_spreadcycle, 0u) << "StealthChop again";
+    EXPECT_FALSE(driver.stall_by_signal());
+}
+
+// The DIAG output stops the homing at once, without a stall in SG_RESULT; a DIAG edge before
+// the stall detection (back off, dead time) is ignored; DIAG from a driver error is a failure.
+TEST(Tmc2209, SensorlessHomingStopsAtTheDiagSignal) {
+    TmcLine line;
+    line.regs[tmc2209::ioin] = 0x21000000;
+    Tmc2209<TmcLine, TestClock> driver{line, 0};
+    ASSERT_TRUE(driver.init(Tmc2209Microsteps::M16));
+    using R = Tmc2209<TmcLine, TestClock>::HomingResult;
+    line.regs[tmc2209::sg_result] = 400;  // load low: polling sees no stall
+    std::uint32_t now = 0;
+    ASSERT_TRUE(driver.start_homing({.speed = -200, .stall_threshold = 100}, now));
+    EXPECT_EQ(driver.tick_homing(now += 10, true), R::InProgress) << "backing off: DIAG ignored";
+    R r = R::InProgress;
+    for (; now < 1300 && r == R::InProgress; now += 10) {
+        r = driver.tick_homing(now);
+    }
+    ASSERT_EQ(r, R::InProgress);
+    ASSERT_EQ(line.regs[tmc2209::vactual], tmc2209::vactual_value(-200, 16)) << "towards the end stop";
+    EXPECT_EQ(driver.tick_homing(now, true), R::Done);
+    EXPECT_EQ(line.regs[tmc2209::vactual], 0u);
+    EXPECT_TRUE(driver.stall_by_signal());
+
+    // DIAG from a driver error (short to GND, coil A): not an end stop
+    line.regs[tmc2209::drv_status] = 1u << 2;
+    ASSERT_TRUE(driver.start_homing({.speed = -200, .stall_threshold = 100}, now));
+    const std::uint32_t start = now;
+    for (r = R::InProgress; now < start + 1300 && r == R::InProgress; now += 10) {
+        r = driver.tick_homing(now);
+    }
+    ASSERT_EQ(r, R::InProgress);
+    EXPECT_EQ(driver.tick_homing(now, true), R::Error);
+    EXPECT_EQ(line.regs[tmc2209::vactual], 0u) << "stopped anyway";
+
+    // DIAG from a charge pump undervoltage (GSTAT uv_cp): not an end stop either
+    line.regs[tmc2209::drv_status] = 0;
+    line.regs[tmc2209::gstat] = 1u << 2;
+    ASSERT_TRUE(driver.start_homing({.speed = -200, .stall_threshold = 100}, now));
+    const std::uint32_t again = now;
+    for (r = R::InProgress; now < again + 1300 && r == R::InProgress; now += 10) {
+        r = driver.tick_homing(now);
+    }
+    ASSERT_EQ(r, R::InProgress);
+    EXPECT_EQ(driver.tick_homing(now, true), R::Error);
 }
 
 // ---- Feetech ---------------------------------------------------------------------------------
