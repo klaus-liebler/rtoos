@@ -4,7 +4,8 @@
 #   1. installs the TAP-Windows6 driver and tapctl.exe from the OpenVPN MSI
 #      (features: OpenVPN core + Drivers.TAPWindows6 only; no service, no GUI)
 #   2. creates the TAP adapter "rtoos-tap"
-#   3. assigns the host side of the emulation network: 192.168.77.1/24
+#   3. assigns the host side of the emulation network: 192.168.77.1/24, and sets the adapter
+#      to "Always Connected"
 #   4. allows inbound traffic on that adapter only (firewall rule "rtoos emulation network")
 #
 # Undo: Remove-NetFirewallRule -DisplayName "rtoos emulation network";
@@ -46,6 +47,11 @@ try {
     Write-Host "Assigning $HostAddress/$Mask to $Adapter ..."
     & netsh interface ipv4 set address name="$Adapter" static $HostAddress $Mask
     if ($LASTEXITCODE -ne 0) { throw "netsh failed: $LASTEXITCODE" }
+    # A TAP adapter is connected only while an application holds it open, and Windows keeps its
+    # address "Tentative" (not bindable) until then. The network test binds its host servers
+    # (DHCP, DNS, SNTP) to the address before Renode opens the adapter, and skips without it.
+    Write-Host "Setting $Adapter to Always Connected ..."
+    Set-NetAdapterAdvancedProperty -Name $Adapter -RegistryKeyword MediaStatus -RegistryValue 1
 
     # The TAP adapter is an "unidentified network" (Public profile): inbound traffic
     # from the emulated device (SNTP requests to the test server, mDNS answers) would
