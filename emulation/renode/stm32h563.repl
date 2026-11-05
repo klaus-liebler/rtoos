@@ -5,10 +5,10 @@
 //
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, SRAM, RCC
 // (register file with ready/status flags), PWR voltage scaling, FLASH_ACR,
-// GPIOA..I, USART1..3, SDMMC1, TIM2-4/15-17 (time base and update interrupt), Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
+// GPIOA..I, EXTI, USART1..3, SPI1..4, I2C1..4, SDMMC1, TIM2-5/15-17 (compare outputs, DMA requests), GPDMA1, Ethernet MAC (Synopsys DWC EQoS, same IP and register layout
 // as the STM32H7), RNG, UID/package data area.
 // Tagged (reads 0, writes logged): ICACHE, DCACHE1, rest of the FLASH interface,
-// SBS, EXTI. A read of 0 means "not busy" for the cache status registers, so the
+// SBS. A read of 0 means "not busy" for the cache status registers, so the
 // cache drivers run unchanged.
 //
 // Clock: the firmware runs SYSCLK = HCLK = PCLK2/3 = 250 MHz from PLL1, PCLK1 = 125 MHz
@@ -53,38 +53,123 @@ usart3: UART.STM32F7_USART @ sysbus 0x40004800
     frequency: 125000000
     IRQ -> nvic@60
 
-// Timers: Renode's STM32 timer model (PSC, ARR, CNT, update event and interrupt, CEN, UG);
-// compare outputs and DMA are not modelled, and the model's update period is ARR ticks (the
-// hardware's is ARR + 1). Timer clock 250 MHz: 2 x PCLK1 (APB1 / 2) and PCLK2.
-tim2: Timers.STM32_Timer @ sysbus 0x40000000
+// Timers: own model STM32H5_TIM.cs (fcu.resc compiles it): up-counting with period ARR + 1,
+// preload, one-pulse mode, compare outputs ChX (toggle, PWM, ...), update/compare DMA requests
+// to GPDMA1 (request numbers GPDMA1_REQUEST_*). Timer clock 250 MHz: 2 x PCLK1 (APB1 / 2) and
+// PCLK2. The compare outputs are wired to pins where a platform needs them (tests).
+tim2: Timers.STM32H5_TIM @ sysbus 0x40000000
     frequency: 250000000
-    initialLimit: 0xFFFFFFFF
-    -> nvic@45
+    counterWidth: 32
+    IRQ -> nvic@45
+    DmaCc1 -> gpdma1@72
+    DmaCc2 -> gpdma1@73
+    DmaCc3 -> gpdma1@74
+    DmaCc4 -> gpdma1@75
+    DmaUpdate -> gpdma1@76
 
-tim3: Timers.STM32_Timer @ sysbus 0x40000400
+tim3: Timers.STM32H5_TIM @ sysbus 0x40000400
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@46
+    IRQ -> nvic@46
+    DmaCc1 -> gpdma1@77
+    DmaCc2 -> gpdma1@78
+    DmaCc3 -> gpdma1@79
+    DmaCc4 -> gpdma1@80
+    DmaUpdate -> gpdma1@81
 
-tim4: Timers.STM32_Timer @ sysbus 0x40000800
+tim4: Timers.STM32H5_TIM @ sysbus 0x40000800
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@47
+    IRQ -> nvic@47
+    DmaCc1 -> gpdma1@83
+    DmaCc2 -> gpdma1@84
+    DmaCc3 -> gpdma1@85
+    DmaCc4 -> gpdma1@86
+    DmaUpdate -> gpdma1@87
 
-tim15: Timers.STM32_Timer @ sysbus 0x40014000
+tim5: Timers.STM32H5_TIM @ sysbus 0x40000C00
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@71
+    counterWidth: 32
+    IRQ -> nvic@48
 
-tim16: Timers.STM32_Timer @ sysbus 0x40014400
+tim15: Timers.STM32H5_TIM @ sysbus 0x40014000
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@72
+    channels: 2
+    IRQ -> nvic@71
+    DmaCc1 -> gpdma1@94
+    DmaUpdate -> gpdma1@95
 
-tim17: Timers.STM32_Timer @ sysbus 0x40014800
+tim16: Timers.STM32H5_TIM @ sysbus 0x40014400
     frequency: 250000000
-    initialLimit: 0xFFFF
-    -> nvic@73
+    channels: 1
+    IRQ -> nvic@72
+    DmaCc1 -> gpdma1@98
+    DmaUpdate -> gpdma1@99
+
+tim17: Timers.STM32H5_TIM @ sysbus 0x40014800
+    frequency: 250000000
+    channels: 1
+    IRQ -> nvic@73
+    DmaCc1 -> gpdma1@100
+    DmaUpdate -> gpdma1@101
+
+// I2C1-4: own model STM32H5_I2C.cs (fcu.resc compiles it): master, every byte nine SCL periods
+// long (SCL from TIMINGR), devices as Renode I2C peripherals at their 7-bit address. Kernel clocks
+// as the board sets them: PCLK1 = 125 MHz (I2C1-2), PCLK3 = 250 MHz (I2C3-4).
+i2c1: I2C.STM32H5_I2C @ sysbus 0x40005400
+    frequency: 125000000
+    EventIRQ -> nvic@51
+    ErrorIRQ -> nvic@52
+
+i2c2: I2C.STM32H5_I2C @ sysbus 0x40005800
+    frequency: 125000000
+    EventIRQ -> nvic@53
+    ErrorIRQ -> nvic@54
+
+i2c3: I2C.STM32H5_I2C @ sysbus 0x44002800
+    frequency: 250000000
+    EventIRQ -> nvic@80
+    ErrorIRQ -> nvic@81
+
+i2c4: I2C.STM32H5_I2C @ sysbus 0x44002C00
+    frequency: 250000000
+    EventIRQ -> nvic@125
+    ErrorIRQ -> nvic@126
+
+// EXTI lines 0-15: own model STM32H5_EXTI.cs (fcu.resc compiles it): EXTICR port selection,
+// rising/falling pending registers. Every GPIO pin reaches it (input = port x 16 + pin).
+exti: IRQControllers.STM32H5_EXTI @ sysbus 0x44022000
+    [0-15] -> nvic@[11-26]
+
+gpioPortA:
+    [0-15] -> exti@[0-15]
+
+gpioPortB:
+    [0-15] -> exti@[16-31]
+
+gpioPortC:
+    [0-15] -> exti@[32-47]
+
+gpioPortD:
+    [0-15] -> exti@[48-63]
+
+gpioPortE:
+    [0-15] -> exti@[64-79]
+
+gpioPortF:
+    [0-15] -> exti@[80-95]
+
+gpioPortG:
+    [0-15] -> exti@[96-111]
+
+gpioPortH:
+    [0-15] -> exti@[112-127]
+
+gpioPortI:
+    [0-15] -> exti@[128-143]
+
+// GPDMA1: own model STM32H5_GPDMA.cs: channels 0-7, linear blocks, hardware requests from the
+// timers above, software requests (memory to memory).
+gpdma1: DMA.STM32H5_GPDMA @ sysbus 0x40020000
+    [0-7] -> nvic@[27-34]
 
 gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
     modeResetValue: 0xABFFFFFF
@@ -131,6 +216,29 @@ gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
 //   sysbus.sdmmc1 InsertCard @<image> <true: SDHC | false: SDSC>
 sdmmc1: SD.STM32H5_SDMMC @ sysbus 0x46008000
     IRQ -> nvic@79
+
+// SPI1-4: own model STM32H5_SPI.cs (fcu.resc compiles it): master, bit-timed MOSI/SCK/MISO
+// as GPIOs, FIFOs of 16 frames (SPI1-3) and 8 frames (SPI4). Kernel clocks as the board sets
+// them: pll1_q = 100 MHz for SPI1-3 (RCC_CCIPR3 reset selection), PCLK2 = 250 MHz for SPI4.
+spi1: SPI.STM32H5_SPI @ sysbus 0x40013000
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@55
+
+spi2: SPI.STM32H5_SPI @ sysbus 0x40003800
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@56
+
+spi3: SPI.STM32H5_SPI @ sysbus 0x40003C00
+    kernelFrequency: 100000000
+    fifoSize: 16
+    IRQ -> nvic@57
+
+spi4: SPI.STM32H5_SPI @ sysbus 0x40014C00
+    kernelFrequency: 250000000
+    fifoSize: 8
+    IRQ -> nvic@82
 
 // Note: with MACCR.SARC = 000 the model logs "Attempted to use external MAC address"
 // for every TX frame and leaves the frame unchanged - which is what the STM32
@@ -230,5 +338,4 @@ sysbus:
         Tag <0x40030400 0x400> "ICACHE"
         Tag <0x40031400 0x400> "DCACHE1"
         Tag <0x44000400 0x400> "SBS"
-        Tag <0x44022000 0x400> "EXTI"
         Tag <0x44024000 0x400> "DBGMCU"

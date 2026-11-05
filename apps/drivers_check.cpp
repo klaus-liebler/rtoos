@@ -11,9 +11,11 @@
 #include "rtos/devices/ina226.hpp"
 #include "rtos/devices/tcs34725.hpp"
 #include "rtos/devices/vl53l0x.hpp"
+#include "rtos/motion/timer_stepper.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/cache.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/stm32h5/exti.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
@@ -30,6 +32,13 @@ constexpr h5::UartConfig single_wire{.kernel_hz = board::clocks.pclk1_hz(), .bau
 h5::BufferedUart<h5::UsartId::Uart5, single_wire> uart5;
 
 using I2c4 = h5::I2cMaster<h5::I2cId::I2c4, {.kernel_hz = board::clocks.pclk3_hz(), .cpu_hz = board::sysclk_hz}>;
+struct CheckWait {  // interrupt-driven I2C: a waiting policy (here without a kernel)
+    static inline volatile bool done = false;
+    static void reset() noexcept { done = false; }
+    static bool wait(std::uint32_t) noexcept { return done; }
+    static void signal() noexcept { done = true; }
+};
+using I2c4Irq = h5::I2cMaster<h5::I2cId::I2c4, {.kernel_hz = board::clocks.pclk3_hz(), .cpu_hz = board::sysclk_hz}, CheckWait>;
 using I2c1 = h5::I2cMaster<h5::I2cId::I2c1,
                            {.kernel_hz = board::clocks.pclk1_hz(), .cpu_hz = board::sysclk_hz, .bus_hz = 400'000}>;
 using Spi2 = h5::SpiMaster<h5::SpiId::Spi2, {.kernel_hz = board::pll1_q_hz, .max_bus_hz = 1'000'000,
@@ -46,6 +55,16 @@ h5::UsbDrdFs<> usb_fs;
 using LedDma = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1,
                                 .direction = h5::DmaDirection::MemoryToPeripheral, .memory_bytes = 2, .peripheral_bytes = 2}>;
 std::array<std::uint16_t, 24> led_bits{};
+// hardware stepper: TIM2 (32 bit) and TIM3 (16 bit), ARR fed by GPDMA
+constexpr rtos::motion::SigmoidRamp step_ramp{.tick_hz = 1'000'000, .start_hz = 100, .cruise_hz = 1000, .ramp_us = 500'000};
+using StepTim2 = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 1'000'000}>;
+using StepTim3 = h5::Timer<h5::TimerId::Tim3, {.kernel_hz = board::clocks.timer1_hz(), .tick_hz = 1'000'000}>;
+using StepDma4 = h5::DmaChannel<{.channel = 4, .request = h5::DmaRequest::Tim2Up, .direction = h5::DmaDirection::MemoryToPeripheral,
+                                 .memory_bytes = 4, .peripheral_bytes = 4}>;
+using StepDma5 = h5::DmaChannel<{.channel = 5, .request = h5::DmaRequest::Tim3Up, .direction = h5::DmaDirection::MemoryToPeripheral,
+                                 .memory_bytes = 2, .peripheral_bytes = 4}>;
+RTOS_DMA_BUFFER rtos::motion::TimerStepper<StepTim2, 1, StepDma4, step_ramp> stepper_a;
+RTOS_DMA_BUFFER rtos::motion::TimerStepper<StepTim3, 1, StepDma5, step_ramp> stepper_b;
 // external chips on the chip's buses (rtos/devices)
 using Supply = rtos::devices::Ina226<I2c4, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
 using Tof = rtos::devices::Vl53l0x<I2c1>;
@@ -121,6 +140,30 @@ void drivers_check() noexcept {
     usb_fs.set_address(5);
     usb_fs.close_all();
 
+    using Line = h5::ExtiLine<{h5::gpio::GpioPort::C, 2}, h5::ExtiEdge::Falling>;
+    Line::init();
+    Line::enable();
+    (void)Line::take();
+    Line::trigger();
+    Line::disable();
+    (void)Scale::start_read();
+    (void)Scale::complete();
+    (void)Scale::readings();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::enable_conversion_ready_alert();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::acknowledge();
+    I2c4Irq::init();
+    (void)I2c4Irq::probe(0x40);
+    I2c4Irq::on_event_irq();
+    I2c4Irq::on_error_irq();
+    (void)rtos::devices::Ina226<I2c4Irq, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>::read();
+    stepper_a.init();
+    (void)stepper_a.start(100);
+    stepper_a.on_dma_irq();
+    (void)stepper_a.on_timer_irq();
+    stepper_a.stop();
+    (void)stepper_a.position();
+    stepper_b.init();
+    (void)stepper_b.start(-100);
     LedDma::init();
     (void)LedDma::start(Leds::compare_address<1>(), led_bits.data(), led_bits.size());
     (void)LedDma::done();

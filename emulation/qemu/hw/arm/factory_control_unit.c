@@ -5,7 +5,7 @@
  *
  *   MCU      STM32H563VIT6, no HSE crystal: SYSCLK = HSI 64 MHz -> PLL1 250 MHz
  *   Console  USART3 (PD8 TX / PD9 RX -> ST-LINK VCP)  -> first -serial
- *   LED      LED_INFO on PH1, active low               -> trace "led_*"
+ *   LED      LED_INFO on PH0, active low               -> trace "led_*"
  *
  * Usage:
  *   qemu-system-arm -M fcu -nographic -kernel firmware.elf
@@ -49,8 +49,8 @@ static void fcu_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
 
     led_info = led_create_simple(OBJECT(machine), GPIO_POLARITY_ACTIVE_LOW,
-                                 LED_COLOR_GREEN, "LED_INFO (PH1)");
-    qdev_connect_gpio_out(DEVICE(&s->soc.gpio[7]), 1,
+                                 LED_COLOR_GREEN, "LED_INFO (PH0)");
+    qdev_connect_gpio_out(DEVICE(&s->soc.gpio[7]), 0,
                           qdev_get_gpio_in(DEVICE(led_info), 0));
 
     armv7m_load_kernel(s->soc.armv7m.cpu, machine->kernel_filename,

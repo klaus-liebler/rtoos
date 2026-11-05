@@ -101,8 +101,7 @@ TlsInitResult TlsServerContext::init(std::span<std::byte> memory, const TlsCrede
     if ((last_error_ = wolfSSL_CTX_set_groups(ctx, groups, 2)) != WOLFSSL_SUCCESS) {
         return TlsInitResult::Groups;
     }
-    if ((last_error_ = wolfSSL_CTX_set_cipher_list(ctx, "TLS13-CHACHA20-POLY1305-SHA256:TLS13-AES128-GCM-SHA256:"
-                                                        "TLS13-AES256-GCM-SHA384")) != WOLFSSL_SUCCESS) {
+    if ((last_error_ = wolfSSL_CTX_set_cipher_list(ctx, "TLS13-CHACHA20-POLY1305-SHA256:TLS13-AES128-GCM-SHA256")) != WOLFSSL_SUCCESS) {
         return TlsInitResult::CipherSuites;
     }
     if ((last_error_ = wolfSSL_CTX_use_certificate_buffer(

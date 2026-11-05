@@ -31,7 +31,7 @@ A **service** is anything with `void service() noexcept` and `std::uint32_t next
 | DNS resolver | [dns_resolver.hpp](../include/rtos/net/dns_resolver.hpp) | A records with CNAME, cache with TTL, random ID and source port per query (RFC 5452) |
 | mDNS | [mdns.hpp](../include/rtos/net/mdns.hpp) | `<name>.local` on all interfaces, probing before use, renaming (`name-2`, …) on a conflict (RFC 6762) |
 | SNTP | [sntp.hpp](../include/rtos/net/sntp.hpp) | Unix time in ms, server from DHCP option 42 or DNS |
-| TLS 1.3 | [tls.hpp](../include/rtos/net/tls.hpp) | wolfSSL with a static pool; X25519/P-256, ChaCha20-Poly1305 (preferred: the H563 has no AES accelerator) and AES-GCM; Thumb-2 assembly for ECC, ChaCha20, Poly1305, SHA-2 |
+| TLS 1.3 | [tls.hpp](../include/rtos/net/tls.hpp) | wolfSSL with a static pool; X25519/P-256, ChaCha20-Poly1305 (preferred: the H563 has no AES accelerator) and AES-128-GCM; Thumb-2 assembly for ECC, ChaCha20, Poly1305, SHA-2 |
 | HTTP, WebSocket | [http.hpp](../include/rtos/net/http.hpp), [websocket.hpp](../include/rtos/net/websocket.hpp) | parsers checked by the fuzzer |
 | HTTPS server | [https_server.hpp](../include/rtos/net/https_server.hpp) | static resources with content encoding, one WebSocket endpoint |
 | Modbus TCP | [modbus_tcp_server.hpp](../include/rtos/net/modbus_tcp_server.hpp) | see [Modbus](modbus.md) |
@@ -99,6 +99,7 @@ terminal.start(22);
 runtime.add(terminal, "ssh");
 ```
 
+- **Optional** (CMake option `RTOS_SSH`, default `ON`): a product without the log terminal sets `RTOS_SSH` to `OFF` before `add_subdirectory(rtoos)`. Then neither wolfSSH nor `ssh.cpp` is built, and wolfSSL goes without Ed25519 and SHA-512, which only SSH needs: about 70 KB less flash (wolfSSL's certificate and key code links Ed25519 whenever it is configured, used or not).
 - **wolfSSH 1.6.0** ([ssh.hpp](../include/rtos/net/ssh.hpp), [ssh.cpp](../src/net/ssh.cpp)) on rtoos' wolfSSL, archive pinned and its signature checked ([cmake/wolfssh.cmake](../cmake/wolfssh.cmake)). The I/O goes through rtoos' TCP connections; memory comes from a static pool of its own, so a terminal never takes memory from HTTPS.
 - **Login by public key only**: the OpenSSH `authorized_keys` lines given at init (`ssh-ed25519`, `ecdsa-sha2-nistp256`). wolfSSH checks the signature, rtoos checks that the key is one of the list. No passwords.
 - **Host key**: ECDSA P-256. `tools/make_certs.py` creates `certs/ssh_host.key.der` and a test client key (`ssh_client.key.pem`, `ssh_client.pub`) for the examples and tests.

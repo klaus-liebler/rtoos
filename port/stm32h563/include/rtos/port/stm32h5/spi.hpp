@@ -13,6 +13,16 @@
 // drives its chip select as a GPIO). Polled transfers of at most 65535 frames with a timeout
 // on the DWT cycle counter.
 //
+// The TxFIFO is filled before the transfer starts (CSTART): a transfer of up to fifo_frames
+// frames then runs in hardware alone, without a gap between frames, however long an interrupt
+// keeps the CPU away. A master whose TxFIFO runs empty mid-transfer suspends SCK with MOSI at
+// the last bit - harmless for an ordinary device, fatal for one clocked by MOSI (HX711: high
+// for 60 us powers it down; regression test apps/hx711, hx711_renode).
+//
+// Transfers in hardware alone (start()/finish()): up to fifo_frames frames go into the TxFIFO,
+// CSTART, return; the end-of-transfer interrupt (irq) calls finish(), which takes the received
+// frames from the RxFIFO. No polling, no CPU while the bits move.
+//
 // Kernel clock: RCC_CCIPR3 reset selection - pll1_q for SPI1-3, PCLK2 for SPI4.
 #pragma once
 
@@ -57,13 +67,14 @@ struct Info {
     std::uintptr_t offset;
     rcc::Gate gate;
     std::uint8_t irq;
+    std::uint8_t fifo_bytes;  ///< ST HAL: SPI1-3 IS_SPI_FULL_INSTANCE (16), SPI4-6 limited (8)
 };
 [[nodiscard]] consteval Info info(SpiId id) {
     switch (id) {
-        case SpiId::Spi1: return {0x0001'3000, rcc::gate::spi1, 55};
-        case SpiId::Spi2: return {0x0000'3800, rcc::gate::spi2, 56};
-        case SpiId::Spi3: return {0x0000'3C00, rcc::gate::spi3, 57};
-        case SpiId::Spi4: return {0x0001'4C00, rcc::gate::spi4, 82};
+        case SpiId::Spi1: return {0x0001'3000, rcc::gate::spi1, 55, 16};
+        case SpiId::Spi2: return {0x0000'3800, rcc::gate::spi2, 56, 16};
+        case SpiId::Spi3: return {0x0000'3C00, rcc::gate::spi3, 57, 16};
+        case SpiId::Spi4: return {0x0001'4C00, rcc::gate::spi4, 82, 8};
     }
     return {};
 }
@@ -71,6 +82,7 @@ inline constexpr std::uint32_t cr1_spe = 1u << 0, cr1_cstart = 1u << 9, cr1_ssi 
 inline constexpr std::uint32_t cfg2_master = 1u << 22, cfg2_lsbfrst = 1u << 23, cfg2_cpha = 1u << 24,
                                cfg2_cpol = 1u << 25, cfg2_ssm = 1u << 26, cfg2_afcntr = 1u << 31;
 inline constexpr std::uint32_t sr_rxp = 1u << 0, sr_txp = 1u << 1, sr_eot = 1u << 3;
+inline constexpr std::uint32_t ier_eotie = 1u << 3;
 inline constexpr std::uint32_t ifcr_all = 0xBF8u;  // EOTC..MODFC (3..9), SUSPC (11)
 }  // namespace spi_detail
 
@@ -90,6 +102,8 @@ class SpiMaster {
 public:
     static constexpr std::uint8_t irq = info.irq;
     static constexpr std::uint32_t bus_hz = spi_bus_hz(Config);
+    /// Frames (up to 8 bits) that fit the TxFIFO: a transfer of at most this many runs without a gap.
+    static constexpr std::size_t fifo_frames = info.fifo_bytes;
 
     /// Clock on, frame format, prescaler; the pins stay driven while idle (AFCNTR).
     static void init() noexcept {
@@ -112,6 +126,40 @@ public:
         return run(tx.size(), tx.data(), nullptr, timeout_us);
     }
 
+    /// Start a transfer that runs in hardware alone: all of `tx` (at most fifo_frames) into the
+    /// TxFIFO, CSTART, the end-of-transfer interrupt on. False if one is running or tx is too long.
+    static bool start(std::span<const std::byte> tx) noexcept {
+        using namespace spi_detail;
+        if (tx.empty() || tx.size() > fifo_frames || (CR1::read() & cr1_spe) != 0) {
+            return false;
+        }
+        CR2::write(static_cast<std::uint32_t>(tx.size()));
+        CR1::write(cr1_ssi | cr1_spe);
+        for (const std::byte b : tx) {
+            txdr8() = std::to_integer<std::uint8_t>(b);
+        }
+        IFCR::write(ifcr_all);
+        IER::write(ier_eotie);
+        CR1::write(cr1_ssi | cr1_spe | cr1_cstart);
+        return true;
+    }
+
+    /// In the SPI interrupt: false if the transfer has not ended; else the received frames into
+    /// `rx` (the size start() sent), the SPI disabled, the interrupt off.
+    static bool finish(std::span<std::byte> rx) noexcept {
+        using namespace spi_detail;
+        if ((SR::read() & sr_eot) == 0) {
+            return false;
+        }
+        for (std::byte& b : rx) {
+            b = (SR::read() & sr_rxp) != 0 ? static_cast<std::byte>(rxdr8()) : std::byte{0xFF};
+        }
+        IER::write(0);
+        IFCR::write(ifcr_all);
+        CR1::write(cr1_ssi);
+        return true;
+    }
+
     /// Receive only (sends `fill`).
     static bool read(std::span<std::byte> rx, std::byte fill = std::byte{0xFF},
                      std::uint32_t timeout_us = 10'000) noexcept {
@@ -130,8 +178,13 @@ private:
         const std::uint32_t limit = timeout_us * cycles_per_us;
         CR2::write(static_cast<std::uint32_t>(n));  // TSIZE
         CR1::write(cr1_ssi | cr1_spe);
-        CR1::write(cr1_ssi | cr1_spe | cr1_cstart);
+        // Fill the TxFIFO first, then start: the hardware sends what is queued without the CPU.
         std::size_t sent = 0, received = 0;
+        while (sent < n && (SR::read() & sr_txp) != 0) {
+            txdr8() = static_cast<std::uint8_t>(tx != nullptr ? tx[sent] : fill_);
+            ++sent;
+        }
+        CR1::write(cr1_ssi | cr1_spe | cr1_cstart);
         bool ok = true;
         while (received < n) {
             const std::uint32_t sr = SR::read();
@@ -173,6 +226,7 @@ private:
     using CR2 = PReg<info.offset + 0x04>;
     using CFG1 = PReg<info.offset + 0x08>;
     using CFG2 = PReg<info.offset + 0x0C>;
+    using IER = PReg<info.offset + 0x10>;
     using SR = PReg<info.offset + 0x14>;
     using IFCR = PReg<info.offset + 0x18>;
 

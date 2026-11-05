@@ -6,7 +6,10 @@
 //   Clock    HSI 64 MHz -> PLL1 -> SYSCLK = HCLK = PCLK2/3 = 250 MHz (VOS0, 5 wait states),
 //            PCLK1 = 125 MHz (timers 250 MHz), PLL1 Q = 100 MHz
 //   Console  USART3, PD8 = TX, PD9 = RX (AF7) -> STDC14 connector J2, ST-LINK VCP
-//   LED      LED_INFO (D1), active low (anode via 1 k to 3V3): PH1 (revision 2), PE15 (revision 1)
+//   LED      LED_INFO (D1), active low (anode via 1 k to 3V3): PH0 (revision 2), PE15 (revision 1)
+//   USB-PD   revision 1: UCPD1 sink on PB13/PB14 (the product starts it); revision 2: a CH224K
+//            negotiates alone, UCPD1 unused - board_early_init() (from Reset_Handler) switches the
+//            dead-battery pull-downs off, the CC/DB pins carry other signals there
 //   Ethernet LAN8742A, RMII, PHY address 0 (PHYAD0 open -> internal pull-down),
 //            REFCLKO mode (nINTSEL pulled low by R24) -> 50 MHz on PA1;
 //            pins (AF11, ST open pin data STM32H563VITx):
@@ -37,20 +40,26 @@ inline constexpr std::uint32_t console_baud = 115'200;
 /// Hardware revision (CMake cache variable RTOS_FCU_REVISION): 1 = first boards, 2 = current PCB.
 inline constexpr unsigned revision = RTOS_FCU_REVISION;
 static_assert(revision == 1 || revision == 2);
+/// The MCU's own USB-PD sink (UCPD1 on the USB-C connector's CC lines); false: a CH224K does it.
+inline constexpr bool has_ucpd = revision == 1;
 
 inline constexpr rtos::port::stm32h5::gpio::Pin led_info_pin =
     revision == 1 ? rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::E, 15}
-                  : rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::H, 1};
+                  : rtos::port::stm32h5::gpio::Pin{rtos::port::stm32h5::gpio::GpioPort::H, 0};
 inline constexpr rtos::port::stm32h5::gpio::Pin console_tx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 8};
 inline constexpr rtos::port::stm32h5::gpio::Pin console_rx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 9};
+/// SD card detect switch (J3 DET), revision 2 only; init_sdcard() pulls it up.
+inline constexpr rtos::port::stm32h5::gpio::Pin sdcard_detect_pin{rtos::port::stm32h5::gpio::GpioPort::D, 4};
 
-/// Clock tree, MPU, ICACHE, LED and console. Call first in main().
+/// Clock tree, MPU, ICACHE, LED and console. Call first in main(). (Without UCPD, revision 2,
+/// the dead-battery pull-downs are already off: board_early_init(), called by Reset_Handler.)
 void init() noexcept;
 
 /// RMII pins (AF11) and a PHY reset pulse. Call before Ethernet::init().
 void init_ethernet() noexcept;
 
-/// SD card slot: SDMMC1 1-bit bus (D0 PA10, CK PC12, CMD PD2; AF12), no card detect.
+/// SD card slot: SDMMC1 1-bit bus (D0 PA10, CK PC12, CMD PD2); revision 2 also the card detect
+/// input (PD4, pull-up), revision 1 has none.
 void init_sdcard() noexcept;
 
 /// Unique, locally administered MAC address derived from the 96-bit device UID.

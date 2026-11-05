@@ -21,7 +21,7 @@ my_product/
 
 ## 2. CMake
 
-rtoos detects that it is a subproject and then builds only its libraries: no example firmware, no tests (`RTOS_BUILD_EXAMPLES` defaults to `OFF`).
+rtoos detects that it is a subproject and then builds only its libraries: no example firmware, no tests (`RTOS_BUILD_EXAMPLES` defaults to `OFF`). Without the SSH log terminal, `set(RTOS_SSH OFF)` before `add_subdirectory(rtoos)` saves about 70 KB of flash ([networking](networking.md#ssh-log-terminal)).
 
 ```cmake
 cmake_minimum_required(VERSION 3.28)
@@ -92,6 +92,7 @@ The interface that the examples and the self-test use ([boards/fcu/include/board
 | Function | Does |
 |---|---|
 | `board::init()` | clock tree in the order RM0481 requires (voltage scale → flash wait states → PLL), MPU (flash, RAM, non-cacheable DMA region), ICACHE, LED, console UART. First call in `main()`. |
+| `board_early_init()` | weak hook, called by `Reset_Handler` before .data/.bss/constructors (register writes only); on FCU revision 2 (CH224K, no UCPD) it switches the UCPD dead-battery pull-downs (PB13/PB14) off |
 | `board::init_ethernet()` | RMII pins and the PHY reset pulse, before `Ethernet::init()` |
 | `board::mac_address()` | a unique, locally administered MAC from the 96-bit device UID |
 | `board::clocks` | the clock tree (`rcc::ClockTree`): PLL1, prescalers; every frequency (`pclk1_hz()`, `timer1_hz()`, `pll1_q_hz()` …) as a compile-time constant |

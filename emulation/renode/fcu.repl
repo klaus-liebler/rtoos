@@ -2,16 +2,42 @@
 //
 // Factory Control Unit (factory_in_a_box/pcb_factory_control_unit) for Renode.
 //   Console  USART3 (PD8/PD9 -> ST-LINK VCP)
-//   LED      LED_INFO on PH1, active low
+//   LED      LED_INFO on PH0, active low
 //   Ethernet LAN8742A at MDIO address 0 (register values as Renode's nucleo_h753zi,
 //            which carries the same PHY): link up, 100BASE-TX full duplex
+//   HX711    load cell ADC (own model HX711.cs): PD_SCK on SPI2_MOSI (PC3), DOUT on
+//            SPI2_MISO (PC2), read as a GPIO too (data ready); RATE tied low: 10 Hz.
+//            Channel A carries a fixed reading that apps/hx711 checks.
+//   INA226   supply monitor on I2C4 at 0x40 (own model INA226.cs): 24 V, 5 mV over the
+//            10 mOhm shunt (0.5 A); ALERT (open drain, active low) on PC9 (revision 2).
+//   Light barrier 1 on PC7 (revision 2), NPN, low while interrupted: an object passes every
+//            7 ms for 1 ms (PulseGenerator.cs) - shorter than the firmware's 50 ms I/O cycle.
 using "stm32h563.repl"
 
-led_info: Miscellaneous.LED @ gpioPortH 1
+barrier1: Miscellaneous.PulseGenerator @ gpioPortC 7
+    periodMicroseconds: 7000
+    widthMicroseconds: 1000
+    activeLow: true
+    Output -> gpioPortC@7
+
+ina226: Sensors.INA226 @ i2c4 0x40
+    busMillivolts: 24000
+    shuntMicrovolts: 5000
+    ALERT -> gpioPortC@9
+
+hx711: Sensors.HX711 @ gpioPortC 2
+    outputDataRate: 10
+    channelA: -2775642
+    DOUT -> spi2@0 | gpioPortC@2
+
+spi2:
+    MOSI -> hx711@0
+
+led_info: Miscellaneous.LED @ gpioPortH 0
     invert: true
 
 gpioPortH:
-    1 -> led_info@0
+    0 -> led_info@0 | exti@112
 
 phy: Network.EthernetPhysicalLayer @ ethernet 0
     BasicControl: 0x3100

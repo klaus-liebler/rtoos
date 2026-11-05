@@ -27,7 +27,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
 endif()
 
 add_library(rtos_wolfssl STATIC ${RTOS_WOLFSSL_SOURCES} ${RTOS_WOLFCRYPT_SOURCES} ${RTOS_WOLFSSL_THUMB2})
-target_compile_definitions(rtos_wolfssl PUBLIC WOLFSSL_USER_SETTINGS)
+target_compile_definitions(rtos_wolfssl PUBLIC WOLFSSL_USER_SETTINGS $<$<BOOL:${RTOS_SSH}>:RTOS_SSH>)
 target_include_directories(rtos_wolfssl SYSTEM PUBLIC ${W} ${CMAKE_CURRENT_LIST_DIR}/../third_party/wolfssl)
 set_target_properties(rtos_wolfssl PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
 # Third-party code: not subject to the project's -Werror.

@@ -32,7 +32,7 @@ public:
     // Processes exactly one complete UA TCP message (header.messageSize == msg.size(),
     // ChunkType checked internally). May call transport->Send()/RequestClose() any number of
     // times (typically 0 or 1 Send() and at most one RequestClose()).
-    void HandleMessage(std::span<const Byte> msg);
+    void HandleMessage(std::span<Byte> msg);
     /// Periodic work: sampling, publishing cycles, Publish responses (when the transport can send).
     void Tick();
     /// NowMonotonic() of the next Tick() with work, 0: none.
@@ -44,8 +44,8 @@ public:
 private:
     void HandleHello(std::span<const Byte> msg);
     void HandleOpenSecureChannel(std::span<const Byte> msg);
-    void HandleCloseSecureChannel(std::span<const Byte> msg);
-    void HandleServiceMessage(std::span<const Byte> msg);
+    void HandleCloseSecureChannel(std::span<Byte> msg);
+    void HandleServiceMessage(std::span<Byte> msg);
     void SendErrorAndClose(StatusCode error, std::string_view reason);
 
     UInt32 connectionSlot_ = 0;

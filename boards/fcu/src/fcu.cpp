@@ -41,12 +41,37 @@ constexpr std::array ethernet_pins{
     h5::gpio::output(phy_reset, /*initial_high*/ false),
 };
 
-// SD card: SDMMC1, 1-bit bus; CMD and D0 pulled up
-constexpr std::array sdcard_pins{
-    h5::gpio::alternate({h5::gpio::GpioPort::A, 10}, h5::gpio::Signal::SDMMC1_D0, h5::gpio::Speed::High, h5::gpio::Pull::Up),  // D0
-    h5::gpio::alternate({h5::gpio::GpioPort::C, 12}, h5::gpio::Signal::SDMMC1_CK, h5::gpio::Speed::High),                      // CK
-    h5::gpio::alternate({h5::gpio::GpioPort::D, 2}, h5::gpio::Signal::SDMMC1_CMD, h5::gpio::Speed::High, h5::gpio::Pull::Up),   // CMD
-};
+// SD card: SDMMC1, 1-bit bus; CMD and D0 pulled up. Revision 2: card detect switch (J3 DET, no
+// external pull-up) on PD4, pulled up here - on revision 1 PD4 is the INA226 ALERT.
+constexpr auto sdcard_pins = [] {
+    constexpr std::array bus{
+        h5::gpio::alternate({h5::gpio::GpioPort::A, 10}, h5::gpio::Signal::SDMMC1_D0, h5::gpio::Speed::High, h5::gpio::Pull::Up),  // D0
+        h5::gpio::alternate({h5::gpio::GpioPort::C, 12}, h5::gpio::Signal::SDMMC1_CK, h5::gpio::Speed::High),                      // CK
+        h5::gpio::alternate({h5::gpio::GpioPort::D, 2}, h5::gpio::Signal::SDMMC1_CMD, h5::gpio::Speed::High, h5::gpio::Pull::Up),   // CMD
+    };
+    if constexpr (revision == 1) {
+        return bus;
+    } else {
+        return std::array{bus[0], bus[1], bus[2], h5::gpio::input(sdcard_detect_pin, h5::gpio::Pull::Up)};
+    }
+}();
+
+}  // namespace board
+
+// Called by Reset_Handler before .data/.bss/constructors (startup.cpp): register writes only.
+extern "C" void board_early_init() noexcept {
+    if constexpr (!board::has_ucpd) {
+        // After reset the UCPD's dead-battery pull-downs (Rd, ~5.1 kOhm to GND) sit on CC1/CC2
+        // (PB13/PB14) and listen on DB1/DB2 (PA9/PC9). Revision 2 leaves PD to the CH224K and uses
+        // these pins otherwise - PB13 is the active-low UEXT_CS: switch the dead-battery logic off
+        // as early as possible (RM0481 PWR_UCPDR.UCPD_DBDIS, SVD: "it is recommended to disable it
+        // in all case"). PWR needs no clock enable.
+        namespace h5 = rtos::port::stm32h5;
+        h5::pwr::UCPDR::write(h5::pwr::UCPDR::read() | h5::pwr::ucpdr_dbdis);
+    }
+}
+
+namespace board {
 
 void init() noexcept {
     h5::rcc::configure_clocks<clocks>();

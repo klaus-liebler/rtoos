@@ -62,7 +62,7 @@ void Connection::SendErrorAndClose(StatusCode error, std::string_view reason) {
     transport_->RequestClose();
 }
 
-void Connection::HandleMessage(std::span<const Byte> msg) {
+void Connection::HandleMessage(std::span<Byte> msg) {
     TcpHeader header;
     if(!PeekTcpHeader(msg, header)) {
         SendErrorAndClose(StatusCode::BadDecodingError, "malformed message header");
@@ -146,14 +146,14 @@ void Connection::HandleOpenSecureChannel(std::span<const Byte> msg) {
         transport_->RequestClose();
 }
 
-void Connection::HandleCloseSecureChannel(std::span<const Byte> msg) {
+void Connection::HandleCloseSecureChannel(std::span<Byte> msg) {
     // Best-effort: a CloseSecureChannelRequest that doesn't even verify still results in the
     // connection closing (Part 4 5.5.3: there is no response either way).
     secureChannel_.HandleClose(msg);
     transport_->RequestClose();
 }
 
-void Connection::HandleServiceMessage(std::span<const Byte> msg) {
+void Connection::HandleServiceMessage(std::span<Byte> msg) {
     ParsedSecureMessage parsed;
     if(!secureChannel_.VerifyAndUnwrapSymmetric(msg, parsed)) {
         SendErrorAndClose(StatusCode::BadSecurityChecksFailed, "malformed or unsigned service message");

@@ -141,8 +141,11 @@ public:
     void set_position(std::int32_t p) noexcept { position_ = p; }
     /// Steps left in the current move.
     [[nodiscard]] std::uint32_t remaining() const noexcept { return total_ - done_; }
+    /// Steps of the current move (planned by begin()).
+    [[nodiscard]] std::uint32_t total() const noexcept { return total_; }
 
-private:
+    /// Ticks of step `k` (0 .. total() - 1) of the planned move, without stepping: for drivers
+    /// that hand the whole sequence to hardware (TimerStepper).
     [[nodiscard]] std::uint32_t period(std::uint32_t k) const noexcept {
         if (k < ramp_steps_) {
             return ramp[k];  // accelerate
@@ -155,6 +158,7 @@ private:
         return ramp_steps_ < ramp.size() ? ramp[ramp_steps_] : cruise_ticks;
     }
 
+private:
     std::uint32_t total_ = 0;
     std::uint32_t done_ = 0;
     std::uint32_t ramp_steps_ = 0;

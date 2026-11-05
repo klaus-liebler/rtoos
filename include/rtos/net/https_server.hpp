@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <variant>
 
 #include "rtos/net/http.hpp"
 #include "rtos/net/tcp.hpp"
@@ -170,7 +171,7 @@ private:
             conn_ = &c;
             phase_ = Phase::Handshake;
             last_event_ms_ = now;
-            request_ = {};
+            io_.template emplace<Http>();
             closing_ = upgrade_ = finishing_ = finished_ = false;
             tx_head_ = tx_count_ = tx_sent_ = 0;
             if (!tls_.open(owner_->tls_, c)) {
@@ -268,7 +269,7 @@ private:
 
         /// Keep-alive connection waiting for its next request (nothing received yet).
         [[nodiscard]] bool evictable() const noexcept {
-            return phase_ == Phase::Request && !finishing_ && request_.empty() && conn_ != nullptr &&
+            return phase_ == Phase::Request && !finishing_ && request().empty() && conn_ != nullptr &&
                    conn_->readable() == 0;
         }
 
@@ -362,9 +363,9 @@ private:
 
         void read_request() noexcept {
             using State = typename HttpRequestParser<1536>::State;
-            State state = request_.state();
+            State state = request().state();
             while (state == State::Incomplete) {
-                auto space = request_.free_space();
+                auto space = request().free_space();
                 const std::size_t n = tls_.read(std::as_writable_bytes(space));
                 if (n == 0) {
                     if (tls_.status() != TlsStatus::Open) {
@@ -372,7 +373,7 @@ private:
                     }
                     return;
                 }
-                state = request_.commit(n);
+                state = request().commit(n);
             }
             if (state != State::Complete) {
                 respond_error("400 Bad Request");
@@ -383,7 +384,7 @@ private:
         }
 
         void route() noexcept {
-            const auto& r = request_;
+            const auto& r = request();
             keep_alive_ = r.keep_alive();
             std::string_view path = r.target();
             if (const std::size_t q = path.find('?'); q != std::string_view::npos) {
@@ -433,7 +434,7 @@ private:
         }
 
         void upgrade() noexcept {
-            const auto& r = request_;
+            const auto& r = request();
             const auto upgrade = r.header("Upgrade");
             const auto connection = r.header("Connection");
             const auto version = r.header("Sec-WebSocket-Version");
@@ -461,7 +462,6 @@ private:
             body_sent_ = 0;
             phase_ = Phase::Response;
             keep_alive_ = true;
-            decoder_ = {};
             upgrade_ = true;
         }
 
@@ -516,7 +516,10 @@ private:
             conn_->set_bulk(false);
             if (upgrade_) {
                 upgrade_ = false;
-                request_.next();
+                // the request ends here, the WebSocket buffers begin (in its place); bytes after
+                // the upgrade request are dropped: a client sends no frame before the 101
+                // (RFC 6455 4.1), and the parser kept none for the WebSocket either way
+                io_.template emplace<WebSocketIo>();
                 phase_ = Phase::WebSocket;
                 last_rx_ms_ = owner_->stack_.now_ms();
                 ping_outstanding_ = false;
@@ -529,7 +532,7 @@ private:
                 finish();
                 return false;
             }
-            request_.next();
+            request().next();
             phase_ = Phase::Request;
             return false;
         }
@@ -563,8 +566,9 @@ private:
                 finish();
                 return;
             }
+            auto& [decoder, rx] = std::get<WebSocketIo>(io_);
             for (;;) {
-                const std::size_t n = tls_.read(rx_);
+                const std::size_t n = tls_.read(rx);
                 if (n == 0) {
                     if (tls_.status() != TlsStatus::Open) {
                         finish();
@@ -576,19 +580,19 @@ private:
                 std::size_t pos = 0;
                 while (pos < n) {
                     typename WebSocketDecoder<MaxMessage>::Event event;
-                    pos += decoder_.feed({rx_.data() + pos, n - pos}, event);
+                    pos += decoder.feed({rx.data() + pos, n - pos}, event);
                     using E = typename WebSocketDecoder<MaxMessage>::Event;
                     switch (event) {
                         case E::Message:
                             if (owner_->ws_.message != nullptr) {
-                                owner_->ws_.message(owner_->ws_.context, id_, decoder_.message(),
-                                                    decoder_.message_opcode() == ws_opcode::binary);
+                                owner_->ws_.message(owner_->ws_.context, id_, decoder.message(),
+                                                    decoder.message_opcode() == ws_opcode::binary);
                             }
                             break;
-                        case E::Ping: queue_control(ws_opcode::pong, decoder_.control_payload()); break;
-                        case E::Close: close_websocket(decoder_.control_payload()); return;
+                        case E::Ping: queue_control(ws_opcode::pong, decoder.control_payload()); break;
+                        case E::Close: close_websocket(decoder.control_payload()); return;
                         case E::Error: {
-                            const std::uint16_t code = decoder_.close_code();
+                            const std::uint16_t code = decoder.close_code();
                             const std::array<std::byte, 2> payload{static_cast<std::byte>(code >> 8),
                                                                    static_cast<std::byte>(code)};
                             close_websocket(payload);
@@ -688,7 +692,16 @@ private:
         Connection* conn_ = nullptr;
         Phase phase_ = Phase::Free;
         TlsSession tls_;
-        HttpRequestParser<1536> request_;
+        // The buffers of the two phases never live at the same time: the request parser until
+        // the 101 response is out, the WebSocket decoder and its receive buffer from then on.
+        using Http = HttpRequestParser<1536>;
+        struct WebSocketIo {
+            WebSocketDecoder<MaxMessage> decoder;
+            std::array<std::byte, 16 + MaxMessage> rx{};  ///< a whole frame per TLS read
+        };
+        std::variant<Http, WebSocketIo> io_;
+        Http& request() noexcept { return std::get<Http>(io_); }
+        const Http& request() const noexcept { return std::get<Http>(io_); }
         std::uint32_t last_event_ms_ = 0;
         // response
         std::array<char, 384> header_{};
@@ -704,8 +717,6 @@ private:
         bool finishing_ = false;  ///< closing: close_notify + FIN once the output is out
         bool finished_ = false;   ///< FIN sent: the slot may be reused
         // WebSocket: frames (header + payload contiguous: one write = one record)
-        WebSocketDecoder<MaxMessage> decoder_;
-        std::array<std::byte, 16 + MaxMessage> rx_{};  ///< a whole frame per TLS read
         std::array<Frame, TxQueue> tx_{};
         std::size_t tx_head_ = 0;
         std::size_t tx_count_ = 0;

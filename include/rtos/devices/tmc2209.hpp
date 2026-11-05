@@ -9,6 +9,23 @@
 //   sorter.set_current(4, 12, 6);
 //   sorter.start_homing({.speed = -200});   ... sorter.tick_homing(now) until done
 //
+// Sensorless homing: the internal step generator (VACTUAL) drives towards the end stop until
+// StallGuard reports a stall. StallGuard4 works in StealthChop only (datasheet 11, 5.3: SG_RESULT
+// "intended for StealthChop mode, only", DIAG stall output "only enabled in StealthChop mode"),
+// and CoolStep stays off while homing (12.3: it causes spurious stalls). The stall output on DIAG
+// needs TCOOLTHRS >= TSTEP > TPWMTHRS (5.3): TSTEP is the time per 1/256 step in clocks, so
+// TCOOLTHRS 450 enables it from about 104 full steps/s up. Two ways to see the stall, both may be
+// used together:
+//   - polling SG_RESULT over UART in tick_homing() (call every few ms: SG_RESULT changes about
+//     once per full step),
+//   - the DIAG output (a pulse on a stall, high on a driver error; push-pull at VCC_IO: one
+//     pin per driver, no wired OR): an edge interrupt wakes the thread, which calls
+//     tick_homing(now, /*stall_signal*/ true) right away. The motor stops one UART write later
+//     (~1 ms) instead of at the next poll. DIAG also rises on a driver error, a power-on reset
+//     and a charge pump undervoltage (figure 15.1), so a stop by DIAG reads DRV_STATUS and
+//     GSTAT: any of these makes the homing fail, not succeed.
+//   The driver cannot stop by itself on a stall: the stop is the VACTUAL write.
+//
 // `Uart`: a byte channel (read/write, BufferedUart); `Clock`: static now_ms() and sleep_ms().
 // Transactions block the calling thread for about 1-3 ms (115200 baud plus the driver's
 // reply delay) and are for a slow I/O thread, not for the network thread.
@@ -31,11 +48,18 @@ namespace tmc2209 {
 inline constexpr std::uint8_t gconf = 0x00, gstat = 0x01, ifcnt = 0x02, ioin = 0x06, ihold_irun = 0x10, tstep = 0x12,
                               tcoolthrs = 0x14, vactual = 0x22, sgthrs = 0x40, sg_result = 0x41, coolconf = 0x42,
                               mscnt = 0x6A, chopconf = 0x6C, drv_status = 0x6F;
+/// DRV_STATUS (5.5.3): ot, s2ga, s2gb, s2vsa, s2vsb (bits 1..5); open load (bits 6/7) is
+/// not counted: it shows in fast motion and at standstill too.
+inline constexpr std::uint32_t drv_status_errors = 0x3Eu;
+/// GSTAT (5.1): reset, drv_err, uv_cp - each also sets DIAG.
+inline constexpr std::uint32_t gstat_errors = 0x07u;
 // GCONF bits
 inline constexpr std::uint32_t gconf_i_scale_analog = 1u << 0, gconf_internal_rsense = 1u << 1,
                                gconf_en_spreadcycle = 1u << 2, gconf_shaft = 1u << 3, gconf_pdn_disable = 1u << 6,
                                gconf_mstep_reg_select = 1u << 7, gconf_multistep_filt = 1u << 8;
 inline constexpr std::uint32_t chopconf_mres_pos = 24, chopconf_mres_mask = 0xFu << chopconf_mres_pos;
+/// Both STEP edges count (one microstep per edge): rtos/motion steppers toggle the pin.
+inline constexpr std::uint32_t chopconf_dedge = 1u << 29;
 inline constexpr std::uint8_t sync = 0x05, master_address = 0xFF;
 inline constexpr std::uint8_t version = 0x21;  ///< IOIN[31:24]
 inline constexpr std::uint32_t clock_hz = 12'000'000;  ///< internal oscillator
@@ -75,17 +99,18 @@ inline constexpr std::uint32_t clock_hz = 12'000'000;  ///< internal oscillator
     return (std::uint32_t{r[3]} << 24) | (std::uint32_t{r[4]} << 16) | (std::uint32_t{r[5]} << 8) | r[6];
 }
 
-/// VACTUAL for `full_steps_per_s`: velocity in 1/256 microsteps per t = 2^24 / f_clk
-/// (datasheet 5.2).
-[[nodiscard]] constexpr std::uint32_t vactual_value(std::int32_t full_steps_per_s) noexcept {
-    const std::int64_t v = static_cast<std::int64_t>(full_steps_per_s) * 256 * (std::int64_t{1} << 24) / clock_hz;
+/// VACTUAL for `full_steps_per_s`: microsteps of the set resolution (`microsteps` per full
+/// step, MRES) per t = 2^24 / f_clk (datasheet 14: v[Hz] = VACTUAL * f_clk / 2^24, rps = v / USC
+/// / FSC) - not 1/256 steps: at 16 microsteps the same VACTUAL turns 16 times slower.
+[[nodiscard]] constexpr std::uint32_t vactual_value(std::int32_t full_steps_per_s, std::uint32_t microsteps) noexcept {
+    const std::int64_t v = static_cast<std::int64_t>(full_steps_per_s) * microsteps * (std::int64_t{1} << 24) / clock_hz;
     return static_cast<std::uint32_t>(static_cast<std::int32_t>(v)) & 0x00FF'FFFFu;  // 24-bit two's complement
 }
 }  // namespace tmc2209
 
 struct Tmc2209Homing {
     std::int32_t speed = -200;          ///< full steps/s towards the end stop (sign: direction)
-    std::uint8_t stall_threshold = 100; ///< SGTHRS: stall when SG_RESULT < 2 x threshold
+    std::uint8_t stall_threshold = 100; ///< SGTHRS: stall when SG_RESULT <= 2 x threshold
     std::uint32_t timeout_ms = 10'000;
     std::uint32_t back_off_ms = 800;    ///< first travel away from the end stop
     std::uint32_t dead_time_ms = 300;   ///< after the start: no stall detection yet
@@ -99,7 +124,8 @@ public:
     Tmc2209(Uart& uart, std::uint8_t node) noexcept : uart_(uart), node_(node) {}
 
     /// Check the chip, then GCONF (StealthChop, register micro steps, PDN_UART off, step
-    /// filter) and the micro step resolution.
+    /// filter), the micro step resolution and DEDGE (a step per STEP edge, as the rtos/motion
+    /// steppers make them: one toggle per step).
     bool init(Tmc2209Microsteps steps) noexcept {
         using namespace tmc2209;
         const auto io = read(ioin);
@@ -108,7 +134,9 @@ public:
             return false;
         }
         gconf_ = gconf_pdn_disable | gconf_mstep_reg_select | gconf_multistep_filt;
-        chopconf_ = (*chop & ~chopconf_mres_mask) | (static_cast<std::uint32_t>(steps) << chopconf_mres_pos);
+        microsteps_ = 256u >> static_cast<unsigned>(steps);
+        chopconf_ = (*chop & ~chopconf_mres_mask) | (static_cast<std::uint32_t>(steps) << chopconf_mres_pos) |
+                    chopconf_dedge;
         return write(gstat, 0x07) && write(gconf, gconf_) && read(gconf) == gconf_ && write(chopconf, chopconf_);
     }
 
@@ -118,17 +146,18 @@ public:
                                               (hold & 0x1Fu));
     }
 
-    /// Internal step generator (0: STEP/DIR control again).
-    bool velocity(std::int32_t full_steps_per_s) noexcept { return write(tmc2209::vactual, tmc2209::vactual_value(full_steps_per_s)); }
+    /// Internal step generator (0: STEP/DIR control again); in full steps/s at the resolution of init().
+    bool velocity(std::int32_t full_steps_per_s) noexcept {
+        return write(tmc2209::vactual, tmc2209::vactual_value(full_steps_per_s, microsteps_));
+    }
 
-    // ---- sensorless homing (StallGuard4, needs SpreadCycle for CoolStep) --------------------
+    // ---- sensorless homing (StallGuard4: StealthChop, CoolStep off) ---------------------------
     bool start_homing(const Tmc2209Homing& h, std::uint32_t now_ms) noexcept {
         using namespace tmc2209;
         homing_ = h;
-        // SpreadCycle, TCOOLTHRS 450, the stall threshold, CoolStep SEMIN 5, SEUP 1, SEMAX 2, SEDN 1
-        constexpr std::uint32_t cool = 5u | (1u << 5) | (2u << 8) | (1u << 13);
-        if (!write(gconf, gconf_ | gconf_en_spreadcycle) || !write(tcoolthrs, 450) || !write(sgthrs, h.stall_threshold) ||
-            !write(coolconf, cool) || !velocity(-h.speed)) {
+        // StealthChop (as init()), CoolStep off, TCOOLTHRS 450 (DIAG from ~104 full steps/s), SGTHRS
+        if (!write(gconf, gconf_) || !write(coolconf, 0) || !write(tcoolthrs, 450) ||
+            !write(sgthrs, h.stall_threshold) || !velocity(-h.speed)) {
             phase_ = Phase::Idle;
             return false;
         }
@@ -138,7 +167,9 @@ public:
     }
 
     /// Advance the homing (call every few ms). Done: the end stop is reached, the motor stops.
-    HomingResult tick_homing(std::uint32_t now_ms) noexcept {
+    /// `stall_signal`: the DIAG output rose since the last call (edge interrupt); before the
+    /// stall detection phase (back off, dead time) it is ignored.
+    HomingResult tick_homing(std::uint32_t now_ms, bool stall_signal = false) noexcept {
         const std::uint32_t in_phase = now_ms - phase_start_;
         switch (phase_) {
             case Phase::Idle: return HomingResult::Error;
@@ -162,8 +193,18 @@ public:
                 }
                 return HomingResult::InProgress;
             case Phase::StallDetect: {
+                if (stall_signal) {
+                    (void)velocity(0);  // stop first, then find out why DIAG rose
+                    const auto status = read(tmc2209::drv_status);
+                    const auto gstat = read(tmc2209::gstat);
+                    stall_by_signal_ = true;
+                    const bool stall = status && (*status & tmc2209::drv_status_errors) == 0 && gstat &&
+                                       (*gstat & tmc2209::gstat_errors) == 0;
+                    return finish(stall ? HomingResult::Done : HomingResult::Error);
+                }
                 const auto sg = read(tmc2209::sg_result);
-                if (sg && (*sg & 0x3FF) < 2u * homing_.stall_threshold) {
+                if (sg && (*sg & 0x3FF) <= 2u * homing_.stall_threshold) {
+                    stall_by_signal_ = false;
                     return finish(HomingResult::Done);
                 }
                 return in_phase >= homing_.timeout_ms ? finish(HomingResult::Timeout) : HomingResult::InProgress;
@@ -172,6 +213,8 @@ public:
         return HomingResult::Error;
     }
     [[nodiscard]] bool homing() const noexcept { return phase_ != Phase::Idle; }
+    /// The last homing ended by the DIAG signal (true) or by polling SG_RESULT (false).
+    [[nodiscard]] bool stall_by_signal() const noexcept { return stall_by_signal_; }
 
     // ---- register access ----------------------------------------------------------------
     bool write(std::uint8_t reg, std::uint32_t value) noexcept {
@@ -231,7 +274,6 @@ private:
     }
     HomingResult finish(HomingResult r) noexcept {
         (void)velocity(0);
-        (void)write(tmc2209::gconf, gconf_);  // StealthChop again
         phase_ = Phase::Idle;
         return r;
     }
@@ -246,6 +288,8 @@ private:
     Phase phase_ = Phase::Idle;
     std::uint32_t phase_start_ = 0;
     Tmc2209Homing homing_{};
+    bool stall_by_signal_ = false;
+    std::uint32_t microsteps_ = 256;  ///< per full step (MRES of init())
 };
 
 }  // namespace rtos::devices

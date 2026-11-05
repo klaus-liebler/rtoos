@@ -302,7 +302,14 @@ public:
     /// Fuzzing: mutates every outgoing message (signed MSGs before signing, see call()).
     std::function<void(UaBytes&)> fuzz;
 
+    /// Not null: send() collects the messages here instead (several requests in one segment).
+    UaBytes* hold = nullptr;
+
     void send(std::span<const Byte> data, bool mutate = true) {
+        if (hold != nullptr) {
+            hold->insert(hold->end(), data.begin(), data.end());
+            return;
+        }
         if (fuzz && mutate) {
             UaBytes m(data.begin(), data.end());
             fuzz(m);
@@ -1513,6 +1520,39 @@ TEST_F(OpcUaTest, TrustedClientOnASignAndEncryptChannel) {
     for (int i = 0; i < 20; i++) {
         EXPECT_TRUE(ua::IsGood(read(i % 2 ? kLed : kUptime).first)) << i;
     }
+}
+
+// A MSG is decrypted in place in the session's receive buffer (no copy): with two encrypted
+// requests in the buffer at once, decrypting the first must leave the second untouched.
+TEST_F(OpcUaTest, PipelinedEncryptedRequestsAreDecryptedOneByOne) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key, {}, 3));
+    ASSERT_TRUE(session());
+    const auto read_led = [&](ua::ByteWriter& w) {
+        ua::EncodeNodeId(w, ua::NodeId(0, ua::ns0::ReadRequest));
+        request_header(w, auth_token, 4);
+        w.WriteDouble(0);
+        w.WriteInt32(0);
+        w.WriteInt32(1);
+        ua::EncodeNodeId(w, kLed);
+        w.WriteUInt32(13);
+        w.WriteString(ua::String::Null());
+        ua::EncodeQualifiedName(w, ua::QualifiedName(0, ""));
+    };
+    // both in one TCP segment: the server sees them together
+    UaBytes both;
+    hold = &both;
+    (void)call(read_led, false, false);
+    (void)call(read_led, false, false);
+    hold = nullptr;
+    ASSERT_LT(both.size(), 1400u);
+    send(both, false);
+    for (int i = 0; i < 2; i++) {
+        const auto r = wait_response();
+        ASSERT_TRUE(r) << i;
+        EXPECT_TRUE(ua::IsGood(r->result)) << i;
+    }
+    EXPECT_FALSE(closed);
 }
 
 // The client learns that the channel was refused, not why (no certificate oracle).

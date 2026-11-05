@@ -55,7 +55,7 @@ curl on Windows needs `--ssl-no-revoke` (Schannel), because the CA publishes no 
 
 ## TLS
 
-- TLS 1.3 only (wolfSSL), X25519 and P-256 key exchange, ECDSA P-256 server certificate, ChaCha20-Poly1305 and AES-GCM.
+- TLS 1.3 only (wolfSSL), X25519 and P-256 key exchange, ECDSA P-256 server certificate, ChaCha20-Poly1305 and AES-128-GCM (the two suites every browser offers; AES-256-GCM-SHA384 would only add SHA-384).
 - Handshakes and records are done entirely by wolfSSL, including KeyUpdate and close_notify.
 - The static pool and the handshake limit keep a flood of connections from exhausting memory; idle handshakes are aborted after 10 s.
 - WebSocket upgrades from foreign origins are rejected (403).
