@@ -2,7 +2,7 @@
 //
 // Factory Control Unit (factory_in_a_box/pcb_factory_control_unit) for Renode.
 //   Console  USART3 (PD8/PD9 -> ST-LINK VCP)
-//   LED      LED_INFO on PH1, active low
+//   LED      LED_INFO on PH0, active low
 //   Ethernet LAN8742A at MDIO address 0 (register values as Renode's nucleo_h753zi,
 //            which carries the same PHY): link up, 100BASE-TX full duplex
 //   HX711    load cell ADC (own model HX711.cs): PD_SCK on SPI2_MOSI (PC3), DOUT on
@@ -33,11 +33,11 @@ hx711: Sensors.HX711 @ gpioPortC 2
 spi2:
     MOSI -> hx711@0
 
-led_info: Miscellaneous.LED @ gpioPortH 1
+led_info: Miscellaneous.LED @ gpioPortH 0
     invert: true
 
 gpioPortH:
-    1 -> led_info@0 | exti@113
+    0 -> led_info@0 | exti@112
 
 phy: Network.EthernetPhysicalLayer @ ethernet 0
     BasicControl: 0x3100

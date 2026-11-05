@@ -21,7 +21,14 @@ extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
 int main();
 
+/// Board hook for pin-level fixes that cannot wait for main(): runs first after reset, before
+/// .data is copied, .bss is zeroed and constructors run. Peripheral register writes only - no
+/// globals, no FPU. Default: nothing; a board overrides it.
+[[gnu::weak]] void board_early_init() noexcept {}
+
 [[noreturn]] void Reset_Handler() noexcept {
+    board_early_init();
+
     // Grant full access to the FPU (CP10/CP11) before any FP instruction can run.
     *reinterpret_cast<volatile std::uint32_t*>(0xE000'ED88) |= 0xFu << 20;
     __asm volatile("dsb \n isb" ::: "memory");
