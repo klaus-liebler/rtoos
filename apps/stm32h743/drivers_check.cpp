@@ -3,16 +3,23 @@
 // Compile check of the STM32H743 chip drivers: instantiates every driver template with a
 // 400 MHz clock tree (HSE 25 MHz, the HSI48 on), so the compile-time configuration checks and
 // the register code are built even before a board uses them. Not linked into any firmware.
-// The chip package is still growing (clocks, GPIO, USART, caches so far); every driver it gets
-// is instantiated here.
+// The chip package is still growing; every driver it gets is instantiated here.
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
+#include "rtos/devices/hx711.hpp"
+#include "rtos/devices/ina226.hpp"
 #include "rtos/port/cm7/cache.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
+#include "rtos/port/stm32h7/i2c.hpp"
+#include "rtos/port/stm32h7/rng.hpp"
+#include "rtos/port/stm32h7/sdmmc.hpp"
+#include "rtos/port/stm32h7/spi.hpp"
+#include "rtos/port/stm32h7/timer.hpp"
 #include "rtos/port/stm32h7/usart.hpp"
+#include "rtos/storage/sd_card.hpp"
 
 namespace h7 = rtos::port::stm32h7;
 
@@ -37,6 +44,27 @@ constexpr std::array pins{
 h7::BufferedUart<h7::UsartId::Usart1, {.kernel_hz = clocks.pclk2_hz(), .baud = 1'000'000, .half_duplex = true}> servo;
 using Console = h7::Usart<h7::UsartId::Usart3>;
 alignas(rtos::port::cm7::cache::line_bytes) std::array<std::byte, 64> dma_buffer{};
+
+constexpr std::uint32_t cpu_hz = clocks.cpu_hz();
+using I2c4 = h7::I2cMaster<h7::I2cId::I2c4, {.kernel_hz = clocks.pclk4_hz(), .cpu_hz = cpu_hz}>;
+struct I2c1Wait {
+    static void reset() noexcept {}
+    static bool wait(std::uint32_t) noexcept { return true; }
+    static void signal() noexcept {}
+};
+using I2c1 = h7::I2cMaster<h7::I2cId::I2c1, {.kernel_hz = clocks.pclk1_hz(), .cpu_hz = cpu_hz, .bus_hz = 400'000},
+                           I2c1Wait>;
+using Spi2 = h7::SpiMaster<h7::SpiId::Spi2, {.kernel_hz = clocks.pll1_q_hz(), .max_bus_hz = 1'000'000, .cpu_hz = cpu_hz}>;
+using Pwm = h7::Timer<h7::TimerId::Tim4, {.kernel_hz = clocks.timer1_hz(), .update_hz = 1'000, .min_steps = 1000}>;
+using Leds = h7::Timer<h7::TimerId::Tim15, {.kernel_hz = clocks.timer2_hz(), .update_hz = 800'000}>;
+using Steps = h7::Timer<h7::TimerId::Tim2, {.kernel_hz = clocks.timer1_hz(), .tick_hz = 1'000'000}>;
+using PdClock = h7::MicrosecondTimer<h7::TimerId::Tim5, clocks.timer1_hz()>;
+using Host = h7::Sdmmc<h7::SdmmcId::Sdmmc1, {.kernel_hz = clocks.pll1_q_hz(), .cpu_hz = cpu_hz}>;
+Host sd_host;
+rtos::storage::SdCard<Host> card{sd_host};
+using Current = rtos::devices::Ina226<I2c4, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
+bool scale_ready() noexcept { return !h7::gpio::read({h7::gpio::GpioPort::C, 2}); }
+using Scale = rtos::devices::Hx711<Spi2, &scale_ready>;
 }  // namespace
 
 void drivers_check() noexcept;
@@ -60,4 +88,45 @@ void drivers_check() noexcept {
     (void)servo.write(b);
     (void)servo.read(b);
     servo.on_irq();
+
+    I2c4::init();
+    (void)I2c4::read_register(0x40, 0x02, b);
+    I2c4::recover();
+    I2c1::init();
+    (void)I2c1::probe(0x29);
+    I2c1::on_event_irq();
+    I2c1::on_error_irq();
+    if (Current::probe() && Current::init()) {
+        (void)Current::read();
+    }
+
+    Spi2::init();
+    (void)Spi2::transfer(b, b);
+    (void)Spi2::start(b);
+    (void)Spi2::finish(b);
+    (void)Scale::init();
+    (void)Scale::poll();
+
+    Pwm::init();
+    Pwm::configure_pwm<3>();
+    Pwm::set_duty_permille<3>(500);
+    Pwm::start();
+    Leds::init();
+    Leds::configure_pwm<1>();
+    Leds::enable_compare_dma<1>();
+    Leds::configure_dma_burst(0x38, 1);
+    Steps::init();
+    Steps::configure_toggle<1>();
+    Steps::set_one_pulse(false);
+    Steps::generate_update();
+    Steps::enable_update_dma();
+    PdClock::init();
+    PdClock clock;
+    clock.arm(clock.now() + 1000);
+    (void)PdClock::take();
+
+    h7::Rng::init();
+    (void)h7::Rng::next();
+
+    (void)card.init();
 }

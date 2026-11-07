@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// STM32 true random number generator, the RNG of the STM32H5 and STM32G4 (RM0481/RM0440 chapter
-// RNG; CR.RNGEN, SR.DRDY/SECS/SEIS and DR are the same in both SVDs v1.8; the H5 adds
+// STM32 true random number generator, the RNG of the STM32H5, STM32G4 and STM32H7 (RM0481/RM0440/RM0433 chapter
+// RNG; CR.RNGEN, SR.DRDY/SECS/SEIS and DR are the same in the SVDs - H5/G4 v1.8, H7 v2.4; the H5 adds
 // configuration fields that stay at reset). Kernel clock: HSI48 on both chips (H5
 // RCC_CCIPR5.RNGSEL, G4 RCC_CCIPR.CLK48SEL: reset value 00), which RngHw::clock_on starts.
 #pragma once

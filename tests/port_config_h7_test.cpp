@@ -9,6 +9,10 @@
 
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
+#include "rtos/port/stm32h7/i2c.hpp"
+#include "rtos/port/stm32h7/sdmmc.hpp"
+#include "rtos/port/stm32h7/spi.hpp"
+#include "rtos/port/stm32h7/timer.hpp"
 #include "rtos/port/stm32h7/usart.hpp"
 
 namespace {
@@ -145,6 +149,32 @@ TEST(H7Usart, InstancesAndConsoleBaudRate) {
     EXPECT_EQ(h7::usart_hw(h7::UsartId::Usart3).gate.rstr, 0x5802'4490u);
     EXPECT_EQ(h7::usart_hw(h7::UsartId::Usart3).gate.bit, 18u);
     EXPECT_EQ(h7::uart_brr(100'000'000, 115'200), 868u) << "100 MHz / 115200, rounded";
+}
+
+TEST(H7Timer, DmaRegistersSitAt0x48) {
+    // SVD v2.4: TIMx_DCR at +0x048, DMAR at +0x04C (the H5 and G4: +0x3DC/+0x3E0)
+    using Leds = h7::Timer<h7::TimerId::Tim15, {.kernel_hz = 200'000'000, .update_hz = 800'000}>;
+    EXPECT_EQ(Leds::dmar_address(), 0x4001'4000u + 0x4Cu);
+    EXPECT_EQ(Leds::compare_address<1>(), 0x4001'4034u);
+    EXPECT_EQ(Leds::period_ticks, 250u) << "200 MHz / 800 kHz";
+    using Steps = h7::Timer<h7::TimerId::Tim2, {.kernel_hz = 200'000'000, .tick_hz = 1'000'000}>;
+    EXPECT_EQ(Steps::arr_address(), 0x4000'002Cu);
+    EXPECT_EQ(Steps::max_period, 0xFFFF'FFFFu) << "TIM2 counts 32 bit";
+    EXPECT_EQ(h7::timer_hw(h7::TimerId::Tim15).irq, 116u);
+    EXPECT_FALSE(h7::timer_hw(h7::TimerId::Tim15).burst_source) << "no TIMx_DCR.DBSS on the H7";
+}
+
+TEST(H7Buses, I2cSpiSdmmcInstances) {
+    EXPECT_EQ(h7::i2c_hw(h7::I2cId::I2c4).base, 0x5800'1C00u);
+    EXPECT_EQ(h7::i2c_hw(h7::I2cId::I2c4).irq_event, 95u);
+    EXPECT_EQ(h7::i2c_hw(h7::I2cId::I2c3).irq_error, 73u);
+    EXPECT_TRUE((h7::checked_i2c_timing<{.kernel_hz = 100'000'000, .cpu_hz = 400'000'000}>().valid));
+    EXPECT_EQ(h7::spi_hw(h7::SpiId::Spi2).fifo_bytes, 16u) << "SPI1-3: 16-byte FIFO (HX711)";
+    EXPECT_EQ(h7::spi_hw(h7::SpiId::Spi4).fifo_bytes, 8u);
+    EXPECT_EQ(h7::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 1'000'000}), 6u) << "/128 -> 781 kHz";
+    EXPECT_EQ(h7::sdmmc_hw(h7::SdmmcId::Sdmmc1).base, 0x5200'7000u);
+    EXPECT_EQ(h7::sdmmc_hw(h7::SdmmcId::Sdmmc1).irq, 49u);
+    EXPECT_EQ(h7::sdmmc_clkdiv(100'000'000, 400'000), 125u);
 }
 
 }  // namespace

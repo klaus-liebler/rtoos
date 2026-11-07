@@ -161,13 +161,20 @@ inline constexpr std::uint16_t enr_to_rstr = 0x58;
 }  // namespace detail
 
 namespace gate {
-using detail::apb1l, detail::apb2, detail::apb4, detail::gate;
+using detail::ahb2, detail::ahb3, detail::apb1l, detail::apb2, detail::apb4, detail::gate;
+inline constexpr Gate sdmmc1 = gate(ahb3, 16);
+inline constexpr Gate rng = gate(ahb2, 6), sdmmc2 = gate(ahb2, 9);
 inline constexpr Gate tim2 = gate(apb1l, 0), tim3 = gate(apb1l, 1), tim4 = gate(apb1l, 2), tim5 = gate(apb1l, 3),
-                      tim6 = gate(apb1l, 4), tim7 = gate(apb1l, 5), usart2 = gate(apb1l, 17),
-                      usart3 = gate(apb1l, 18), uart4 = gate(apb1l, 19), uart5 = gate(apb1l, 20),
-                      uart7 = gate(apb1l, 30), uart8 = gate(apb1l, 31);
-inline constexpr Gate usart1 = gate(apb2, 4), usart6 = gate(apb2, 5);
-inline constexpr Gate syscfg = gate(apb4, 1);
+                      tim6 = gate(apb1l, 4), tim7 = gate(apb1l, 5), tim12 = gate(apb1l, 6), tim13 = gate(apb1l, 7),
+                      tim14 = gate(apb1l, 8), usart2 = gate(apb1l, 17), usart3 = gate(apb1l, 18),
+                      spi2 = gate(apb1l, 14), spi3 = gate(apb1l, 15),
+                      uart4 = gate(apb1l, 19), uart5 = gate(apb1l, 20), i2c1 = gate(apb1l, 21),
+                      i2c2 = gate(apb1l, 22), i2c3 = gate(apb1l, 23), uart7 = gate(apb1l, 30),
+                      uart8 = gate(apb1l, 31);
+inline constexpr Gate tim1 = gate(apb2, 0), tim8 = gate(apb2, 1), usart1 = gate(apb2, 4), usart6 = gate(apb2, 5),
+                      spi1 = gate(apb2, 12), spi4 = gate(apb2, 13), tim15 = gate(apb2, 16), tim16 = gate(apb2, 17),
+                      tim17 = gate(apb2, 18), spi5 = gate(apb2, 20);
+inline constexpr Gate syscfg = gate(apb4, 1), spi6 = gate(apb4, 5), i2c4 = gate(apb4, 7);
 }  // namespace gate
 
 using GpioPort = stm32::GpioPort;

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
-// STM32 general-purpose and advanced timers, the timer IP of the STM32H5 and STM32G4 (RM0481/
-// RM0440 chapters TIM; the registers the driver uses are the same in both SVDs v1.8, except
-// TIMx_DCR.DBSS, which only the H5 has: TimerHw::burst_source).
+// STM32 general-purpose and advanced timers, the timer IP of the STM32H5, STM32G4 and STM32H7
+// (RM0481/RM0440/RM0433 chapters TIM; the registers the driver uses are the same in the SVDs -
+// H5/G4 v1.8, H7 v2.4 - except TIMx_DCR.DBSS, which only the H5 has: TimerHw::burst_source, and
+// the place of TIMx_DCR/DMAR: 0x3DC/0x3E0 on the H5 and G4, 0x048/0x04C on the H7:
+// TimerHw::dcr_offset).
 //
 // The configuration is a template argument; prescaler (PSC) and auto-reload (ARR) are
 // computed and checked at compile time:
@@ -17,7 +19,7 @@
 //   Steps::init();  Steps::set_period(250);  Steps::enable_update_irq();  Steps::start();
 //
 // Kernel clock: the chip's ClockTree::timer1_hz() for the APB1 timers, timer2_hz() for the APB2
-// timers. Which timers count 32 bit: TimerHw::counter32 (H5: TIM2, TIM5; G4: TIM2).
+// timers. Which timers count 32 bit: TimerHw::counter32 (H5, H7: TIM2, TIM5; G4: TIM2).
 #pragma once
 
 #include <contracts>
@@ -49,7 +51,8 @@ struct TimerHw {
     std::uint8_t channels;   ///< capture/compare channels
     bool counter32;
     bool advanced;           ///< has BDTR (main output enable)
-    bool burst_source;       ///< TIMx_DCR.DBSS selects the DMA burst event (STM32H5; not on the G4)
+    bool burst_source;       ///< TIMx_DCR.DBSS selects the DMA burst event (STM32H5; not on the G4, H7)
+    std::uint16_t dcr_offset = 0x3DC;  ///< TIMx_DCR; DMAR follows at +4 (H7: 0x048)
 };
 
 namespace timer_detail {
@@ -288,7 +291,7 @@ public:
     [[nodiscard]] static constexpr std::uintptr_t compare_address() noexcept {
         return Hw.base + 0x34 + 4 * (Ch - 1);
     }
-    [[nodiscard]] static constexpr std::uintptr_t dmar_address() noexcept { return Hw.base + 0x3E0; }
+    [[nodiscard]] static constexpr std::uintptr_t dmar_address() noexcept { return Hw.base + Hw.dcr_offset + 4; }
     /// ARR for DMA: with preload (ARPE) a write sets the period after the next update event.
     [[nodiscard]] static constexpr std::uintptr_t arr_address() noexcept { return Hw.base + 0x2C; }
     static constexpr bool preload = Config.preload;
@@ -307,7 +310,7 @@ private:
     template <unsigned Ch>
     using CCR = cortex_m::Reg<Hw.base + 0x34 + 4 * (Ch - 1)>;
     using BDTR = cortex_m::Reg<Hw.base + 0x44>;
-    using DCR = cortex_m::Reg<Hw.base + 0x3DC>;
+    using DCR = cortex_m::Reg<Hw.base + Hw.dcr_offset>;
 };
 
 /// A free-running 1 MHz clock on a 32-bit timer with one deadline (compare channel `Ch`):
