@@ -9,9 +9,26 @@
 //   std::array<std::byte, 2> v;
 //   if (Bus::read_register(0x40, 0x02, v) == I2cResult::Ok) { ... }   // INA226 bus voltage
 //
-// Polled transfers with a timeout (DWT cycle counter, CycleCounter::enable() must have run):
-// the calling thread busy-waits while the bytes move - a few hundred microseconds for a
-// register read at 100 kHz. Transfers are at most 255 bytes per direction (no RELOAD).
+// Two ways to wait for a transfer, chosen by the third template argument:
+//   * I2cPolled (default): the calling thread busy-waits while the bytes move - a few hundred
+//     microseconds for a register read at 100 kHz (DWT cycle counter for the timeout,
+//     CycleCounter::enable() must have run).
+//   * an I2cWait policy: interrupt-driven. The event interrupt moves every byte and runs the
+//     write-then-read sequence, the calling thread sleeps until the STOP (Wait::wait()), the
+//     interrupt wakes it (Wait::signal()). Route I2Cx_EV/I2Cx_ER to on_event_irq() and
+//     on_error_irq(), at a kernel-aware priority when signal() uses the kernel:
+//
+//       rtos::Semaphore<Kernel> i2c4_done{kernel, 0, 1};
+//       struct I2c4Wait {
+//           static void reset() noexcept { while (i2c4_done.take(rtos::no_wait)) {} }
+//           static bool wait(std::uint32_t timeout_us) noexcept { return i2c4_done.take(timeout_us / 1000 + 2); }
+//           static void signal() noexcept { (void)i2c4_done.give_from_isr(); }
+//       };
+//       using Bus = I2cMaster<I2cId::I2c4, {...}, I2c4Wait>;
+//       extern "C" void I2C4_EV_IRQHandler() noexcept { Bus::on_event_irq(); }
+//       extern "C" void I2C4_ER_IRQHandler() noexcept { Bus::on_error_irq(); }
+//
+// Transfers are at most 255 bytes per direction (no RELOAD).
 //
 // The configuration is a template argument: TIMINGR is computed at compile time from the
 // kernel clock and the bus speed (i2c_timing(), the I2C-bus specification UM10204 limits) and
@@ -20,10 +37,12 @@
 // After a timeout or bus error the peripheral is reset; recover() also resets it in RCC.
 #pragma once
 
+#include <concepts>
 #include <contracts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 #include "rtos/port/cortex_m/cycle_counter.hpp"
 #include "rtos/port/cortex_m/registers.hpp"
@@ -112,6 +131,17 @@ consteval I2cTiming checked_i2c_timing() {
     return t;
 }
 
+/// Default: transfers busy-wait.
+struct I2cPolled {};
+
+/// Interrupt-driven transfers: how the calling thread sleeps and the interrupt wakes it.
+template <class W>
+concept I2cWait = requires(std::uint32_t timeout_us) {
+    W::reset();                                         // forget a signal left from a timeout
+    { W::wait(timeout_us) } -> std::convertible_to<bool>;  // false: timed out
+    W::signal();                                        // from the interrupt
+};
+
 /// One I2C of a chip.
 struct I2cHw {
     std::uintptr_t base;
@@ -121,6 +151,8 @@ struct I2cHw {
 
 namespace i2c_detail {
 inline constexpr std::uint32_t cr1_pe = 1u << 0;
+/// TXIE, RXIE, NACKIE, STOPIE, TCIE, ERRIE
+inline constexpr std::uint32_t cr1_irqs = (1u << 1) | (1u << 2) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7);
 inline constexpr std::uint32_t cr2_rd_wrn = 1u << 10, cr2_start = 1u << 13, cr2_stop = 1u << 14,
                                cr2_autoend = 1u << 25;
 inline constexpr std::uint32_t cr2_nbytes_pos = 16;
@@ -131,8 +163,10 @@ inline constexpr std::uint32_t icr_all = (1u << 3) | (1u << 4) | (1u << 5) | (1u
                                          (1u << 11) | (1u << 12) | (1u << 13);
 }  // namespace i2c_detail
 
-template <I2cHw Hw, I2cConfig Config>
+template <I2cHw Hw, I2cConfig Config, class Wait = I2cPolled>
 class I2cMaster {
+    static_assert(std::is_same_v<Wait, I2cPolled> || I2cWait<Wait>, "Wait: I2cPolled or an I2cWait policy");
+    static constexpr bool interrupt_driven = !std::is_same_v<Wait, I2cPolled>;
     static constexpr I2cTiming timing = checked_i2c_timing<Config>();
     static constexpr std::uint32_t cycles_per_us = Config.cpu_hz / 1'000'000;
 
@@ -159,6 +193,9 @@ public:
     static I2cResult write_read(std::uint8_t address, std::span<const std::byte> tx, std::span<std::byte> rx,
                                 std::uint32_t timeout_us = 10'000) noexcept {
         contract_assert(tx.size() <= 255 && rx.size() <= 255 && address < 0x80);
+        if constexpr (interrupt_driven) {
+            return transfer_irq(address, tx, rx, timeout_us);
+        }
         using namespace i2c_detail;
         const Deadline deadline{timeout_us * cycles_per_us};
         if (!wait(deadline, [] { return (ISR::read() & isr_busy) == 0; })) {
@@ -230,7 +267,100 @@ public:
 
     [[nodiscard]] static bool busy() noexcept { return (ISR::read() & i2c_detail::isr_busy) != 0; }
 
+    /// Event interrupt (interrupt-driven mode): the next byte, the read after the write, the end.
+    static void on_event_irq() noexcept
+        requires interrupt_driven
+    {
+        using namespace i2c_detail;
+        const std::uint32_t isr = ISR::read();
+        if ((isr & isr_nackf) != 0) {
+            ICR::write(isr_nackf);
+            x_.result = I2cResult::Nack;
+            if ((isr & isr_stopf) == 0 && (CR2::read() & cr2_autoend) == 0) {
+                CR2::write(CR2::read() | cr2_stop);  // the hardware sends one anyway after a NACK
+            }
+        }
+        if ((isr & isr_stopf) != 0) {
+            ISR::write(isr_txe);  // flush TXDR (a byte left after a NACK)
+            finish();
+            return;
+        }
+        if ((isr & isr_txis) != 0 && x_.pos < x_.tx_size) {
+            TXDR::write(static_cast<std::uint32_t>(x_.tx[x_.pos++]));
+        }
+        if ((isr & isr_rxne) != 0) {
+            const auto b = static_cast<std::byte>(RXDR::read());
+            if (x_.pos < x_.rx_size) {
+                x_.rx[x_.pos++] = b;
+            }
+        }
+        if ((isr & isr_tc) != 0) {  // write phase done: repeated start for the read
+            x_.pos = 0;
+            CR2::write(x_.sadd | cr2_rd_wrn | (static_cast<std::uint32_t>(x_.rx_size) << cr2_nbytes_pos) | cr2_autoend |
+                       cr2_start);
+        }
+    }
+
+    /// Error interrupt (interrupt-driven mode): bus error or lost arbitration ends the transfer.
+    static void on_error_irq() noexcept
+        requires interrupt_driven
+    {
+        using namespace i2c_detail;
+        const std::uint32_t isr = ISR::read();
+        x_.result = (isr & isr_arlo) != 0 ? I2cResult::ArbitrationLost : I2cResult::BusError;
+        (void)fail(x_.result);
+        finish();
+    }
+
 private:
+    // ---- interrupt-driven transfers ------------------------------------------------------------
+    struct Transfer {
+        std::uint32_t sadd = 0;
+        const std::byte* tx = nullptr;
+        std::byte* rx = nullptr;
+        std::size_t tx_size = 0, rx_size = 0, pos = 0;
+        volatile I2cResult result = I2cResult::Ok;
+    };
+    static inline Transfer x_{};
+
+    static I2cResult transfer_irq(std::uint8_t address, std::span<const std::byte> tx, std::span<std::byte> rx,
+                                  std::uint32_t timeout_us) noexcept {
+        using namespace i2c_detail;
+        const Deadline idle{timeout_us * cycles_per_us};
+        if (!wait(idle, [] { return (ISR::read() & isr_busy) == 0; })) {  // another master
+            return fail(I2cResult::Timeout);
+        }
+        ICR::write(icr_all);
+        Wait::reset();
+        x_.sadd = static_cast<std::uint32_t>(address) << 1;
+        x_.tx = tx.data();
+        x_.tx_size = tx.size();
+        x_.rx = rx.data();
+        x_.rx_size = rx.size();
+        x_.pos = 0;
+        x_.result = I2cResult::Ok;
+        CR1::write(CR1::read() | cr1_irqs);
+        if (!tx.empty() || rx.empty()) {  // write phase (address only: a probe)
+            CR2::write(x_.sadd | (static_cast<std::uint32_t>(tx.size()) << cr2_nbytes_pos) |
+                       (rx.empty() ? cr2_autoend : 0u) | cr2_start);
+        } else {
+            CR2::write(x_.sadd | cr2_rd_wrn | (static_cast<std::uint32_t>(rx.size()) << cr2_nbytes_pos) | cr2_autoend |
+                       cr2_start);
+        }
+        if (!Wait::wait(timeout_us)) {
+            CR1::write(CR1::read() & ~cr1_irqs);
+            return fail(I2cResult::Timeout);
+        }
+        return x_.result;
+    }
+
+    static void finish() noexcept {
+        using namespace i2c_detail;
+        CR1::write(CR1::read() & ~cr1_irqs);
+        ICR::write(icr_all);
+        Wait::signal();
+    }
+
     struct Deadline {
         std::uint32_t cycles;
         std::uint32_t start = cortex_m::CycleCounter::now();
@@ -280,7 +410,7 @@ private:
 
     /// Software reset (PE off/on): releases the lines and clears the state machine.
     static I2cResult fail(I2cResult r) noexcept {
-        CR1::write(CR1::read() & ~i2c_detail::cr1_pe);
+        CR1::write(CR1::read() & ~(i2c_detail::cr1_pe | (interrupt_driven ? i2c_detail::cr1_irqs : 0u)));
         while ((CR1::read() & i2c_detail::cr1_pe) != 0) {
         }
         ICR::write(i2c_detail::icr_all);

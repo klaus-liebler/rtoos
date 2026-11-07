@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "rtos/devices/hx711.hpp"
 #include "rtos/devices/ina226.hpp"
 #include "rtos/port/stm32g4/adc.hpp"
 #include "rtos/port/stm32g4/clocks.hpp"
@@ -68,8 +67,9 @@ PdClock pd_clock;
 g4::Ucpd<{.kernel_hz = clocks.ucpd_hz(), .rx_dma_channel = 1, .tx_dma_channel = 2}> ucpd;
 rtos::usb_pd::Sink<decltype(ucpd), PdClock> pd_sink{ucpd, pd_clock};
 using Current = rtos::devices::Ina226<I2c2, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
-bool scale_ready() noexcept { return !g4::gpio::read({g4::gpio::GpioPort::A, 0}); }
-using Scale = rtos::devices::Hx711<Spi2, &scale_ready>;
+// No HX711 on the G4: the driver queues its 8 clock bytes in the SPI TxFIFO before the start
+// (Spi::fifo_frames >= 8: a pause with PD_SCK high powers the HX711 down), and the G4's SPI
+// does not offer that (no fifo_frames). The H5 drivers check instantiates it.
 }  // namespace
 
 void drivers_check() noexcept {
@@ -135,6 +135,4 @@ void drivers_check() noexcept {
     if (Current::probe() && Current::init()) {
         (void)Current::read();
     }
-    (void)Scale::init();
-    (void)Scale::poll();
 }

@@ -64,6 +64,12 @@ void configure() noexcept {
     stm32::gpio::apply<hw, plans>();
 }
 
+using stm32::gpio::port_letter;
+/// "PC7", "pa15": a pin of the LQFP100 (by name, e.g. typed into a terminal); else nullopt.
+[[nodiscard]] constexpr std::optional<Pin> parse_pin(std::string_view s) noexcept {
+    return stm32::gpio::parse_pin(package_pins, s);
+}
+
 inline void write(Pin pin, bool high) noexcept { stm32::gpio::write<hw>(pin, high); }
 inline void toggle(Pin pin) noexcept { stm32::gpio::toggle<hw>(pin); }
 [[nodiscard]] inline bool read(Pin pin) noexcept { return stm32::gpio::read<hw>(pin); }

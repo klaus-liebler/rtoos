@@ -28,6 +28,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include "rtos/port/stm32/rcc.hpp"
@@ -121,6 +123,34 @@ template <class Table, class Signal>
         detail::error_pin_has_no_such_analog_function();
     }
     return analog(p);
+}
+
+// ---- pin names ---------------------------------------------------------------------------
+
+/// 'A' for port A, ...
+[[nodiscard]] constexpr char port_letter(Pin p) noexcept { return static_cast<char>('A' + static_cast<int>(p.port)); }
+
+/// "PC7", "pa15": a pin of the package (`package_pins`: {port, number} pairs; by name, e.g.
+/// typed into a terminal); else nullopt.
+template <class Package>
+[[nodiscard]] constexpr std::optional<Pin> parse_pin(const Package& package_pins, std::string_view s) noexcept {
+    if (s.size() < 3 || s.size() > 4 || (s[0] != 'P' && s[0] != 'p')) {
+        return std::nullopt;
+    }
+    const char letter = static_cast<char>(s[1] & ~0x20);
+    unsigned number = 0;
+    for (const char c : s.substr(2)) {
+        if (c < '0' || c > '9') {
+            return std::nullopt;
+        }
+        number = number * 10 + static_cast<unsigned>(c - '0');
+    }
+    for (const auto& [port, n] : package_pins) {
+        if (letter == port_letter({port, n}) && number == n) {
+            return Pin{port, n};
+        }
+    }
+    return std::nullopt;
 }
 
 // ---- compile-time plan -------------------------------------------------------------------

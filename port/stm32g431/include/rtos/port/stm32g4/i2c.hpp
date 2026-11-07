@@ -18,7 +18,7 @@
 namespace rtos::port::stm32g4 {
 
 using stm32::checked_i2c_timing, stm32::i2c_frequency, stm32::i2c_timing;
-using stm32::I2cConfig, stm32::I2cResult, stm32::I2cTiming;
+using stm32::I2cConfig, stm32::I2cPolled, stm32::I2cResult, stm32::I2cTiming, stm32::I2cWait;
 
 enum class I2cId : std::uint8_t { I2c1, I2c2, I2c3 };
 
@@ -31,7 +31,7 @@ enum class I2cId : std::uint8_t { I2c1, I2c2, I2c3 };
     return {};
 }
 
-template <I2cId Id, I2cConfig Config>
-using I2cMaster = stm32::I2cMaster<i2c_hw(Id), Config>;
+template <I2cId Id, I2cConfig Config, class Wait = I2cPolled>
+using I2cMaster = stm32::I2cMaster<i2c_hw(Id), Config, Wait>;
 
 }  // namespace rtos::port::stm32g4
