@@ -9,6 +9,7 @@
 #include "rtos/port/cm7/cache.hpp"
 #include "rtos/port/cm7/port.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
+#include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/usart.hpp"
 #include "selftest.hpp"
 
@@ -29,8 +30,10 @@ constexpr std::array console_pins{
 namespace target {
 
 void init() noexcept {
-    // Caches first: the D-cache enable invalidates every line, and nothing that must survive
-    // has been written through it yet (.data/.bss are written before main(), cache off).
+    // The MPU before the caches (it decides what is cacheable: SRAM1/2 not), then the caches:
+    // the D-cache enable invalidates every line, and nothing that must survive has been written
+    // through it yet (.data/.bss are written before main(), cache off).
+    h7::configure_mpu();
     cache::enable_icache();
     cache::enable_dcache();
     h7::rcc::configure_clocks<clocks>();

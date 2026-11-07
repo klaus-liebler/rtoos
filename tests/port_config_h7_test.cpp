@@ -7,9 +7,13 @@
 // STM32CubeMX db (wait states, pin database), stm32h7xx_hal_flash_ex.h (programming delay).
 #include <gtest/gtest.h>
 
+#include "rtos/port/cm7/mpu.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
+#include "rtos/port/stm32h7/dma.hpp"
+#include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
+#include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/sdmmc.hpp"
 #include "rtos/port/stm32h7/spi.hpp"
 #include "rtos/port/stm32h7/timer.hpp"
@@ -175,6 +179,67 @@ TEST(H7Buses, I2cSpiSdmmcInstances) {
     EXPECT_EQ(h7::sdmmc_hw(h7::SdmmcId::Sdmmc1).base, 0x5200'7000u);
     EXPECT_EQ(h7::sdmmc_hw(h7::SdmmcId::Sdmmc1).irq, 49u);
     EXPECT_EQ(h7::sdmmc_clkdiv(100'000'000, 400'000), 125u);
+}
+
+TEST(H7Dma, StreamRegistersRequestsAndInterrupts) {
+    using h7::DmaDirection, h7::DmaRequest;
+    // DIR = 01 (memory to peripheral), MINC, PSIZE = MSIZE = 01 (16 bit), PL = 11
+    EXPECT_EQ(h7::dma_cr({.stream = 2, .request = DmaRequest::Tim15Ch1, .direction = DmaDirection::MemoryToPeripheral,
+                          .memory_bytes = 2, .peripheral_bytes = 2, .priority = 3}),
+              (1u << 6) | (1u << 10) | (1u << 11) | (1u << 13) | (3u << 16));
+    EXPECT_EQ(h7::dma_cr({.stream = 0, .request = DmaRequest::Spi2Rx, .direction = DmaDirection::PeripheralToMemory}),
+              1u << 10);
+    // stm32h743xx.h: DMAMUX1_Channel0_BASE = 0x40020800, Channel8 (DMA2 stream 0) = +0x20
+    EXPECT_EQ(h7::dmamux_channel_address(1, 0), 0x4002'0800u);
+    EXPECT_EQ(h7::dmamux_channel_address(1, 7), 0x4002'081Cu);
+    EXPECT_EQ(h7::dmamux_channel_address(2, 0), 0x4002'0820u);
+    EXPECT_EQ(h7::dmamux_channel_address(2, 7), 0x4002'083Cu);
+    EXPECT_EQ(h7::dma_irq(1, 0), 11u);
+    EXPECT_EQ(h7::dma_irq(1, 6), 17u);
+    EXPECT_EQ(h7::dma_irq(1, 7), 47u) << "DMA1_Stream7_IRQn";
+    EXPECT_EQ(h7::dma_irq(2, 4), 60u);
+    EXPECT_EQ(h7::dma_irq(2, 5), 68u) << "DMA2_Stream5_IRQn";
+    EXPECT_EQ(h7::dma_irq(2, 7), 70u);
+    // LISR/HISR: streams 0..3 (and 4..7) at bits 0, 6, 16, 22
+    EXPECT_EQ(h7::dma_detail::flag_shift(1), 6u);
+    EXPECT_EQ(h7::dma_detail::flag_shift(6), 16u);
+    // stm32h7xx_ll_dmamux.h
+    EXPECT_EQ(static_cast<unsigned>(DmaRequest::Tim2Up), 22u);
+    EXPECT_EQ(static_cast<unsigned>(DmaRequest::Tim15Ch1), 105u);
+}
+
+TEST(H7Exti, SharedInterruptLines) {
+    EXPECT_EQ(h7::exti_detail::irq(0), 6u);
+    EXPECT_EQ(h7::exti_detail::irq(4), 10u);
+    EXPECT_EQ(h7::exti_detail::irq(5), 23u) << "EXTI9_5";
+    EXPECT_EQ(h7::exti_detail::irq(9), 23u);
+    EXPECT_EQ(h7::exti_detail::irq(10), 40u) << "EXTI15_10";
+    EXPECT_EQ(h7::exti_detail::irq(15), 40u);
+    using Barrier = h7::ExtiLine<{h7::gpio::GpioPort::B, 10}, h7::ExtiEdge::Falling>;
+    EXPECT_EQ(Barrier::irq, 40u);
+}
+
+TEST(Cm7Mpu, RegionEncodings) {
+    namespace mpu = rtos::port::cm7::mpu;
+    using mpu::Memory;
+    EXPECT_EQ(mpu::size_field(32), 4u) << "ARM_MPU_REGION_SIZE_32B";
+    EXPECT_EQ(mpu::size_field(256 * 1024), 0x11u) << "ARM_MPU_REGION_SIZE_256KB";
+    EXPECT_EQ(mpu::size_field(2 * 1024 * 1024), 0x14u);
+    // non-cacheable normal (TEX 001, C 0, B 0), shareable, XN, privileged RW, 256 KB
+    constexpr mpu::Region dma{.base = 0x3000'0000, .bytes = 256 * 1024, .memory = Memory::NormalNonCacheable,
+                              .shareable = true};
+    EXPECT_EQ(mpu::rasr(dma), (1u << 28) | (1u << 24) | (1u << 19) | (1u << 18) | (0x11u << 1) | 1u);
+    EXPECT_EQ(mpu::rbar(3, dma), 0x3000'0000u | (1u << 4) | 3u);
+    // write-back read/write allocate: TEX 001, C 1, B 1
+    EXPECT_EQ(mpu::attributes(Memory::NormalWriteBack, false), (1u << 19) | (1u << 17) | (1u << 16));
+    // flash: write-through (TEX 000, C 1, B 0), privileged read-only (AP 101), executable
+    EXPECT_EQ(mpu::rasr(h7::mpu_regions::flash), (5u << 24) | (1u << 17) | (0x14u << 1) | 1u);
+    EXPECT_FALSE((mpu::valid({.base = 0x3000'0000, .bytes = 288 * 1024, .memory = Memory::NormalNonCacheable})))
+        << "288 KB is no power of two";
+    EXPECT_FALSE((mpu::valid({.base = 0x3001'0000, .bytes = 256 * 1024, .memory = Memory::NormalNonCacheable})))
+        << "base not aligned to the size";
+    static_assert(mpu::valid(h7::mpu_regions::flash) && mpu::valid(h7::mpu_regions::dtcm) &&
+                  mpu::valid(h7::mpu_regions::axi_sram) && mpu::valid(h7::mpu_regions::dma));
 }
 
 }  // namespace

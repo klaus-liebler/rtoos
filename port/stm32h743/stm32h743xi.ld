@@ -2,11 +2,13 @@
  * STM32H743xI (e.g. VIT6): 2 MB flash in two banks, RAM in separate blocks (stm32h743xx.h):
  *   DTCM      128 KB  0x20000000  CPU only (no DMA1/DMA2 access), not cached: the main stack
  *   AXI SRAM  512 KB  0x24000000  D1, every bus master: .data, .bss
- *   SRAM1-3   288 KB  0x30000000  D2 (next to DMA1/DMA2, Ethernet, USB)
+ *   SRAM1-2   256 KB  0x30000000  D2 (next to DMA1/DMA2, Ethernet, USB): .dma_buffer, non-cacheable
+ *                                 (MPU region R3, stm32h7/mpu.hpp configure_mpu())
+ *   SRAM3      32 KB  0x30040000  D2
  *   SRAM4      64 KB  0x38000000  D3
  * The CPU boots from BOOT_ADD0 = 0x0800 (0x08000000), which also sets VTOR.
  * The data cache is off until the firmware enables it (cm7/cache.hpp); memory a DMA uses then
- * needs cache maintenance or a non-cacheable MPU region.
+ * belongs in .dma_buffer (RTOS_DMA_BUFFER), which configure_mpu() makes non-cacheable.
  */
 ENTRY(Reset_Handler)
 
@@ -15,7 +17,8 @@ MEMORY
   FLASH   (rx)  : ORIGIN = 0x08000000, LENGTH = 2048K
   DTCM    (rw)  : ORIGIN = 0x20000000, LENGTH = 128K
   RAM     (rw)  : ORIGIN = 0x24000000, LENGTH = 512K
-  SRAM_D2 (rw)  : ORIGIN = 0x30000000, LENGTH = 288K
+  RAM_DMA (rw)  : ORIGIN = 0x30000000, LENGTH = 256K
+  SRAM3   (rw)  : ORIGIN = 0x30040000, LENGTH = 32K
   SRAM_D3 (rw)  : ORIGIN = 0x38000000, LENGTH = 64K
 }
 
@@ -75,10 +78,20 @@ SECTIONS
     . = ALIGN(8);
     _sbss = .;
     *(.bss .bss.* COMMON)
-    *(.dma_buffer .dma_buffer.*)
     . = ALIGN(8);
     _ebss = .;
   } > RAM
+
+  /* DMA buffers: not zeroed at start-up (as on the H5); objects with constructors are
+     constructed by __init_array. */
+  .dma_buffer (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __dma_start = .;
+    *(.dma_buffer .dma_buffer.*)
+    . = ALIGN(32);
+    __dma_end = .;
+  } > RAM_DMA
 
   /* The main stack's room in the DTCM (nothing else is placed there yet). */
   .msp_stack (NOLOAD) :

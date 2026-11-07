@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
 // Self-test target: bare STM32H743 (Cortex-M7), no board package - the self-test sets up what it
-// needs itself: CPU 400 MHz from the HSI (no HSE needed), I- and D-cache on, console USART3 on
-// PD8 (TX) / PD9 (RX) at 115200 baud (the FCU revision 3's console). Spare interrupts: TIM2,
-// TIM3, TIM4, TIM7 (software-triggered).
+// needs itself: CPU 400 MHz from the HSI (no HSE needed), the default MPU map (stm32h7/mpu.hpp),
+// I- and D-cache on, console USART3 on PD8 (TX) / PD9 (RX) at 115200 baud (the FCU revision 3's
+// console). Spare interrupts: TIM2, TIM3, TIM4, TIM7 (software-triggered).
 #pragma once
 
 #include <array>

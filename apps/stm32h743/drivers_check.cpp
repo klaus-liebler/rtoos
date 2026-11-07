@@ -12,7 +12,10 @@
 #include "rtos/devices/ina226.hpp"
 #include "rtos/port/cm7/cache.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
+#include "rtos/port/stm32h7/dma.hpp"
+#include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
+#include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
 #include "rtos/port/stm32h7/rng.hpp"
 #include "rtos/port/stm32h7/sdmmc.hpp"
@@ -65,10 +68,20 @@ rtos::storage::SdCard<Host> card{sd_host};
 using Current = rtos::devices::Ina226<I2c4, {.shunt_micro_ohm = 10'000, .max_current_ma = 8'000}>;
 bool scale_ready() noexcept { return !h7::gpio::read({h7::gpio::GpioPort::C, 2}); }
 using Scale = rtos::devices::Hx711<Spi2, &scale_ready>;
+using LedDma = h7::DmaChannel<{.controller = 1, .stream = 2, .request = h7::DmaRequest::Tim15Ch1,
+                               .direction = h7::DmaDirection::MemoryToPeripheral, .memory_bytes = 2,
+                               .peripheral_bytes = 2}>;
+using StepDma = h7::DmaChannel<{.controller = 2, .stream = 5, .request = h7::DmaRequest::Tim2Up,
+                                .direction = h7::DmaDirection::MemoryToPeripheral, .memory_bytes = 4,
+                                .peripheral_bytes = 4, .priority = 3}>;
+RTOS_DMA_BUFFER std::array<std::uint16_t, 24> led_bits{};
+using Barrier = h7::ExtiLine<{h7::gpio::GpioPort::B, 10}, h7::ExtiEdge::Falling>;
+using Diag = h7::ExtiLine<{h7::gpio::GpioPort::D, 6}, h7::ExtiEdge::Both>;
 }  // namespace
 
 void drivers_check() noexcept;
 void drivers_check() noexcept {
+    h7::configure_mpu();
     rtos::port::cm7::cache::enable_icache();
     rtos::port::cm7::cache::enable_dcache();
     rtos::port::cm7::cache::clean(dma_buffer.data(), dma_buffer.size());
@@ -129,4 +142,20 @@ void drivers_check() noexcept {
     (void)h7::Rng::next();
 
     (void)card.init();
+
+    LedDma::init();
+    (void)LedDma::start(Leds::compare_address<1>(), led_bits.data(), led_bits.size(), true);
+    (void)LedDma::done();
+    (void)LedDma::failed();
+    LedDma::clear();
+    StepDma::init();
+    (void)StepDma::remaining();
+    StepDma::stop();
+
+    Barrier::init();
+    Barrier::enable();
+    (void)Barrier::take();
+    Diag::init();
+    Diag::trigger();
+    Diag::disable();
 }
