@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// ARM Cortex-M4 (ARMv7E-M, FPv4-SP) implementation of rtos::CpuPort.
+// ARM Cortex-M4 (ARMv7E-M, FPv4-SP) implementation of rtos::CpuPort. The Cortex-M7 runs it
+// unchanged (cm7/port.hpp: same ARMv7-M exception model and FP frame).
 //
 // Everything but the context switch is the Cortex-M core both ports share (cortex_m/core.hpp:
 // BASEPRI kernel lock, PendSV, SysTick, lazy FPU stacking, the initial thread frame).

@@ -1,10 +1,10 @@
-Integrate the STM32H563 SoC with the "fcu" machine and the STM32G431 SoC with the "stm32g431"
-machine into the QEMU build.
+Integrate the STM32H563 SoC with the "fcu" machine, the STM32G431 SoC with the "stm32g431"
+machine and the STM32H743 SoC with the "stm32h743" machine into the QEMU build.
 
 diff -ruN a/hw/arm/Kconfig b/hw/arm/Kconfig
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -404,6 +404,34 @@
+@@ -404,6 +404,45 @@
      select STM32L4X5_SOC
      imply DM163
  
@@ -36,19 +36,31 @@ diff -ruN a/hw/arm/Kconfig b/hw/arm/Kconfig
 +    select STM32L4X5_GPIO
 +    select STM32L4X5_USART
 +
++config STM32H743_SOC
++    bool
++    default y
++    depends on TCG && ARM
++    select ARM_V7M
++    select UNIMP
++    select STM32H7_SYSCTL
++    select ARMV8M_DWT
++    select STM32L4X5_GPIO
++    select STM32L4X5_USART
++
  config STM32L4X5_SOC
      bool
      select ARM_V7M
 diff -ruN a/hw/arm/meson.build b/hw/arm/meson.build
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
-@@ -105,6 +105,9 @@
+@@ -105,6 +105,10 @@
  arm_common_ss.add(when: 'CONFIG_NETDUINO2', if_true: files('netduino2.c'))
  arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_peripherals.c'))
  arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2838_peripherals.c'))
 +arm_common_ss.add(when: 'CONFIG_FCU', if_true: files('factory_control_unit.c'))
 +arm_common_ss.add(when: 'CONFIG_STM32H5_SOC', if_true: files('stm32h5_soc.c'))
 +arm_common_ss.add(when: 'CONFIG_STM32G431_SOC', if_true: files('stm32g431_soc.c'))
++arm_common_ss.add(when: 'CONFIG_STM32H743_SOC', if_true: files('stm32h743_soc.c'))
  arm_common_ss.add(when: 'CONFIG_STRONGARM', if_true: files('strongarm.c'))
  arm_common_ss.add(when: 'CONFIG_SX1', if_true: files('omap_sx1.c'))
  arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
@@ -67,7 +79,7 @@ diff -ruN a/hw/gpio/meson.build b/hw/gpio/meson.build
 diff -ruN a/hw/misc/Kconfig b/hw/misc/Kconfig
 --- a/hw/misc/Kconfig
 +++ b/hw/misc/Kconfig
-@@ -122,6 +122,18 @@
+@@ -122,6 +122,21 @@
  config STM32L4X5_RCC
      bool
  
@@ -80,6 +92,9 @@ diff -ruN a/hw/misc/Kconfig b/hw/misc/Kconfig
 +config STM32G4_SYSCTL
 +    bool
 +
++config STM32H7_SYSCTL
++    bool
++
 +config ARMV8M_DWT
 +    bool
 +
@@ -89,13 +104,14 @@ diff -ruN a/hw/misc/Kconfig b/hw/misc/Kconfig
 diff -ruN a/hw/misc/meson.build b/hw/misc/meson.build
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
-@@ -118,6 +118,10 @@
+@@ -118,6 +118,11 @@
  system_ss.add(when: 'CONFIG_STM32L4X5_EXTI', if_true: files('stm32l4x5_exti.c'))
  system_ss.add(when: 'CONFIG_STM32L4X5_SYSCFG', if_true: files('stm32l4x5_syscfg.c'))
  system_ss.add(when: 'CONFIG_STM32L4X5_RCC', if_true: files('stm32l4x5_rcc.c'))
 +system_ss.add(when: 'CONFIG_STM32H5_RCC', if_true: files('stm32h5_rcc.c'))
 +system_ss.add(when: 'CONFIG_STM32H5_SYSCTL', if_true: files('stm32h5_sysctl.c'))
 +system_ss.add(when: 'CONFIG_STM32G4_SYSCTL', if_true: files('stm32g4_sysctl.c'))
++system_ss.add(when: 'CONFIG_STM32H7_SYSCTL', if_true: files('stm32h7_sysctl.c'))
 +system_ss.add(when: 'CONFIG_ARMV8M_DWT', if_true: files('armv8m_dwt.c'))
  system_ss.add(when: 'CONFIG_MPS2_FPGAIO', if_true: files('mps2-fpgaio.c'))
  system_ss.add(when: 'CONFIG_MPS2_SCC', if_true: files('mps2-scc.c'))

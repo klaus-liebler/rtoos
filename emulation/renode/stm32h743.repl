@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: MIT
+//
+// STM32H743xI (Cortex-M7, 2 MB flash, 1 MB RAM) for Renode, as a bare chip.
+// Addresses and IRQ numbers: ST SVD STM32H743 v2.4 / ST's stm32h743xx.h / RM0433.
+//
+// Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, ITCM, DTCM, AXI SRAM,
+// SRAM1-3 (one block), SRAM4, backup SRAM, system memory (UID at 0x1FF1E800; zero-filled),
+// RCC (register file with ready/status flags), PWR (supply and voltage scale: ready at once),
+// FLASH_ACR, GPIOA..K, USART1..3.
+// Tagged (reads 0, writes logged): EXTI, SYSCFG, DBGMCU.
+// Renode's own platforms/cpus/stm32h7.repl has many more peripheral models (Ethernet, timers,
+// I2C, SPI, DMA, ...); they come in with the drivers that need them.
+//
+// Clock: the firmware runs the CPU at 400 MHz from PLL1 (VOS1), HCLK 200 MHz, APB1-4 100 MHz;
+// the CPU executes 400 MIPS (CPI 1), so cycle counts from DWT_CYCCNT are consistent with
+// SysTick but not cycle-accurate.
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m7"
+    numberOfMPURegions: 16
+    nvic: nvic
+    PerformanceInMips: 400
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    // SysTick with CLKSOURCE = processor clock: 400 MHz
+    systickFrequency: 400000000
+    IRQ -> cpu@0
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 400000000
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x200000
+
+itcm: Memory.MappedMemory @ sysbus 0x00000000
+    size: 0x10000
+
+dtcm: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x20000
+
+axiSram: Memory.MappedMemory @ sysbus 0x24000000
+    size: 0x80000
+
+// SRAM1 128 KB + SRAM2 128 KB + SRAM3 32 KB, contiguous
+d2Sram: Memory.MappedMemory @ sysbus 0x30000000
+    size: 0x48000
+
+sram4: Memory.MappedMemory @ sysbus 0x38000000
+    size: 0x10000
+
+backupSram: Memory.MappedMemory @ sysbus 0x38800000
+    size: 0x1000
+
+// System memory: UID at 0x1FF1E800, flash size at 0x1FF1E880; zero-filled
+system: Memory.MappedMemory @ sysbus 0x1FF00000
+    size: 0x20000
+
+usart1: UART.STM32F7_USART @ sysbus 0x40011000
+    frequency: 100000000
+    IRQ -> nvic@37
+
+usart2: UART.STM32F7_USART @ sysbus 0x40004400
+    frequency: 100000000
+    IRQ -> nvic@38
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 100000000
+    IRQ -> nvic@39
+
+// GPIO reset values: GPIOA from the SVD; GPIOB with the usual debug-pin defaults (the SVD
+// derives it from GPIOA); the others all analog. Must match QEMU's stm32h743_soc.c.
+gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x58020000, +0x400>
+    modeResetValue: 0xABFFFFFF
+    outputSpeedResetValue: 0x0C000000
+    pullUpPullDownResetValue: 0x12100000
+    numberOfAFs: 16
+
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x58020400, +0x400>
+    modeResetValue: 0xFFFFFEBF
+    outputSpeedResetValue: 0x000000C0
+    pullUpPullDownResetValue: 0x00000100
+    numberOfAFs: 16
+
+gpioPortC: GPIOPort.STM32_GPIOPort @ sysbus <0x58020800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortD: GPIOPort.STM32_GPIOPort @ sysbus <0x58020C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortE: GPIOPort.STM32_GPIOPort @ sysbus <0x58021000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortF: GPIOPort.STM32_GPIOPort @ sysbus <0x58021400, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortG: GPIOPort.STM32_GPIOPort @ sysbus <0x58021800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortH: GPIOPort.STM32_GPIOPort @ sysbus <0x58021C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x58022000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortJ: GPIOPort.STM32_GPIOPort @ sysbus <0x58022400, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+gpioPortK: GPIOPort.STM32_GPIOPort @ sysbus <0x58022800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+
+// RCC: plain register file with the reset values (SVD v2.4; CR: HSI on and ready, HSIDIV 1,
+// HSIDIVF, D1/D2 clocks ready). Ready flags follow their enable bits immediately (HSI, CSI,
+// RC48, HSE, PLL1-3); HSIDIVF, D1CKRDY, D2CKRDY read 1; CFGR.SWS mirrors CFGR.SW. Must match
+// QEMU's stm32h7_sysctl.c.
+rcc: Python.PythonPeripheral @ sysbus 0x58024400
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x0000C025, 0x028: 0x02020200, 0x02C: 0x01FF0000, 0x030: 0x01010280,
+            0x038: 0x01010280, 0x040: 0x01010280}
+elif request.IsWrite:
+    value = request.Value & 0xFFFFFFFF
+    if request.Offset == 0x000:
+        for on, rdy in ((0, 2), (7, 8), (12, 13), (16, 17), (24, 25), (26, 27), (28, 29)):
+            if value & (1 << on):
+                value = value | (1 << rdy)
+            else:
+                value = value & ~(1 << rdy)
+        value = value | (1 << 5) | (1 << 14) | (1 << 15)
+    elif request.Offset == 0x010:
+        value = (value & ~(7 << 3)) | ((value & 7) << 3)
+    regs[request.Offset] = value
+elif request.IsRead:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// PWR: register file (SVD reset values CSR1 0x4000, CR3 0x6, D3CR 0x4000); a new supply
+// configuration and voltage scale are ready at once (CSR1.ACTVOSRDY and D3CR.VOSRDY read 1,
+// CSR1.ACTVOS follows D3CR.VOS).
+pwr: Python.PythonPeripheral @ sysbus 0x58024800
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x004: 0x00004000, 0x00C: 0x00000006, 0x018: 0x00004000}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value & 0xFFFFFFFF
+elif request.IsRead:
+    if request.Offset == 0x004:
+        request.Value = (regs[0x004] & ~(3 << 14)) | (regs[0x018] & (3 << 14)) | (1 << 13)
+    elif request.Offset == 0x018:
+        request.Value = regs[0x018] | (1 << 13)
+    else:
+        request.Value = regs.get(request.Offset, 0)
+'''
+
+// FLASH interface: ACR as a register file (reset 0x37: the new latency reads back at once);
+// every other register reads 0 (not busy, no errors).
+flashInterface: Python.PythonPeripheral @ sysbus 0x52002000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x000: 0x00000037}
+elif request.IsWrite:
+    if request.Offset == 0x000:
+        regs[0x000] = request.Value & 0xFFFFFFFF
+elif request.IsRead:
+    request.Value = regs[0x000] if request.Offset == 0x000 else 0
+'''
+
+sysbus:
+    init:
+        Tag <0x58000000 0x400> "EXTI"
+        Tag <0x58000400 0x400> "SYSCFG"
+        Tag <0x5C001000 0x400> "DBGMCU"

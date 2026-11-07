@@ -45,6 +45,7 @@ The targets you link:
 |---|---|
 | `rtos_kernel` | the headers (kernel, net, modbus, opcua, usb) and the contract flags `-fcontracts -fcontract-evaluation-semantic=…`. Every other rtoos target depends on it. |
 | `rtos_stm32h563` | chip drivers and the linker script; pulls in the CPU port `rtos_port_cm33` and the shared drivers `rtos_stm32` |
+| `rtos_stm32h743` | the same for the STM32H743 (CPU port `rtos_port_cm7`) |
 | `rtos_stm32g431` | the same for the STM32G431 (CPU port `rtos_port_cm4`); `RTOS_STM32G431_PACKAGE` names the package of the board's chip (e.g. `UFQFPN48` for an STM32G431CBU6) |
 | `rtos_board_fcu` | the FCU board package (only when you build for the FCU) |
 | `rtos_tls` | TLS, HTTPS, WebSocket (wolfSSL glue, static pool tracking) |
@@ -72,7 +73,7 @@ Use the rtoos toolchain files and copy the structure of [CMakePresets.json](../C
 }
 ```
 
-One build tree builds for one chip: the cache variable `RTOS_CHIP` (`stm32h563`, the default, or `stm32g431`) selects the CPU flags (Cortex-M33 or Cortex-M4) for everything in the tree, wolfSSL and littlefs included. The toolchain sets those flags, `-fno-exceptions -fno-rtti` and `nano.specs`. rtoos stops the configure step for any compiler other than GCC 16 or newer. Always build through a preset (`cmake --build --preset board`): the preset puts the GCC DLLs on the PATH.
+One build tree builds for one chip: the cache variable `RTOS_CHIP` (`stm32h563`, the default, `stm32g431` or `stm32h743`) selects the CPU flags (Cortex-M33, Cortex-M4 or Cortex-M7) for everything in the tree, wolfSSL and littlefs included. The toolchain sets those flags, `-fno-exceptions -fno-rtti` and `nano.specs`. rtoos stops the configure step for any compiler other than GCC 16 or newer. Always build through a preset (`cmake --build --preset board`): the preset puts the GCC DLLs on the PATH.
 
 Set `RTOS_CONTRACT_SEMANTIC` to `quick_enforce` on the target. A violated precondition then traps at once, and no library code for reporting is linked.
 
@@ -121,6 +122,10 @@ Bring the board up in this order:
 3. The network firmware.
 
 A different STM32H5 part with the same peripherals needs only its own linker script. A different MCU needs its own chip package under `port/` and a CPU port that satisfies `rtos::CpuPort`. Peripheral IP it shares with the H5 or G4 comes from `port/stm32` (`rtos::port::stm32`): the chip only binds the instances (address, clock gate, IRQ, kernel clock), as [port/stm32g431](../port/stm32g431) does. A Cortex-M core shares everything but the context switch with the existing ports (`port/cortex_m`).
+
+### STM32H743 boards
+
+[port/stm32h743](../port/stm32h743) is the chip package of the FCU revision 3 (STM32H743VIT6, LQFP100); so far it has the clock tree, GPIO with the pin database, USART and the vectors, on the Cortex-M7 port ([port/cortex_m7](../port/cortex_m7): the ARMv7-M context switch of the M4 port plus the L1 caches). Build with `RTOS_CHIP=stm32h743` (preset `arm-h743` for the emulators). The clock tree supplies the core from the LDO (the H743 has no SMPS), selects VOS1 and runs PLL1 from the HSI or an HSE up to 400 MHz CPU, 200 MHz HCLK and 100 MHz on the APBs; 480 MHz (VOS0, silicon revision V) is not supported yet. The RAM is split: `.data`/`.bss` go to the AXI SRAM (512 KB, every bus master), the main stack to the DTCM (CPU only). The data cache is off until the firmware enables it (`cm7::cache::enable_dcache()`); a DMA buffer in cacheable memory then needs `cache::clean()`/`cache::invalidate()` (32-byte lines) or a non-cacheable MPU region. The Cortex-M7 has no stack limit register: size the thread stacks from the deepest call path. [apps/selftest/stm32h743](../apps/selftest/stm32h743) shows the minimal bring-up (caches, clock tree, console pins, USART3).
 
 ### STM32G431 boards
 

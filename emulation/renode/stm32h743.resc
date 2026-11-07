@@ -1,0 +1,16 @@
+:name: STM32H743 (bare chip)
+:description: rtoos firmware on an STM32H743xI, console USART3. Set $bin to the ELF to run.
+
+$name?="stm32h743"
+$bin?=@build/arm-h743/apps/stm32h743/h743_selftest.elf
+
+using sysbus
+mach create $name
+machine LoadPlatformDescription $ORIGIN/stm32h743.repl
+
+macro reset
+"""
+    sysbus LoadELF $bin
+    cpu VectorTableOffset 0x08000000
+"""
+runMacro $reset

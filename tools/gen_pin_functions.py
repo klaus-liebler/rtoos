@@ -4,6 +4,7 @@
 
     python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" h5 > port/stm32h563/include/rtos/port/stm32h5/pin_functions.hpp
     python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" g4 > port/stm32g431/include/rtos/port/stm32g4/pin_functions.hpp
+    python tools/gen_pin_functions.py "<STM32CubeMX>/db/mcu" h7 > port/stm32h743/include/rtos/port/stm32h7/pin_functions.hpp
 
 Sources (STM32CubeMX database, the data behind ST's open pin data):
   <part>.xml                 the pins of a package and their signals
@@ -12,7 +13,7 @@ Sources (STM32CubeMX database, the data behind ST's open pin data):
 A signal with an AF number is an alternate function (MODER = AF, AFR = the number); a signal
 without one is an additional function (analog: ADC inputs, UCPD CC lines, USB DP/DM, ...).
 
-A chip with one package (h5: the FCU's LQFP100) gets plain tables. A chip whose packages the
+A chip with one package (h5, h7: the FCU's LQFP100) gets plain tables. A chip whose packages the
 board chooses (g4) gets the union of all packages, every entry with a mask of the packages
 that have it: smaller packages lack pins and, on some pins, functions (G431 LQFP48: no UART4_CTS
 on PB7). gpio.hpp of the chip filters the tables for the selected package at compile time.
@@ -27,6 +28,12 @@ CHIPS = {
         "ns": "stm32h5",
         "modes": "IP/GPIO-STM32H56x_gpio_v1_0_Modes.xml",
         "packages": [("LQFP100", "STM32H563VITx")],
+    },
+    "h7": {
+        "ns": "stm32h7",
+        # the H743's GPIO IP version in STM32H743VITx.xml: STM32H747_gpio_v1_0
+        "modes": "IP/GPIO-STM32H747_gpio_v1_0_Modes.xml",
+        "packages": [("LQFP100", "STM32H743VITx")],
     },
     "g4": {
         "ns": "stm32g4",

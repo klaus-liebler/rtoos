@@ -65,6 +65,18 @@
         "RTOS_RENODE": "C:/opt/renode/renode.exe"
       }
     }
+,
+    {
+      "name": "arm-h743",
+      "inherits": "arm-base",
+      "displayName": "STM32H743 firmware for the emulators (QEMU, Renode) + emulator tests",
+      "binaryDir": "${sourceDir}/build/arm-h743",
+      "cacheVariables": {
+        "RTOS_CHIP": "stm32h743",
+        "RTOS_QEMU": "C:/opt/qemu-stm32h5/qemu-system-arm.exe",
+        "RTOS_RENODE": "C:/opt/renode/renode.exe"
+      }
+    }
   ],
   "buildPresets": [
     {
@@ -82,6 +94,11 @@
     {
       "name": "arm-g431",
       "configurePreset": "arm-g431"
+    }
+,
+    {
+      "name": "arm-h743",
+      "configurePreset": "arm-h743"
     }
   ],
   "testPresets": [
@@ -102,6 +119,13 @@
     {
       "name": "arm-g431",
       "configurePreset": "arm-g431",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "arm-h743",
+      "configurePreset": "arm-h743",
       "output": {
         "outputOnFailure": true
       }

@@ -29,7 +29,7 @@ flowchart TB
     end
     subgraph Port["Ports (hardware access only through concepts)"]
         cm33["CPU ports cortex_m33 / cortex_m4 on the shared Cortex-M core: PendSV/SVC, BASEPRI, PSPLIM (M33), lazy FPU"]
-        chip["chips stm32h563 / stm32g431 on the shared STM32 drivers: startup, vectors, RCC, GPIO, USART, I2C, timers, ETH (H5)"]
+        chip["chips stm32h563 / stm32g431 / stm32h743 on the shared STM32 drivers: startup, vectors, RCC, GPIO, USART, I2C, timers, ETH (H5)"]
         board["board package fcu: clock, console, LED, RMII/PHY"]
     end
 
@@ -62,7 +62,7 @@ flowchart TB
 | Cortex-M core | `port/cortex_m/` | what ARMv7-M and ARMv8-M share: SCS registers, DWT, kernel lock, initial frame, start-up code |
 | CPU ports | `port/cortex_m33/`, `port/cortex_m4/` | the context switch of each core (Cortex-M33 with PSPLIM, Cortex-M4 without) |
 | STM32 drivers | `port/stm32/` | the peripheral IP the STM32H5 and STM32G4 share (GPIO, USART, I2C, timers, FDCAN, ADC, RNG, UCPD, USB device), parameterized by address, clock gate and IRQ |
-| Chips | `port/stm32h563/`, `port/stm32g431/` | clocks, RCC, the shared drivers bound to the chip's instances, the chip's own drivers (H5: ETH, SDMMC, GPDMA, SPI, caches; G4: DMA/DMAMUX, SPI), pin database, vectors, linker script |
+| Chips | `port/stm32h563/`, `port/stm32g431/`, `port/stm32h743/` | clocks, RCC, the shared drivers bound to the chip's instances, the chip's own drivers (H5: ETH, SDMMC, GPDMA, SPI, caches; G4: DMA/DMAMUX, SPI; H7: the RCC with PLL1 and the domain prescalers, the LDO supply and voltage scaling), pin database, vectors, linker script |
 | Board | `boards/fcu/` | the FCU's pins, clock and PHY |
 
 Everything above the ports is the same code on the host and on the target. The host tests instantiate the kernel with a `MockPort`, connect the IP stack to simulated wires and drive the USB stack from a simulated host. On the target the same templates are instantiated with `Cm33Port`, the ETH driver and (later) the USB controller driver.
@@ -124,15 +124,17 @@ include/rtos/usb/        USB device core, descriptors, CDC-ACM, CDC-NCM
 src/net/, src/opcua/     the compiled parts (wolfSSL glue, OPC UA)
 port/cortex_m/           Cortex-M core shared by the CPU ports, start-up code, rtos_add_firmware()
 port/cortex_m33/         CPU port Cortex-M33 (STM32H563)
-port/cortex_m4/          CPU port Cortex-M4 (STM32G431)
+port/cortex_m4/          CPU port Cortex-M4 (STM32G431), the ARMv7-M context switch the Cortex-M7 uses too
+port/cortex_m7/          CPU port Cortex-M7 (STM32H743): the M4 port plus the L1 caches
 port/stm32/              STM32 peripheral drivers shared by the chips (rtos::port::stm32)
 port/stm32h563/          chip STM32H563 (rtos::port::stm32h5): vectors, linker script, drivers
 port/stm32g431/          chip STM32G431 (rtos::port::stm32g4): vectors, linker script, drivers
+port/stm32h743/          chip STM32H743 (rtos::port::stm32h7): vectors, linker script, drivers
 boards/fcu/              board package of the Factory Control Unit
 apps/                    examples: demo, selftest, net (fcu_net), bench; apps/stm32g431: the G431's
 web/                     the web app of fcu_net (brotli-compressed and embedded with #embed)
 tests/                   host tests (GoogleTest), mock port, fixtures, fuzzers
-emulation/               QEMU machines "fcu" and "stm32g431", Renode platforms, runners, network test
+emulation/               QEMU machines "fcu", "stm32g431" and "stm32h743", Renode platforms, runners, network test
 tools/                   vector generator, CA and certificate tools, open62541 catalog
 cmake/                   toolchain files, wolfSSL build
 third_party/wolfssl/     wolfSSL configuration (user_settings.h); the sources are fetched

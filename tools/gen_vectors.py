@@ -4,11 +4,16 @@
 
 Usage: python tools/gen_vectors.py STM32H563.svd > port/stm32h563/src/vectors.cpp
        python tools/gen_vectors.py stm32g431xx.h > port/stm32g431/src/vectors.cpp
+       python tools/gen_vectors.py stm32h743xx.h > port/stm32h743/src/vectors.cpp
 
 STM32H563: from ST's SVD (https://github.com/modm-io/cmsis-svd-stm32, stm32h5/STM32H563.svd,
 v1.8). STM32G431: from the IRQn_Type of ST's CMSIS device header
 (https://github.com/STMicroelectronics/cmsis_device_g4, Include/stm32g431xx.h) - the G4 SVD
 describes the whole family and lists interrupts the G431 does not have (TIM5, UART5, ...).
+STM32H743: from the IRQn_Type of ST's CMSIS device header as well
+(https://github.com/STMicroelectronics/cmsis_device_h7, Include/stm32h743xx.h).
+A header gives the number of interrupt lines too: the highest IRQn + 1 (G431: FMAC_IRQn = 101,
+H743: WAKEUP_PIN_IRQn = 149).
 """
 import re
 import sys
@@ -16,7 +21,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 IRQ_COUNT = 131  # RM0481: 131 maskable interrupt lines on STM32H563
-G4_IRQ_COUNT = 102  # stm32g431xx.h: the last line is FMAC_IRQn = 101
 
 # Entries missing or misspelled in the SVD (v1.8), fixed per the RM0481 vector table.
 OVERRIDES = {
@@ -33,7 +37,7 @@ CORE = [
     "BusFault_Handler", "UsageFault_Handler", "SecureFault_Handler", None, None, None,
     "SVC_Handler", "DebugMon_Handler", None, "PendSV_Handler", "SysTick_Handler",
 ]
-# Cortex-M4: no SecureFault (ARMv7-M exception 7 is reserved).
+# Cortex-M4/M7: no SecureFault (ARMv7-M exception 7 is reserved).
 CORE_M4 = [name if name != "SecureFault_Handler" else None for name in CORE]
 STRONG = {"Reset_Handler", "SVC_Handler", "PendSV_Handler", "SysTick_Handler"}
 
@@ -58,7 +62,8 @@ def main() -> None:
     sys.stdout.reconfigure(newline="\n")  # LF on Windows too (.gitattributes)
     source = Path(sys.argv[1])
     if source.suffix == ".h":
-        names, irq_count, core = header_names(source), G4_IRQ_COUNT, CORE_M4
+        names = header_names(source)
+        irq_count, core = max(names) + 1, CORE_M4
     else:
         names, irq_count, core = svd_names(source), IRQ_COUNT, CORE
 

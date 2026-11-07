@@ -1,6 +1,6 @@
 # rtoos
 
-**rtoos** is an efficient real-time operating system for the STM32H563 (Cortex-M33) and the STM32G431 (Cortex-M4), with its own IP stack and its own USB device stack. It is written in C++26. It uses no heap, no exceptions and no RTTI. Every layer is covered by a three-level test pyramid:
+**rtoos** is an efficient real-time operating system for the STM32H563 (Cortex-M33), the STM32G431 (Cortex-M4) and the STM32H743 (Cortex-M7), with its own IP stack and its own USB device stack. It is written in C++26. It uses no heap, no exceptions and no RTTI. Every layer is covered by a three-level test pyramid:
 
 1. **host-based unit tests** for all of the logic,
 2. **QEMU** for the kernel on the emulated CPU,
@@ -27,7 +27,7 @@ All network services share one thread. Expensive work (TLS handshakes, large dow
 | 2: QEMU | own QEMU machine `fcu` | the kernel on the real CPU mechanisms: PendSV context switches, lazy FPU stacking, interrupt priorities and BASEPRI masking, SysTick, PSPLIM stack limit (on-target self-test) |
 | 3: Renode | Renode platform of the FCU, connected to the PC through a TAP adapter | everything that involves the CPU's peripherals: the same self-test, plus an end-to-end network test of the real firmware over the emulated Ethernet controller (DHCP, DNS, mDNS, SNTP, HTTPS, WebSocket, Modbus TCP, OPC UA with asyncua, the SSH log terminal with OpenSSH, behaviour under load) |
 
-The target board is the **Factory Control Unit (FCU)**: STM32H563VIT6 with a LAN8742A PHY. The **STM32G431** is supported as a chip (Cortex-M4 port, drivers, both emulators); its boards come with the products. The two chips share the drivers for their common peripheral IP (`port/stm32`, namespace `rtos::port::stm32`).
+The target board is the **Factory Control Unit (FCU)**: STM32H563VIT6 with a LAN8742A PHY. The **STM32G431** is supported as a chip (Cortex-M4 port, drivers, both emulators); its boards come with the products. The **STM32H743** (FCU revision 3) is being brought up as a chip: Cortex-M7 port (the ARMv7-M context switch plus the L1 caches), clock tree, GPIO, USART, both emulators. The chips share the drivers for their common peripheral IP (`port/stm32`, namespace `rtos::port::stm32`).
 
 ## Quick start
 
@@ -38,9 +38,10 @@ cmake --preset host  && cmake --build --preset host  && ctest --preset host
 cmake --preset arm   && cmake --build --preset arm   && ctest --preset arm
 cmake --preset board && cmake --build --preset board
 cmake --preset arm-g431 && cmake --build --preset arm-g431 && ctest --preset arm-g431
+cmake --preset arm-h743 && cmake --build --preset arm-h743 && ctest --preset arm-h743
 ```
 
-`arm` builds the firmware for the emulators, `board` builds it for the real board, `arm-g431` builds the STM32G431 firmware and runs its self-test in both emulators.
+`arm` builds the firmware for the emulators, `board` builds it for the real board, `arm-g431` builds the STM32G431 firmware and runs its self-test in both emulators, `arm-h743` the same for the STM32H743.
 
 ## Documentation
 

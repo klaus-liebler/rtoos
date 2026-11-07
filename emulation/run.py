@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Run rtoos firmware in QEMU or Renode: the Factory Control Unit (STM32H563) or a bare STM32G431.
+"""Run rtoos firmware in QEMU or Renode: the Factory Control Unit (STM32H563), a bare STM32G431 or STM32H743.
 
   run.py qemu   build/arm/apps/fcu_selftest.elf            # self-test, exit code = result
   run.py renode build/arm/apps/fcu_selftest.elf --allow-unsupported "stack limit"
   run.py qemu   build/arm/apps/fcu_demo.elf --interactive  # console until Ctrl+C
   run.py renode build/arm-g431/apps/stm32g431/g431_selftest.elf --platform stm32g431
+  run.py qemu   build/arm-h743/apps/stm32h743/h743_selftest.elf --platform stm32h743
 
-The console (fcu: USART3, stm32g431: USART1) is streamed to stdout. In test mode the run ends at the line
+The console (fcu, stm32h743: USART3; stm32g431: USART1) is streamed to stdout. In test mode the run ends at the line
 "SELFTEST RESULT: ..." (or at the timeout). The test passes if the result is PASS
 and every UNSUPPORTED test is covered by --allow-unsupported (emulator features
 known to be missing, e.g. Renode does not enforce PSPLIM).
@@ -32,6 +33,7 @@ UNSUPPORTED = re.compile(r"\[selftest\] UNSUPPORTED (.*)")
 PLATFORMS = {
     "fcu": ("fcu", "fcu.resc", "usart3"),
     "stm32g431": ("stm32g431", "stm32g431.resc", "usart1"),
+    "stm32h743": ("stm32h743", "stm32h743.resc", "usart3"),
 }
 
 
@@ -44,7 +46,8 @@ def free_port() -> int:
 def start_qemu(exe: Path, elf: Path, platform: str) -> tuple[subprocess.Popen, object]:
     proc = subprocess.Popen(
         # -icount shift=2: one instruction = 4 ns, i.e. 250 MIPS (the FCU's 250 MHz SYSCLK;
-        # the STM32G431 at 170 MHz runs faster than CPI 1). Virtual time (SysTick, DWT_CYCCNT)
+        # the STM32G431 at 170 MHz runs faster than CPI 1, the STM32H743 at 400 MHz slower).
+        # Virtual time (SysTick, DWT_CYCCNT)
         # then follows the executed code instead of the host clock; sleep=off jumps idle time
         # straight to the next timer. Otherwise the coarse Windows host timer makes SysTick
         # periods merge (lost ticks: 20 ticks took ~32 ms of CYCCNT time).

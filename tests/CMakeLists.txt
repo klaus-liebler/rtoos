@@ -18,6 +18,7 @@ add_executable(rtos_tests
     timer_stepper_test.cpp
     port_config_test.cpp
     port_config_g4_test.cpp
+    port_config_h7_test.cpp
     block_pool_test.cpp
     sync_test.cpp
     net_test.cpp
@@ -48,7 +49,7 @@ target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_fi
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
                            ${PROJECT_SOURCE_DIR}/port/cortex_m/include ${PROJECT_SOURCE_DIR}/port/stm32/include
                            ${PROJECT_SOURCE_DIR}/port/stm32h563/include ${PROJECT_SOURCE_DIR}/port/cortex_m33/include
-                           ${PROJECT_SOURCE_DIR}/port/stm32g431/include)
+                           ${PROJECT_SOURCE_DIR}/port/stm32g431/include ${PROJECT_SOURCE_DIR}/port/stm32h743/include)
 # the STM32G431 pin database is filtered for one package (port/stm32g431/CMakeLists.txt)
 target_compile_definitions(rtos_tests PRIVATE RTOS_STM32G431_PACKAGE=UFQFPN48)
 # UBSan in trap mode needs no runtime library; static linking makes the test
