@@ -59,6 +59,10 @@ void init_ethernet() noexcept;
 /// SD card slot: SDMMC1 1-bit bus and the card detect input (pulled up).
 void init_sdcard() noexcept;
 
+/// USB device (USB-C): USB2_OTG_FS on PA11 (DM) / PA12 (DP), AF10; its supply detector,
+/// HSI48 + CRS and clock (board::UsbDevice). Call before UsbDevice::start().
+void init_usb() noexcept;
+
 /// Unique, locally administered MAC address derived from the 96-bit device UID.
 [[nodiscard]] rtos::net::MacAddress mac_address() noexcept;
 

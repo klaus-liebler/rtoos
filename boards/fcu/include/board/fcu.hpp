@@ -62,6 +62,10 @@ void init_ethernet() noexcept;
 /// input (PD4, pull-up), revision 1 has none.
 void init_sdcard() noexcept;
 
+/// USB device: USB_DRD_FS (PA11/PA12 are its additional function: no pin setup); VDDUSB, HSI48 +
+/// CRS and clock (board::UsbDevice). Call before UsbDevice::start().
+void init_usb() noexcept;
+
 /// Unique, locally administered MAC address derived from the 96-bit device UID.
 [[nodiscard]] rtos::net::MacAddress mac_address() noexcept;
 

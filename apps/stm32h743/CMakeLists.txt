@@ -8,6 +8,9 @@ target_include_directories(h743_selftest PRIVATE ../selftest ../selftest/stm32h7
 set(RTOS_NET_TEST_ARGS --resc fcu_rev3-net.resc --mcu STM32H743 --mhz 400)
 add_subdirectory(../net net)
 
+# USB device check on the FCU revision 3 (USB2_OTG_FS, CDC-ACM echo) and its Renode test
+rtos_add_firmware(h743_usb SOURCES usb_echo.cpp LIBRARIES rtos_board_fcu)
+
 # compile check of all chip drivers (instantiated with a 400 MHz clock tree, not linked)
 add_library(rtos_h743_drivers_check OBJECT drivers_check.cpp)
 target_link_libraries(rtos_h743_drivers_check PRIVATE rtos_stm32h743)
@@ -21,6 +24,9 @@ if(EXISTS "${RTOS_QEMU}")
                      --exe ${RTOS_QEMU})
 endif()
 if(EXISTS "${RTOS_RENODE}")
+    add_test(NAME usb_renode
+             COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/emulation/usb_test.py $<TARGET_FILE:h743_usb>
+                     --exe ${RTOS_RENODE})
     add_test(NAME h743_selftest_renode
              COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:h743_selftest> --platform stm32h743
                      --exe ${RTOS_RENODE})

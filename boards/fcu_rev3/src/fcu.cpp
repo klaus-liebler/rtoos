@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "board/fcu.hpp"
+#include "rtos/port/stm32h7/usb_device.hpp"
 
 #include <array>
 
@@ -47,6 +48,12 @@ constexpr std::array sdcard_pins{
     h7::gpio::input(sdcard_detect_pin, Pull::Up),
 };
 
+// USB: USB2_OTG_FS with its embedded full-speed PHY (ST pin data: PA11 OTG_FS_DM, PA12 OTG_FS_DP, AF10)
+constexpr std::array usb_pins{
+    h7::gpio::alternate({GpioPort::A, 11}, Signal::USB_OTG_FS_DM, Speed::VeryHigh),
+    h7::gpio::alternate({GpioPort::A, 12}, Signal::USB_OTG_FS_DP, Speed::VeryHigh),
+};
+
 /// Busy wait of at least `cycles` CPU cycles (>= 1 cycle per iteration).
 void spin(std::uint32_t cycles) noexcept {
     for (std::uint32_t i = 0; i < cycles; ++i) {
@@ -74,6 +81,11 @@ void init_ethernet() noexcept {
 }
 
 void init_sdcard() noexcept { h7::gpio::configure<sdcard_pins>(); }
+
+void init_usb() noexcept {
+    h7::gpio::configure<usb_pins>();
+    h7::UsbOtgHardware<clocks.hclk_hz(), clocks.cpu_hz()>::enable_clocks();
+}
 
 rtos::net::MacAddress mac_address() noexcept {
     // FNV-1a over the 96-bit UID (stm32h743xx.h UID_BASE 0x1FF1'E800)

@@ -3,6 +3,8 @@
 rtoos has its own small USB device stack ([include/rtos/usb](../include/rtos/usb)) instead of USBX or TinyUSB. It runs as a service in the network thread, which the USB interrupt wakes. No class driver has its own thread.
 
 > **Status:** the stack, the classes and the STM32H5 `USB_DRD_FS` driver are complete and tested on the host. Neither QEMU nor Renode models this controller, so the driver is tested against a simulation of its registers (below). It has not yet run on the board.
+>
+> The STM32H743's USB2_OTG_FS (Synopsys DWC2 core, full speed, embedded PHY, slave mode) has its own driver, [stm32/usb_otg_device.hpp](../port/stm32/include/rtos/port/stm32/usb_otg_device.hpp) with the H743 binding [stm32h7/usb_device.hpp](../port/stm32h743/include/rtos/port/stm32h7/usb_device.hpp) (`UsbOtgFs<hclk, cpu>`, `UsbOtgHardware::enable_clocks()`: VDD33USB detector, HSI48 + CRS on USB2's SOF, USBSEL, the ULPI clock off in sleep). Tested on the host ([usb_otg_fs_test.cpp](../tests/usb_otg_fs_test.cpp)) and in Renode (`usb_renode`: [h743_usb](../apps/stm32h743/usb_echo.cpp) against [STM32_OTG_FS.cs](../emulation/renode/STM32_OTG_FS.cs)); not yet on the board. The board packages name the controller: `board::UsbDevice`, `board::init_usb()`, `RTOS_BOARD_USB_IRQ_HANDLER`.
 
 ## STM32H5 controller: `UsbDrdFs`
 

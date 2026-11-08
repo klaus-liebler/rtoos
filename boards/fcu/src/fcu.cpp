@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "board/fcu.hpp"
+#include "rtos/port/stm32h5/usb_device.hpp"
 
 #include <array>
 
@@ -105,6 +106,8 @@ void init_ethernet() noexcept {
 }
 
 void init_sdcard() noexcept { h5::gpio::configure<sdcard_pins>(); }
+
+void init_usb() noexcept { h5::UsbHardware::enable_clocks(); }
 
 rtos::net::MacAddress mac_address() noexcept {
     // FNV-1a over the 96-bit UID (RM0481: UID_BASE 0x08FFF800, stm32h563xx.h)

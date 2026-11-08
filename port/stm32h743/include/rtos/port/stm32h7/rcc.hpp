@@ -166,8 +166,10 @@ using detail::ahb1, detail::ahb2, detail::ahb3, detail::ahb4, detail::apb1h, det
 inline constexpr Gate sdmmc1 = gate(ahb3, 16);
 inline constexpr Gate dma1 = gate(ahb1, 0), dma2 = gate(ahb1, 1), adc12 = gate(ahb1, 5), eth1mac = gate(ahb1, 15),
                       eth1tx = gate(ahb1, 16), eth1rx = gate(ahb1, 17);
+inline constexpr Gate usb2otgfs = gate(ahb1, 27);  ///< USB2_OTG_FS (RCC_AHB1ENR_USB2OTGFSEN)
 inline constexpr Gate adc3 = gate(ahb4, 24);
 inline constexpr Gate fdcan = gate(apb1h, 8);  ///< FDCAN1 and FDCAN2
+inline constexpr Gate crs = gate(apb1h, 1);     ///< clock recovery system (RCC_APB1HENR_CRSEN)
 inline constexpr Gate rng = gate(ahb2, 6), sdmmc2 = gate(ahb2, 9);
 inline constexpr Gate tim2 = gate(apb1l, 0), tim3 = gate(apb1l, 1), tim4 = gate(apb1l, 2), tim5 = gate(apb1l, 3),
                       tim6 = gate(apb1l, 4), tim7 = gate(apb1l, 5), tim12 = gate(apb1l, 6), tim13 = gate(apb1l, 7),

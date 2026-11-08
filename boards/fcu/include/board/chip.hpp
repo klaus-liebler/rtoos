@@ -22,9 +22,12 @@
 #include "rtos/port/stm32h5/cache.hpp"  // RTOS_DMA_BUFFER
 #include "rtos/port/stm32h5/ethernet.hpp"
 #include "rtos/port/stm32h5/rng.hpp"
+#include "rtos/port/stm32h5/usb_device.hpp"
 
 /// Connects one kernel instance to the CPU port's exception handlers (once, at namespace scope).
 #define RTOS_BOARD_BIND_KERNEL(kernel_object) RTOS_CM33_BIND_KERNEL(kernel_object)
+/// The USB device controller's interrupt handler (board::UsbDevice::on_irq()).
+#define RTOS_BOARD_USB_IRQ_HANDLER USB_DRD_FS_IRQHandler
 
 namespace board {
 
@@ -41,5 +44,7 @@ inline constexpr std::uint32_t hclk_hz = clocks.hclk_hz();
 template <rtos::net::PacketAllocator Pool, std::size_t RxCount = 8, std::size_t TxCount = 8>
 using Ethernet = chip::Ethernet<Pool, RxCount, TxCount>;
 using Rng = chip::Rng;
+/// USB device controller (rtos::usb::DeviceController): USB_DRD_FS; board::init_usb() first.
+using UsbDevice = chip::UsbDrdFs<>;
 
 }  // namespace board
