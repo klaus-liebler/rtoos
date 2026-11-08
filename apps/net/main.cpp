@@ -69,12 +69,7 @@
 #include "rtos/opcua/clock.hpp"
 #include "rtos/opcua/ns0_base.hpp"
 #include "rtos/opcua/registers.hpp"
-#include "rtos/port/cm33/cycle_counter.hpp"
-#include "rtos/port/cm33/port.hpp"
-#include "rtos/port/stm32h5/cache.hpp"
-#include "rtos/port/stm32h5/chip.hpp"
-#include "rtos/port/stm32h5/ethernet.hpp"
-#include "rtos/port/stm32h5/rng.hpp"
+#include "board/chip.hpp"
 #include "rtos/rtos.hpp"
 
 namespace {
@@ -84,19 +79,17 @@ struct KernelConfig : rtos::DefaultConfig {
     static constexpr std::size_t notify_slots = 2;
 };
 
-using Port = rtos::port::cm33::Cm33Port;
+using Port = board::Port;
 using Kernel = rtos::Kernel<Port, KernelConfig>;
 
 }  // namespace
 
 Kernel kernel;
-RTOS_CM33_BIND_KERNEL(kernel)
+RTOS_BOARD_BIND_KERNEL(kernel)
 
 namespace {
 
-namespace h5 = rtos::port::stm32h5;
 namespace net = rtos::net;
-namespace cm33 = rtos::port::cm33;
 
 // ---- compiled-in assets (C++26 #embed) ------------------------------------------------
 constexpr unsigned char index_html_br[] = {
@@ -135,7 +128,7 @@ std::span<const std::byte> as_span(const unsigned char (&a)[N]) {
 // ---- network stack ---------------------------------------------------------------------
 using Pool = net::PacketPool<32>;
 constexpr std::size_t eth_rx_descriptors = 8;
-using Ethernet = h5::Ethernet<Pool, eth_rx_descriptors>;
+using Ethernet = board::Ethernet<Pool, eth_rx_descriptors>;
 struct NetConfig : net::DefaultStackConfig {
     static constexpr std::size_t udp_sockets = 6;  // DHCP, mDNS, SNTP, 2 DNS queries, spare
     // Browsers open several connections per page (spare sockets, keep-alive, the
@@ -531,7 +524,7 @@ void on_ws_message(void*, Server::SessionId id, std::span<const std::byte> data,
             reply[0] = std::byte{msg_echo_reply};
             std::memcpy(reply.data() + 1, data.data() + 1, data.size() - 1);
             if (server.send(id, std::span(reply).first(data.size()))) {
-                echo_cycles = cm33::CycleCounter::now() - server.read_cycle_stamp(id);
+                echo_cycles = board::CycleCounter::now() - server.read_cycle_stamp(id);
             }
             break;
         }
@@ -673,7 +666,7 @@ struct AppTasks {
 
 bool rng_fill(std::span<std::byte> out) noexcept {
     for (std::size_t i = 0; i < out.size(); i += 4) {
-        const std::uint32_t r = h5::Rng::next();
+        const std::uint32_t r = board::Rng::next();
         for (std::size_t j = 0; j < 4 && i + j < out.size(); ++j) {
             out[i + j] = static_cast<std::byte>(r >> (8 * j));
         }
@@ -683,18 +676,18 @@ bool rng_fill(std::span<std::byte> out) noexcept {
 
 void net_main(void*) {
     board::init_ethernet();
-    if (!ethernet.init(board::sysclk_hz)) {
+    if (!ethernet.init(board::hclk_hz)) {
         board::print("net: ETH DMA reset timed out (no RMII reference clock?)\n");
         return;
     }
-    h5::Rng::init();
+    board::Rng::init();
     const net::InterfaceId attached = stack.attach(ethernet);
     contract_assert(attached == eth_if);
-    stack.set_random([](void*) noexcept { return h5::Rng::next(); }, nullptr);
+    stack.set_random([](void*) noexcept { return board::Rng::next(); }, nullptr);
 
-    constexpr unsigned eth_irq = 106;
-    cm33::nvic::ipr(eth_irq) = 6u << (8 - RTOS_CM33_PRIO_BITS);
-    cm33::nvic::enable(eth_irq);
+    constexpr unsigned eth_irq = Ethernet::irq_number;
+    board::nvic::ipr(eth_irq) = 6u << (8 - board::irq_priority_bits);
+    board::nvic::enable(eth_irq);
 
     board::print("net: mac ");
     print_mac(ethernet.mac());
@@ -702,7 +695,7 @@ void net_main(void*) {
 
     if (!net::TlsServerContext::initialize_library(
             &rng_fill, []() noexcept -> std::uint32_t { return kernel.now() / 1000; },
-            []() noexcept { return cm33::CycleCounter::now(); })) {
+            []() noexcept { return board::CycleCounter::now(); })) {
         board::print("tls: library init failed\n");
         return;
     }
@@ -767,7 +760,7 @@ void net_main(void*) {
     }
     runtime.add(log_terminal, "ssh");
     RTOS_LOG_INFO("net: services up, log terminal on port 22");
-    runtime.set_cycle_counter([]() noexcept { return cm33::CycleCounter::now(); });
+    runtime.set_cycle_counter([]() noexcept { return board::CycleCounter::now(); });
     for (;;) {
         const std::uint32_t wake = runtime.run_once(kernel.now());
         // 0 while background work (downloads, handshakes) waits: no sleep, but every
@@ -786,10 +779,12 @@ extern "C" void ETH_IRQHandler() noexcept {
 
 int main() {
     board::init();
-    board::print("\nrtoos net - STM32H563 / Factory Control Unit\n");
+    board::print("\nrtoos net - ");
+    board::print(board::mcu_name);
+    board::print(" / Factory Control Unit\n");
     rtos::log::set_sink(journal.sink([]() noexcept { return kernel.now(); }));
-    RTOS_LOG_INFO("rtoos net - STM32H563 / Factory Control Unit");
-    cm33::CycleCounter::enable();
+    RTOS_LOG_INFO("rtoos net - %s / Factory Control Unit", board::mcu_name.data());
+    board::CycleCounter::enable();
     Port::configure(board::sysclk_hz, 1000);
     std::ranges::fill(net_stack, stack_paint);
     kernel.create_thread(net_tcb, {.name = "net", .entry = &net_main, .stack = net_stack, .priority = 8});

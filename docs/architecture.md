@@ -63,7 +63,7 @@ flowchart TB
 | CPU ports | `port/cortex_m33/`, `port/cortex_m4/` | the context switch of each core (Cortex-M33 with PSPLIM, Cortex-M4 without) |
 | STM32 drivers | `port/stm32/` | the peripheral IP the STM32H5 and STM32G4 share (GPIO, USART, I2C, timers, FDCAN, ADC, RNG, UCPD, USB device), parameterized by address, clock gate and IRQ |
 | Chips | `port/stm32h563/`, `port/stm32g431/`, `port/stm32h743/` | clocks, RCC, the shared drivers bound to the chip's instances, the chip's own drivers (H5: ETH, SDMMC, GPDMA, SPI, caches; G4: DMA/DMAMUX, SPI; H7: the RCC with PLL1 and the domain prescalers, the LDO supply and voltage scaling), pin database, vectors, linker script |
-| Board | `boards/fcu/` | the FCU's pins, clock and PHY |
+| Board | `boards/fcu/`, `boards/fcu_rev3/` | the FCU's pins, clock and PHY (revisions 1/2: STM32H563; revision 3: STM32H743); `board/chip.hpp` names the chip's CPU port, Ethernet and RNG for code that runs on every revision |
 
 Everything above the ports is the same code on the host and on the target. The host tests instantiate the kernel with a `MockPort`, connect the IP stack to simulated wires and drive the USB stack from a simulated host. On the target the same templates are instantiated with `Cm33Port`, the ETH driver and (later) the USB controller driver.
 
@@ -130,7 +130,8 @@ port/stm32/              STM32 peripheral drivers shared by the chips (rtos::por
 port/stm32h563/          chip STM32H563 (rtos::port::stm32h5): vectors, linker script, drivers
 port/stm32g431/          chip STM32G431 (rtos::port::stm32g4): vectors, linker script, drivers
 port/stm32h743/          chip STM32H743 (rtos::port::stm32h7): vectors, linker script, drivers
-boards/fcu/              board package of the Factory Control Unit
+boards/fcu/              board package of the Factory Control Unit, revisions 1/2 (STM32H563)
+boards/fcu_rev3/         board package of the Factory Control Unit, revision 3 (STM32H743)
 apps/                    examples: demo, selftest, net (fcu_net), bench; apps/stm32g431: the G431's
 web/                     the web app of fcu_net (brotli-compressed and embedded with #embed)
 tests/                   host tests (GoogleTest), mock port, fixtures, fuzzers

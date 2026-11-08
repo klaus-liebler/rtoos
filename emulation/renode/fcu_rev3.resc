@@ -1,0 +1,16 @@
+:name: Factory Control Unit revision 3 (STM32H743)
+:description: rtoos firmware on the Factory Control Unit revision 3. Set $bin to the ELF to run.
+
+$name?="fcu_rev3"
+$bin?=@build/arm-h743/apps/stm32h743/net/fcu_net.elf
+
+using sysbus
+mach create $name
+machine LoadPlatformDescription $ORIGIN/fcu_rev3.repl
+
+macro reset
+"""
+    sysbus LoadELF $bin
+    cpu VectorTableOffset 0x08000000
+"""
+runMacro $reset

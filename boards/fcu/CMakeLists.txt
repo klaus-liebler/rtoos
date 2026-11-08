@@ -6,7 +6,7 @@ target_link_libraries(rtos_board_fcu PUBLIC rtos_stm32h563)
 # (pcb_factory_control_unit; USB-PD by a CH224K, the MCU's UCPD unused). Only what
 # board/fcu.hpp knows differs here (LED, UCPD dead-battery pull-downs); the product's own I/O
 # pins are the product's business.
-set(RTOS_FCU_REVISION 2 CACHE STRING "Factory Control Unit hardware revision (1 or 2)")
+set(RTOS_FCU_REVISION 2 CACHE STRING "Factory Control Unit hardware revision (1 or 2; 3 is the STM32H743: boards/fcu_rev3)")
 set_property(CACHE RTOS_FCU_REVISION PROPERTY STRINGS 1 2)
 if(NOT RTOS_FCU_REVISION MATCHES "^[12]$")
     message(FATAL_ERROR "RTOS_FCU_REVISION must be 1 or 2 (is ${RTOS_FCU_REVISION})")

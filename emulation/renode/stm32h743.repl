@@ -6,7 +6,7 @@
 // Modelled: core (NVIC, SysTick, DWT cycle counter, MPU, FPU), flash, ITCM, DTCM, AXI SRAM,
 // SRAM1-3 (one block), SRAM4, backup SRAM, system memory (UID at 0x1FF1E800; zero-filled),
 // RCC (register file with ready/status flags), PWR (supply and voltage scale: ready at once),
-// FLASH_ACR, GPIOA..K, USART1..3.
+// FLASH_ACR, GPIOA..K, USART1..3, Ethernet MAC (Synopsys DWC EQoS), RNG.
 // Tagged (reads 0, writes logged): EXTI, SYSCFG, DBGMCU.
 // Renode's own platforms/cpus/stm32h7.repl has many more peripheral models (Ethernet, timers,
 // I2C, SPI, DMA, ...); they come in with the drivers that need them.
@@ -67,6 +67,22 @@ usart2: UART.STM32F7_USART @ sysbus 0x40004400
 usart3: UART.STM32F7_USART @ sysbus 0x40004800
     frequency: 100000000
     IRQ -> nvic@39
+
+// Ethernet MAC: Synopsys DWC Ethernet QoS, the same model as for the STM32H563 (the same IP,
+// registers and address; MTL at +0xC00, DMA at +0x1000). Bus clock: HCLK 200 MHz. IRQ 61.
+ethernet: Network.SynopsysDWCEthernetQualityOfService @ {
+        sysbus 0x40028000;
+        sysbus new Bus.BusMultiRegistration { address: 0x40028C00; size: 0x200; region: "mtl" };
+        sysbus new Bus.BusMultiRegistration { address: 0x40029000; size: 0x200; region: "dma" }
+    }
+    systemClockFrequency: 200000000
+    dmaBusWidth: BusWidth.Bits32
+    -> nvic@61
+
+// RNG: Renode's STM32 model in its H7 variant (as Renode's own platforms/cpus/stm32h7.repl). IRQ 80.
+rng: Miscellaneous.STM32_RNG @ sysbus 0x48021800
+    series: STM32Series.H7
+    -> nvic@80
 
 // GPIO reset values: GPIOA from the SVD; GPIOB with the usual debug-pin defaults (the SVD
 // derives it from GPIOA); the others all analog. Must match QEMU's stm32h743_soc.c.

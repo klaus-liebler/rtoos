@@ -3,6 +3,7 @@
 """End-to-end network test of the FCU firmware in Renode (TAP network).
 
   net_test.py <firmware.elf> <web dir with index.html.br + blob.bin> <ca.crt> [renode.exe]
+              [--resc fcu_rev3-net.resc --mcu STM32H743 --mhz 400]   # FCU revision 3 (default: H563)
   net_test.py --browser <firmware.elf> [renode.exe]     # SNTP + Renode until Ctrl+C
 
 Starts a DHCP server (192.168.77.1:67, lease 192.168.77.2 for 20 s), a DNS server
@@ -132,11 +133,18 @@ def tap_present() -> bool:
         return False
 
 
+# The board's Renode script with the TAP network and the MCU the banner names: FCU revisions 1/2
+# (STM32H563, 250 MHz) by default, "--resc fcu_rev3-net.resc --mcu STM32H743 --mhz 400" for revision 3.
+RESC = "fcu-net.resc"
+MCU = "STM32H563"
+MHZ = 250  # the board's core clock, as the firmware reports it
+
+
 def start_renode(renode: Path, elf: Path) -> tuple[subprocess.Popen, Console]:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    resc = (HERE / "renode" / "fcu-net.resc").as_posix()
+    resc = (HERE / "renode" / RESC).as_posix()
     commands = "; ".join([
         f"$bin=@{elf.as_posix()}",
         f"include @{resc}",
@@ -457,6 +465,20 @@ def browser(elf: Path, renode: Path) -> int:
 
 
 def main() -> int:
+    global RESC, MCU, MHZ
+    args = sys.argv[1:]
+    for option in ("--resc", "--mcu", "--mhz"):
+        if option in args:
+            i = args.index(option)
+            value = args[i + 1]
+            del args[i:i + 2]
+            if option == "--resc":
+                RESC = value
+            elif option == "--mcu":
+                MCU = value
+            else:
+                MHZ = int(value)
+    sys.argv[1:] = args
     if sys.argv[1] == "--browser":
         if not tap_present():
             print(f"error: no network adapter with {HOST_IP} (run emulation/renode/setup-tap.ps1)", file=sys.stderr)
@@ -557,7 +579,7 @@ def main() -> int:
             st = reader.message(0x01, 3)
             check("status reports LED on", st[7] == 1)
             handshake, seal16, open16, echo, mhz, seal_fixed, open_fixed = struct.unpack("<IHHIHII", st[25:47])
-            check("cycle counts reported (DWT_CYCCNT)", handshake > 0 and seal16 > 0 and open16 > 0 and echo > 0 and mhz == 250,
+            check("cycle counts reported (DWT_CYCCNT)", handshake > 0 and seal16 > 0 and open16 > 0 and echo > 0 and mhz == MHZ,
                   f"handshake {handshake} cycles = {handshake / mhz / 1000:.1f} ms, "
                   f"encrypt {seal_fixed} cycles/record + {seal16 / 16:.1f} c/B, "
                   f"decrypt {open_fixed} cycles/record + {open16 / 16:.1f} c/B, "
@@ -779,13 +801,13 @@ def main() -> int:
         # its own connect line is logged after the history: proves both
         ssh_ok, ssh_out, ssh_code = ssh_terminal(certs / "ssh_client.key.pem", "log terminal: log connected")
         check("SSH log terminal: boot log and live lines over OpenSSH",
-              ssh_ok and "rtoos net - STM32H563" in ssh_out, ssh_out.strip()[-160:])
+              ssh_ok and f"rtoos net - {MCU}" in ssh_out, ssh_out.strip()[-160:])
         check("SSH log terminal: 'q' ends the session", ssh_code is not None, f"client exit {ssh_code}")
         rogue_key = Path(os.environ.get("TEMP", "/tmp")) / "rtoos_rogue_ed25519"
         for f in (rogue_key, rogue_key.with_suffix(".pub")):
             f.unlink(missing_ok=True)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(rogue_key)], check=True)
-        rogue_ok, rogue_out, _ = ssh_terminal(rogue_key, "rtoos net - STM32H563", 20)
+        rogue_ok, rogue_out, _ = ssh_terminal(rogue_key, f"rtoos net - {MCU}", 20)
         check("SSH log terminal: a key that is not authorized is refused",
               not rogue_ok and "Permission denied" in rogue_out, rogue_out.strip()[-120:])
         steps = [line for line in console.lines if "longest step" in line]
