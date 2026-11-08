@@ -13,7 +13,8 @@ expects them back, "modbus" sends a Modbus RTU request and checks the answer. Th
 "USB RESULT: PASS ..." or "USB RESULT: FAIL <step>" to a file this script reads.
 
 --uid writes the chip UID into the emulated system memory (a product firmware that checks its
-provisioning). Exit code 0 = pass, 1 = fail.
+provisioning); --monitor adds Renode monitor commands before the start (e.g. an input pin:
+"sysbus.gpioPortC OnGPIO 0 true"). Exit code 0 = pass, 1 = fail.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ def main() -> int:
     ap.add_argument("--exe", type=Path, default=DEFAULT_RENODE)
     ap.add_argument("--mode", choices=["echo", "modbus"], default="echo")
     ap.add_argument("--uid", nargs=3, metavar="WORD", help="chip UID words (hex) at 0x1FF1E800")
+    ap.add_argument("--monitor", action="append", default=[], metavar="COMMAND", help="Renode monitor command")
     ap.add_argument("--timeout", type=float, default=90.0, help="seconds")
     args = ap.parse_args()
     if not args.exe.exists():
@@ -48,6 +50,7 @@ def main() -> int:
         commands = [f"$bin=@{args.elf.resolve().as_posix()}", f"include @{(HERE / 'renode' / 'fcu_rev3.resc').as_posix()}"]
         for i, word in enumerate(args.uid or []):
             commands.append(f"sysbus WriteDoubleWord {0x1FF1E800 + 4 * i:#x} 0x{word}")
+        commands += args.monitor
         commands += [
             f'sysbus.usb Mode "{args.mode}"',
             f"sysbus.usb ResultFile @{result_file.as_posix()}",
