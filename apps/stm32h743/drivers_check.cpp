@@ -16,6 +16,7 @@
 #include "rtos/port/stm32h7/dma.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/fdcan.hpp"
+#include "rtos/port/stm32h7/flash_program.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
@@ -82,6 +83,7 @@ using Diag = h7::ExtiLine<{h7::gpio::GpioPort::D, 6}, h7::ExtiEdge::Both>;
 using Pressure = h7::Adc<h7::AdcId::Adc1, {.cpu_hz = cpu_hz, .channel = 18}>;
 using CpuTemperature = h7::CpuTemperature<{.cpu_hz = cpu_hz}>;
 using Can = h7::Fdcan<{.kernel_hz = clocks.pll1_q_hz(), .cpu_hz = cpu_hz, .bitrate = 500'000}>;
+h7::flash::Region<0x081C'0000, 256 * 1024, cpu_hz> missions;
 }  // namespace
 
 void drivers_check() noexcept;
@@ -183,4 +185,10 @@ void drivers_check() noexcept {
     (void)Can::rx_overflowed();
     (void)Can::status();
     Can::recover();
+
+    std::array<std::byte, 32> word{};
+    (void)missions.erase(0);
+    (void)missions.program(0, 0, word);
+    (void)missions.read(0, 0, word);
+    (void)missions.last_status();
 }

@@ -13,6 +13,7 @@
 #include "rtos/port/stm32h7/dma.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/fdcan.hpp"
+#include "rtos/port/stm32h7/flash_program.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
 #include "rtos/port/stm32h7/mpu.hpp"
@@ -273,6 +274,33 @@ TEST(Cm7Mpu, RegionEncodings) {
         << "base not aligned to the size";
     static_assert(mpu::valid(h7::mpu_regions::flash) && mpu::valid(h7::mpu_regions::dtcm) &&
                   mpu::valid(h7::mpu_regions::axi_sram) && mpu::valid(h7::mpu_regions::dma));
+}
+
+TEST(Cm7Mpu, FlashDataAreaStaysWritable) {
+    namespace mpu = rtos::port::cm7::mpu;
+    constexpr auto flash = h7::mpu_regions::flash;  // 2 MB: eighths of 256 KB
+    EXPECT_EQ(mpu::subregions_from(flash, 0x081C'0000), 0x80u) << "the FCU's missions: the last 256 KB";
+    EXPECT_EQ(mpu::subregions_from(flash, 0x0820'0000), 0x00u) << "no data area: the whole flash read-only";
+    EXPECT_EQ(mpu::subregions_from(flash, 0x0810'0000), 0xF0u) << "bank 2";
+    EXPECT_EQ(mpu::subregions_from(flash, 0x0811'0000), 0xF0u) << "unaligned: the shared eighth is writable too";
+    mpu::Region r = flash;
+    r.subregions_disabled = 0x80;
+    EXPECT_EQ(mpu::rasr(r) & (0xFFu << 8), 0x80u << 8);
+}
+
+TEST(H7Flash, SectorsAndFlashWords) {
+    namespace f = h7::flash;
+    EXPECT_EQ(f::sector_bytes, 128u * 1024u);
+    EXPECT_EQ(f::sectors_per_bank, 8u);
+    EXPECT_EQ(f::flash_word, 32u) << "FLASH_NB_32BITWORD_IN_FLASHWORD = 8";
+    static_assert(f::detail::Bank<1>::at == 0x5200'2000 && f::detail::Bank<2>::at == 0x5200'2100,
+                  "bank 2's KEYR/CR/SR/CCR sit 0x100 above bank 1's (SVD: KEYR2 +0x104, CR2 +0x10C)");
+    using Missions = f::Region<0x081C'0000, 256 * 1024, 400'000'000>;
+    EXPECT_EQ(Missions::block_count, 2u);
+    EXPECT_EQ(Missions::block_bytes, 128u * 1024u);
+    EXPECT_EQ(Missions::program_bytes, 32u);
+    // flash::Region<0x081E'0000, 256 * 1024, ...> (beyond the flash) and
+    // flash::Region<0x080E'0000, 256 * 1024, ...> (across the banks) do not compile.
 }
 
 }  // namespace

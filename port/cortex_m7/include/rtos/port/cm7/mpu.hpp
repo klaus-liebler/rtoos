@@ -14,6 +14,7 @@
 // Where regions overlap, the higher region number wins.
 #pragma once
 
+#include <contracts>
 #include <cstdint>
 
 #include "rtos/port/cortex_m/registers.hpp"
@@ -47,6 +48,7 @@ struct Region {
     Access access = Access::PrivRw;
     bool execute_never = true;
     bool shareable = false;
+    std::uint8_t subregions_disabled = 0;  ///< SRD: bit i switches off the i-th eighth (regions >= 256 B)
 };
 
 [[nodiscard]] constexpr bool power_of_two(std::uint32_t v) noexcept { return v != 0 && (v & (v - 1)) == 0; }
@@ -77,10 +79,24 @@ struct Region {
     return (tex << 19) | ((shareable ? 1u : 0u) << 18) | (c << 17) | (b << 16);
 }
 
-/// RASR: XN (28), AP (26:24), TEX/S/C/B, no subregion disabled, SIZE (5:1), ENABLE.
+/// RASR: XN (28), AP (26:24), TEX/S/C/B, SRD (15:8), SIZE (5:1), ENABLE.
 [[nodiscard]] constexpr std::uint32_t rasr(const Region& r) noexcept {
     return ((r.execute_never ? 1u : 0u) << 28) | (static_cast<std::uint32_t>(r.access) << 24) |
-           attributes(r.memory, r.shareable) | (size_field(r.bytes) << 1) | 1u;
+           attributes(r.memory, r.shareable) | (std::uint32_t{r.subregions_disabled} << 8) |
+           (size_field(r.bytes) << 1) | 1u;
+}
+
+/// SRD bits that switch off every eighth of `r` reaching at or above `address` (e.g. a data
+/// area at the end of a code region); 0 if `address` lies above the region.
+[[nodiscard]] constexpr std::uint8_t subregions_from(const Region& r, std::uint32_t address) noexcept {
+    const std::uint32_t eighth = r.bytes / 8;
+    std::uint32_t srd = 0;
+    for (std::uint32_t i = 0; i < 8; ++i) {
+        if (r.base + (i + 1) * eighth > address) {
+            srd |= 1u << i;
+        }
+    }
+    return static_cast<std::uint8_t>(srd);
 }
 
 /// RBAR with VALID and the region number (ARM_MPU_RBAR).
@@ -95,6 +111,13 @@ inline void set_region() noexcept {
     static_assert(N < 16, "the Cortex-M7 of the STM32H7 has 16 MPU regions");
     RBAR::write(rbar(N, R));
     RASR::write(rasr(R));
+}
+
+/// The same with a region known at run time only (e.g. from a linker symbol).
+inline void set_region(unsigned n, const Region& r) noexcept {
+    contract_assert(valid(r) && n < 16);
+    RBAR::write(rbar(n, r));
+    RASR::write(rasr(r));
 }
 
 /// MPU on; with `privileged_default_map` the default memory map applies where no region does.
