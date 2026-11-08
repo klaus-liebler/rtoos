@@ -6,7 +6,14 @@
 //   LED      LED_INFO on PE1, active low
 //   Ethernet LAN8742A at MDIO address 0 (the register values of fcu.repl, revision 1/2):
 //            link up, 100BASE-TX full duplex
+//   SD card  SDMMC1 (the STM32H5 SDMMC model: the same SDMMC v2 registers, STM32H5_SDMMC.cs,
+//            fcu_rev3.resc compiles it); a card is inserted at run time:
+//              sysbus.sdmmc1 InsertCard @<image> <true: SDHC | false: SDSC>
 using "stm32h743.repl"
+
+// SDMMC1: SVD v2.4 address, IRQ 49 (stm32h743xx.h SDMMC1_IRQn)
+sdmmc1: SD.STM32H5_SDMMC @ sysbus 0x52007000
+    IRQ -> nvic@49
 
 led_info: Miscellaneous.LED @ gpioPortE 1
     invert: true
