@@ -10,6 +10,7 @@
 
 #include "rtos/devices/hx711.hpp"
 #include "rtos/devices/ina226.hpp"
+#include "rtos/motion/timer_stepper.hpp"
 #include "rtos/port/cm7/cache.hpp"
 #include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
@@ -80,6 +81,10 @@ using StepDma = h7::DmaChannel<{.controller = 2, .stream = 5, .request = h7::Dma
                                 .direction = h7::DmaDirection::MemoryToPeripheral, .memory_bytes = 4,
                                 .peripheral_bytes = 4, .priority = 3}>;
 RTOS_DMA_BUFFER std::array<std::uint16_t, 24> led_bits{};
+// The FCU's stepper: STEP by TIM2's compare output, the periods by DMA into ARR (32-bit items:
+// the H7's DMA does not widen, and ARR is written as a 32-bit register).
+constexpr rtos::motion::SigmoidRamp ramp{.tick_hz = 1'000'000, .start_hz = 100, .cruise_hz = 1000, .ramp_us = 500'000};
+RTOS_DMA_BUFFER rtos::motion::TimerStepper<Steps, 1, StepDma, ramp> stepper;
 using Barrier = h7::ExtiLine<{h7::gpio::GpioPort::B, 10}, h7::ExtiEdge::Falling>;
 using Diag = h7::ExtiLine<{h7::gpio::GpioPort::D, 6}, h7::ExtiEdge::Both>;
 using Pressure = h7::Adc<h7::AdcId::Adc1, {.cpu_hz = cpu_hz, .channel = 18}>;
@@ -163,6 +168,11 @@ void drivers_check() noexcept {
     StepDma::init();
     (void)StepDma::remaining();
     StepDma::stop();
+    stepper.init();
+    (void)stepper.start(200);
+    stepper.on_dma_irq();
+    (void)stepper.on_timer_irq();
+    (void)stepper.position();
 
     Barrier::init();
     Barrier::enable();

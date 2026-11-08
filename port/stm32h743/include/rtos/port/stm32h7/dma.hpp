@@ -114,6 +114,7 @@ class DmaChannel {
     static constexpr std::uintptr_t ifcr = dma + (Config.stream < 4 ? 0x08 : 0x0C);
 
 public:
+    static constexpr DmaConfig config = Config;  ///< the configuration (rtos::motion::TimerStepper reads it)
     static constexpr std::uint8_t irq = dma_irq(Config.controller, Config.stream);
 
     static void init() noexcept {
