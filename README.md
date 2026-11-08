@@ -59,6 +59,7 @@ cmake --preset arm-h743 && cmake --build --preset arm-h743 && ctest --preset arm
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
 | [Command terminal](docs/terminal.md) | text commands from a generated catalog: handlers, compile-time completeness check, helpers |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
+| [PLC](docs/plc.md) | bytecode VM for IEC 61131-3 programs: instruction set, image format, verifier |
 | [USB](docs/usb.md) | device stack, CDC-ACM, CDC-NCM, Modbus RTU over USB, USB Power Delivery sink |
 | [Security](docs/security.md) | certificates and CA, TLS, OPC UA trust, ARP hardening |
 | [Testing](docs/testing.md) | host tests, fuzzing, QEMU, Renode, network test |

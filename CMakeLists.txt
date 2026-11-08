@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 #   cmake --preset arm   -> STM32H563 image
 #
 # As a subproject of a product (add_subdirectory, see docs/integration.md) rtoos provides
-# its libraries (rtos_kernel, rtos_tls, rtos_opcua, rtos_wolfssl, rtos_filex, rtos_littlefs, the chip and board
+# its libraries (rtos_kernel, rtos_tls, rtos_opcua, rtos_plc, rtos_wolfssl, rtos_filex, rtos_littlefs, the chip and board
 # packages, rtos_add_firmware, rtos_certificates) and, with RTOS_BUILD_EXAMPLES, its own
 # example firmware and tests.
 project(rtoos LANGUAGES C CXX)
@@ -110,6 +110,10 @@ add_library(rtos_opcua STATIC
     src/opcua/services.cpp src/opcua/session.cpp src/opcua/subscriptions.cpp src/opcua/tcp_message.cpp
     src/opcua/variant.cpp)
 target_link_libraries(rtos_opcua PUBLIC rtos_kernel rtos_wolfssl)
+
+# ---- PLC: the bytecode VM for IEC 61131-3 programs (docs/plc.md) ------------------
+add_library(rtos_plc STATIC src/plc/vm.cpp)
+target_link_libraries(rtos_plc PUBLIC rtos_kernel)
 
 # the example device of the rtoos examples and tests: fcu.local
 if(RTOS_BUILD_EXAMPLES)
