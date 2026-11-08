@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MIT
  * STM32H743xI (e.g. VIT6): 2 MB flash in two banks, RAM in separate blocks (stm32h743xx.h):
  *   DTCM      128 KB  0x20000000  CPU only (no DMA1/DMA2 access), not cached: the main stack
- *   AXI SRAM  512 KB  0x24000000  D1, every bus master: .data, .bss
+ *   AXI SRAM  512 KB  0x24000000  D1, every bus master: the first 32 KB .sdmmc_buffer (SDMMC1's
+ *                                 IDMA reaches only the AXI SRAM; non-cacheable, MPU region R4),
+ *                                 then .data, .bss
  *   SRAM1-2   256 KB  0x30000000  D2 (next to DMA1/DMA2, Ethernet, USB): .dma_buffer, non-cacheable
  *                                 (MPU region R3, stm32h7/mpu.hpp configure_mpu())
  *   SRAM3      32 KB  0x30040000  D2
@@ -16,7 +18,8 @@ MEMORY
 {
   FLASH   (rx)  : ORIGIN = 0x08000000, LENGTH = 2048K
   DTCM    (rw)  : ORIGIN = 0x20000000, LENGTH = 128K
-  RAM     (rw)  : ORIGIN = 0x24000000, LENGTH = 512K
+  RAM_SDMMC (rw): ORIGIN = 0x24000000, LENGTH = 32K   /* = stm32h7 sdmmc_buffer_base/_bytes */
+  RAM     (rw)  : ORIGIN = 0x24008000, LENGTH = 480K
   RAM_DMA (rw)  : ORIGIN = 0x30000000, LENGTH = 256K
   SRAM3   (rw)  : ORIGIN = 0x30040000, LENGTH = 32K
   SRAM_D3 (rw)  : ORIGIN = 0x38000000, LENGTH = 64K
@@ -92,6 +95,14 @@ SECTIONS
     . = ALIGN(32);
     __dma_end = .;
   } > RAM_DMA
+
+  /* SDMMC1 buffers (RTOS_SDMMC_BUFFER): not zeroed, constructed by __init_array. */
+  .sdmmc_buffer (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.sdmmc_buffer .sdmmc_buffer.*)
+    . = ALIGN(32);
+  } > RAM_SDMMC
 
   /* The main stack's room in the DTCM (nothing else is placed there yet). */
   .msp_stack (NOLOAD) :

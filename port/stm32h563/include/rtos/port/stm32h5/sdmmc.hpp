@@ -18,6 +18,10 @@
 #include "rtos/port/stm32h5/chip.hpp"
 #include "rtos/port/stm32h5/rcc.hpp"
 
+/// Where SDMMC buffers go (as on the STM32H7, there a non-cacheable window): the H563's IDMA
+/// reaches every SRAM and there is no data cache on it - anywhere, word aligned.
+#define RTOS_SDMMC_BUFFER [[gnu::aligned(32)]]
+
 namespace rtos::port::stm32h5 {
 
 using stm32::sdmmc_clkdiv, stm32::SdmmcConfig;

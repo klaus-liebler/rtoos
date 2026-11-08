@@ -29,6 +29,11 @@ inline constexpr std::uintptr_t itcm_base = 0x0000'0000, dtcm_base = 0x2000'0000
                                 sram1_base = 0x3000'0000, sram4_base = 0x3800'0000;
 inline constexpr std::size_t itcm_bytes = 64 * 1024, dtcm_bytes = 128 * 1024, axi_sram_bytes = 512 * 1024,
                              d2_sram_bytes = 288 * 1024, sram4_bytes = 64 * 1024;
+/// SDMMC1's buffers: SDMMC1 is a D1 bus master and its IDMA reaches the AXI SRAM, QUADSPI and FMC
+/// only - not the DTCM, not SRAM1-4 (ST AN5200). The first 32 KB of the AXI SRAM are kept for it,
+/// non-cacheable (stm32h743xi.ld RAM_SDMMC, .sdmmc_buffer; mpu.hpp region R4).
+inline constexpr std::uintptr_t sdmmc_buffer_base = axi_sram_base;
+inline constexpr std::size_t sdmmc_buffer_bytes = 32 * 1024;
 /// 96-bit unique device ID (stm32h743xx.h UID_BASE).
 inline constexpr std::uintptr_t uid_base = 0x1FF1'E800;
 

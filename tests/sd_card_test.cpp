@@ -147,6 +147,15 @@ struct FakeHost {
 };
 static_assert(SdHost<FakeHost>);
 
+// SdCard passes the host's DMA reach on (FileXMedia bounces what it does not reach); a host
+// without a limit reaches everything.
+struct WindowHost : FakeHost {
+    static constexpr bool dma_reachable(const void*, std::size_t bytes) noexcept { return bytes <= 512; }
+};
+static_assert(SdCard<WindowHost>::dma_reachable(nullptr, 512));
+static_assert(!SdCard<WindowHost>::dma_reachable(nullptr, 1024));
+static_assert(SdCard<FakeHost>::dma_reachable(nullptr, 1u << 20));
+
 struct Fixture {
     SimulatedCard card;
     FakeHost host{card};

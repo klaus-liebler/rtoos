@@ -9,13 +9,19 @@
 //   R1 DTCM 128 KB            : RW, XN (not cached anyway: tightly coupled)
 //   R2 AXI SRAM 512 KB        : RW, XN, write-back read/write allocate (.data, .bss)
 //   R3 SRAM1 + SRAM2 256 KB   : RW, XN, NON-cacheable, shareable: the DMA region (.dma_buffer)
+//   R4 AXI SRAM first 32 KB   : RW, XN, NON-cacheable, shareable: SDMMC1's buffers (.sdmmc_buffer)
 //   Peripherals, the rest     : privileged default map (Device memory)
 //
 // The default map would make SRAM1/2 write-back cacheable: R3 is what keeps the CPU and the
-// DMAs (DMA1/2, Ethernet, SDMMC IDMA, USB) coherent without cache maintenance. Put every buffer
-// a DMA reads or writes there:
+// DMAs (DMA1/2, Ethernet, USB) coherent without cache maintenance. Put every buffer a DMA reads
+// or writes there:
 //
 //   RTOS_DMA_BUFFER std::array<std::uint16_t, 24> led_bits;
+//
+// SDMMC1 cannot reach SRAM1/2 (a D1 master: AXI SRAM, QUADSPI, FMC only, ST AN5200): its
+// buffers - a FileXMedia with its sector cache and bounce sector - go to R4:
+//
+//   RTOS_SDMMC_BUFFER rtos::storage::FileXMedia<rtos::storage::SdCard<Host>> volume{card};
 //
 // The flash data area (rtos_add_firmware(... FLASH_DATA_START ...), littlefs) is writable: keep
 // it 256 KB aligned, or the eighth it shares with the image becomes writable too.
@@ -29,6 +35,9 @@
 /// Place an object in the linker's non-cacheable DMA region (.dma_buffer in SRAM1/2, MPU region
 /// R3), aligned to the data cache line.
 #define RTOS_DMA_BUFFER [[gnu::section(".dma_buffer"), gnu::aligned(32)]]
+/// Place an object in SDMMC1's non-cacheable window (.sdmmc_buffer, the first 32 KB of the AXI
+/// SRAM, MPU region R4).
+#define RTOS_SDMMC_BUFFER [[gnu::section(".sdmmc_buffer"), gnu::aligned(32)]]
 
 namespace rtos::port::stm32h7 {
 
@@ -41,6 +50,9 @@ inline constexpr Region axi_sram{.base = axi_sram_base, .bytes = axi_sram_bytes,
 /// SRAM1 + SRAM2 (stm32h7xx: 128 KB each, contiguous); SRAM3 above it stays default.
 inline constexpr Region dma{.base = sram1_base, .bytes = 256 * 1024, .memory = Memory::NormalNonCacheable,
                             .shareable = true};
+/// SDMMC1's window at the start of the AXI SRAM (above R2: the higher region number wins).
+inline constexpr Region sdmmc{.base = sdmmc_buffer_base, .bytes = sdmmc_buffer_bytes,
+                              .memory = Memory::NormalNonCacheable, .shareable = true};
 }  // namespace mpu_regions
 
 extern "C" std::uint32_t rtos_flash_data_start;  // linker script: the end of the flash without a data area
@@ -56,6 +68,7 @@ inline void configure_mpu() noexcept {
     mpu::set_region<1, mpu_regions::dtcm>();
     mpu::set_region<2, mpu_regions::axi_sram>();
     mpu::set_region<3, mpu_regions::dma>();
+    mpu::set_region<4, mpu_regions::sdmmc>();
     mpu::enable();
 }
 

@@ -186,6 +186,16 @@ public:
         return wait_transfer_state();
     }
 
+    /// The host's DMA can move data to or from [p, p + bytes) - false: give it a buffer that
+    /// it can reach (SDMMC1 on the STM32H7: RTOS_SDMMC_BUFFER). Hosts without the limit: true.
+    [[nodiscard]] static constexpr bool dma_reachable(const void* p, std::size_t bytes) noexcept {
+        if constexpr (requires { Host::dma_reachable(p, bytes); }) {
+            return Host::dma_reachable(p, bytes);
+        } else {
+            return true;
+        }
+    }
+
     [[nodiscard]] bool ready() const noexcept { return ready_; }
     [[nodiscard]] std::uint64_t blocks() const noexcept { return blocks_; }
     [[nodiscard]] bool high_capacity() const noexcept { return block_addressed_; }

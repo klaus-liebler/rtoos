@@ -19,8 +19,11 @@
 // The driver adds the partition offset itself: a card with a partition table (MBR) is opened
 // at its first partition, an unpartitioned one ("superfloppy") at sector 0. The offset comes
 // from the MBR, not from the boot sector's hidden-sector count, which need not match it.
-// FileX may hand the driver buffers of any alignment (direct reads into the caller's buffer);
-// devices that need word-aligned buffers (SDMMC's IDMA) get them through a bounce sector.
+// FileX may hand the driver buffers of any alignment and anywhere (direct reads into the
+// caller's buffer); devices that need word-aligned buffers (SDMMC's IDMA) or buffers in a memory
+// their DMA reaches (Device::dma_reachable, e.g. SDMMC1 on the STM32H7) get them through a bounce
+// sector. Such a device then needs the FileXMedia itself in that memory (its sector cache and
+// bounce sector: RTOS_SDMMC_BUFFER on the STM32H7); open() and format_fat() fail otherwise.
 #pragma once
 
 #include <algorithm>
@@ -56,6 +59,9 @@ public:
 
     /// Open the file system on the device (its first partition, or the whole device).
     UINT open(const char* name = "volume") noexcept {
+        if (!buffers_reachable()) {
+            return FX_IO_ERROR;
+        }
         initialize_filex();
         const UINT status = fx_media_open(&media_, const_cast<CHAR*>(name), &driver, this, cache_.data(),
                                           static_cast<ULONG>(cache_.size()));
@@ -76,6 +82,9 @@ public:
     /// Create a FAT file system over the whole device, no partition table. FileX picks FAT12,
     /// 16 or 32 by the cluster count (FAT32 from 65525 clusters on).
     UINT format_fat(const char* label = "RTOOS", std::uint32_t sectors_per_cluster = 8) noexcept {
+        if (!buffers_reachable()) {
+            return FX_IO_ERROR;
+        }
         initialize_filex();
         partition_start_ = 0;  // the whole device
         return fx_media_format(&media_, &driver, this, cache_.data(), static_cast<ULONG>(cache_.size()),
@@ -134,9 +143,25 @@ private:
         }
     }
 
-    /// Whole sectors; through the bounce sector if the buffer is not word aligned.
+    /// The device's DMA reaches [p, p + bytes) (true for devices without a dma_reachable()).
+    [[nodiscard]] static constexpr bool reachable(const void* p, std::size_t bytes) noexcept {
+        if constexpr (requires { Device::dma_reachable(p, bytes); }) {
+            return Device::dma_reachable(p, bytes);
+        } else {
+            return true;
+        }
+    }
+
+    /// The sector cache and the bounce sector (this object) where the device's DMA reaches them.
+    [[nodiscard]] bool buffers_reachable() const noexcept {
+        return reachable(cache_.data(), cache_.size()) && reachable(bounce_.data(), bounce_.size());
+    }
+
+    /// Whole sectors; through the bounce sector if the buffer is not word aligned or not where
+    /// the device's DMA reaches.
     bool transfer(bool read, std::uint64_t sector, std::byte* buffer, std::uint64_t count) noexcept {
-        if (reinterpret_cast<std::uintptr_t>(buffer) % 4 == 0) {
+        if (reinterpret_cast<std::uintptr_t>(buffer) % 4 == 0 &&
+            reachable(buffer, static_cast<std::size_t>(count * sd_block_size))) {
             const std::span<std::byte> data(buffer, static_cast<std::size_t>(count * sd_block_size));
             return (read ? device_.read(sector, data) : device_.write(sector, data)) == SdStatus::Ok;
         }

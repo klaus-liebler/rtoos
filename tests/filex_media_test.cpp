@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,61 @@ TEST(FileXMedia, UnalignedCallerBuffersGoThroughTheBounceSector) {
     EXPECT_EQ(read_file(volume.media(), "odd.bin", 3), content) << "read into an odd address";
     EXPECT_EQ(disk.unaligned_requests, 0) << "the device never saw an unaligned buffer";
     ASSERT_EQ(volume.close(), FX_SUCCESS);
+}
+
+// A device whose DMA reaches one window only (SDMMC1 on the STM32H743: the AXI SRAM's
+// .sdmmc_buffer, not the DTCM or SRAM1/2 where stacks and other buffers live).
+alignas(64) std::byte dma_window[64 * 1024];
+
+struct WindowDisk : RamDisk {
+    using RamDisk::RamDisk;
+    int outside_requests = 0;
+
+    static constexpr bool dma_reachable(const void* p, std::size_t bytes) noexcept {
+        const auto* b = static_cast<const std::byte*>(p);
+        return b >= dma_window && b + bytes <= dma_window + sizeof dma_window;
+    }
+    SdStatus read(std::uint64_t block, std::span<std::byte> out) noexcept {
+        if (!dma_reachable(out.data(), out.size())) {
+            ++outside_requests;
+            return SdStatus::CardError;
+        }
+        return RamDisk::read(block, out);
+    }
+    SdStatus write(std::uint64_t block, std::span<const std::byte> in) noexcept {
+        if (!dma_reachable(in.data(), in.size())) {
+            ++outside_requests;
+            return SdStatus::CardError;
+        }
+        return RamDisk::write(block, in);
+    }
+};
+static_assert(BlockDevice<WindowDisk>);
+
+// Regression: on the STM32H743, FileX handed SDMMC1 the caller's buffers (an I/O thread's
+// mission buffer in the cached AXI SRAM or the DTCM) - memory its IDMA does not reach or the data
+// cache hides. FileXMedia now bounces every buffer outside the device's window.
+TEST(FileXMedia, BuffersOutsideTheDevicesDmaWindowGoThroughTheBounceSector) {
+    static_assert(sizeof(FileXMedia<WindowDisk>) <= sizeof dma_window);
+    WindowDisk disk(16 * 1024 * 2);
+    auto* volume = new (dma_window) FileXMedia<WindowDisk>{disk};  // RTOS_SDMMC_BUFFER on the target
+    ASSERT_EQ(volume->format_fat(), FX_SUCCESS);
+    ASSERT_EQ(volume->open(), FX_SUCCESS);
+    const auto content = pattern(64 * 1024, 11);  // whole sectors: FileX moves them directly
+    write_file(volume->media(), "far.bin", content);
+    ASSERT_EQ(volume->flush(), FX_SUCCESS);
+    EXPECT_EQ(read_file(volume->media(), "far.bin"), content);
+    EXPECT_EQ(disk.outside_requests, 0) << "the device never saw a buffer outside its DMA window";
+    ASSERT_EQ(volume->close(), FX_SUCCESS);
+    volume->~FileXMedia();
+}
+
+TEST(FileXMedia, RefusesToOpenWhenItsOwnBuffersAreOutsideTheDmaWindow) {
+    WindowDisk disk(16 * 1024 * 2);
+    FileXMedia<WindowDisk> volume{disk};  // on the stack: outside the window
+    EXPECT_NE(volume.format_fat(), FX_SUCCESS);
+    EXPECT_NE(volume.open(), FX_SUCCESS);
+    EXPECT_EQ(disk.outside_requests, 0);
 }
 
 }  // namespace

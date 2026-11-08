@@ -35,6 +35,9 @@ struct SdmmcHw {
     std::uintptr_t base;
     rcc::Gate gate;
     std::uint8_t irq;
+    /// The memory the IDMA may use (reachable and not cached); 0 bytes: anywhere (STM32H5).
+    std::uintptr_t dma_base = 0;
+    std::size_t dma_bytes = 0;
 };
 
 struct SdmmcConfig {
@@ -109,6 +112,17 @@ public:
 
     SdCommandResult stop(SdResponse r) noexcept { return run(12, 0, r, sdmmc_detail::cmdr_cmdstop); }
 
+    /// The IDMA can move data to or from [p, p + bytes) (SdmmcHw::dma_base): otherwise copy
+    /// through a buffer that it can (rtos::storage::FileXMedia does).
+    [[nodiscard]] static constexpr bool dma_reachable(const void* p, std::size_t bytes) noexcept {
+        if constexpr (Hw.dma_bytes == 0) {
+            return true;
+        } else {
+            const auto a = reinterpret_cast<std::uintptr_t>(p);
+            return a >= Hw.dma_base && bytes <= Hw.dma_bytes && a - Hw.dma_base <= Hw.dma_bytes - bytes;
+        }
+    }
+
     SdCommandResult read_data(std::uint8_t index, std::uint32_t arg, std::span<std::byte> in) noexcept {
         return transfer(index, arg, in.data(), in.size(), true);
     }
@@ -174,6 +188,7 @@ private:
                              bool read) noexcept {
         using namespace sdmmc_detail;
         contract_assert(reinterpret_cast<std::uintptr_t>(buffer) % 4 == 0 && bytes % storage::sd_block_size == 0);
+        contract_assert(dma_reachable(buffer, bytes));
         ICR::write(icr_all);
         DTIMER::write(data_timeout_clocks);
         DLENR::write(static_cast<std::uint32_t>(bytes));
