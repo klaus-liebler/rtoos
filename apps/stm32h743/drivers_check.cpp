@@ -14,6 +14,8 @@
 #include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/dma.hpp"
+#include "rtos/net/packet.hpp"
+#include "rtos/port/stm32h7/ethernet.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/fdcan.hpp"
 #include "rtos/port/stm32h7/flash_program.hpp"
@@ -84,6 +86,9 @@ using Pressure = h7::Adc<h7::AdcId::Adc1, {.cpu_hz = cpu_hz, .channel = 18}>;
 using CpuTemperature = h7::CpuTemperature<{.cpu_hz = cpu_hz}>;
 using Can = h7::Fdcan<{.kernel_hz = clocks.pll1_q_hz(), .cpu_hz = cpu_hz, .bitrate = 500'000}>;
 h7::flash::Region<0x081C'0000, 256 * 1024, cpu_hz> missions;
+using Pool = rtos::net::PacketPool<16>;
+RTOS_DMA_BUFFER Pool pool;
+RTOS_DMA_BUFFER h7::Ethernet<Pool> ethernet{pool, rtos::net::MacAddress{}, 0};
 }  // namespace
 
 void drivers_check() noexcept;
@@ -191,4 +196,11 @@ void drivers_check() noexcept {
     (void)missions.program(0, 0, word);
     (void)missions.read(0, 0, word);
     (void)missions.last_status();
+
+    (void)ethernet.init(clocks.hclk_hz());
+    (void)ethernet.poll_link();
+    (void)ethernet.transmit(pool.allocate(0));
+    (void)ethernet.receive();
+    (void)ethernet.irq();
+    (void)ethernet.phy_read(h7::lan8742::bsr);
 }

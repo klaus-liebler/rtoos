@@ -164,7 +164,8 @@ namespace gate {
 using detail::ahb1, detail::ahb2, detail::ahb3, detail::ahb4, detail::apb1h, detail::apb1l, detail::apb2, detail::apb4,
     detail::gate;
 inline constexpr Gate sdmmc1 = gate(ahb3, 16);
-inline constexpr Gate dma1 = gate(ahb1, 0), dma2 = gate(ahb1, 1), adc12 = gate(ahb1, 5);
+inline constexpr Gate dma1 = gate(ahb1, 0), dma2 = gate(ahb1, 1), adc12 = gate(ahb1, 5), eth1mac = gate(ahb1, 15),
+                      eth1tx = gate(ahb1, 16), eth1rx = gate(ahb1, 17);
 inline constexpr Gate adc3 = gate(ahb4, 24);
 inline constexpr Gate fdcan = gate(apb1h, 8);  ///< FDCAN1 and FDCAN2
 inline constexpr Gate rng = gate(ahb2, 6), sdmmc2 = gate(ahb2, 9);

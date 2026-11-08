@@ -11,6 +11,7 @@
 #include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/dma.hpp"
+#include "rtos/port/stm32h7/ethernet.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/fdcan.hpp"
 #include "rtos/port/stm32h7/flash_program.hpp"
@@ -234,6 +235,14 @@ TEST(H7Adc, PrescalerAndTemperatureFormula) {
     EXPECT_EQ(h7::temperature_centi_celsius(14'000, 12'000, 16'000, 110), 7000) << "revision Y: TS_CAL2 at 110 degC";
     EXPECT_EQ(h7::temperature_centi_celsius(11'000, 12'000, 16'000, 130), 500) << "below 30 degC";
     EXPECT_FALSE(h7::temperature_centi_celsius(12'000, 0, 0, 130)) << "no calibration: no value";
+}
+
+TEST(H7Ethernet, InstanceAndMdioClock) {
+    EXPECT_EQ(h7::ethernet_hw.base, 0x4002'8000u) << "SVD v2.4 Ethernet_MAC";
+    EXPECT_EQ(h7::ethernet_hw.irq, 61u) << "stm32h743xx.h ETH_IRQn";
+    // HAL_ETH_SetMDIOClockRange: HCLK 200 MHz -> /102 (MDC 1.96 MHz <= 2.5 MHz)
+    EXPECT_EQ(h7::eth_reg::mdio_clock_range(200'000'000), 0x400u);
+    EXPECT_EQ(h7::eth_detail::pmcr_epis_rmii, 0x0080'0000u) << "stm32h743xx.h SYSCFG_PMCR_EPIS_SEL_2";
 }
 
 TEST(H7Fdcan, MessageRamLayoutAndBitTiming) {
