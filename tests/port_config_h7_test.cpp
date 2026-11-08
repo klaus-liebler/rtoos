@@ -8,9 +8,11 @@
 #include <gtest/gtest.h>
 
 #include "rtos/port/cm7/mpu.hpp"
+#include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/dma.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
+#include "rtos/port/stm32h7/fdcan.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
 #include "rtos/port/stm32h7/mpu.hpp"
@@ -217,6 +219,37 @@ TEST(H7Exti, SharedInterruptLines) {
     EXPECT_EQ(h7::exti_detail::irq(15), 40u);
     using Barrier = h7::ExtiLine<{h7::gpio::GpioPort::B, 10}, h7::ExtiEdge::Falling>;
     EXPECT_EQ(Barrier::irq, 40u);
+}
+
+TEST(H7Adc, PrescalerAndTemperatureFormula) {
+    // per_ck = HSI 64 MHz, at most 6.25 MHz: / 12 (PRESC 0110) -> 5.33 MHz
+    constexpr h7::AdcConfig c{.cpu_hz = 400'000'000, .channel = 18};
+    EXPECT_EQ(h7::adc_presc(c), 6u);
+    EXPECT_EQ(h7::adc_clock_hz(c), 5'333'333u);
+    EXPECT_EQ(h7::adc_presc({.kernel_hz = 64'000'000, .cpu_hz = 400'000'000, .channel = 0, .max_adc_hz = 64'000'000}), 0u);
+    // __LL_ADC_CALC_TEMPERATURE at 3.3 V: 30 degC at TS_CAL1, TS_CAL2's temperature at TS_CAL2
+    EXPECT_EQ(h7::temperature_centi_celsius(12'000, 12'000, 16'000, 130), 3000);
+    EXPECT_EQ(h7::temperature_centi_celsius(16'000, 12'000, 16'000, 130), 13'000);
+    EXPECT_EQ(h7::temperature_centi_celsius(14'000, 12'000, 16'000, 110), 7000) << "revision Y: TS_CAL2 at 110 degC";
+    EXPECT_EQ(h7::temperature_centi_celsius(11'000, 12'000, 16'000, 130), 500) << "below 30 degC";
+    EXPECT_FALSE(h7::temperature_centi_celsius(12'000, 0, 0, 130)) << "no calibration: no value";
+}
+
+TEST(H7Fdcan, MessageRamLayoutAndBitTiming) {
+    namespace d = h7::fdcan_detail;
+    // RX FIFO 0: 16 elements at byte 0; TX FIFO: 8 elements at byte 256; 16-byte elements (8 data)
+    EXPECT_EQ(d::rxf0c, 16u << 16);
+    EXPECT_EQ(d::txbc, 0x100u | (8u << 24)) << "TBSA = byte 256, NDTB = 0, TFQS = 8, TFQM = 0 (FIFO)";
+    EXPECT_LE(d::rx_fifo0 + d::rx_fifo0_elements * d::element_bytes, d::tx_fifo) << "RX FIFO 0 overlaps the TX FIFO";
+    EXPECT_LE(d::used_bytes, 10u * 1024u) << "within the 10 KB message RAM";
+    EXPECT_EQ(d::sram, 0x4000'AC00u) << "stm32h743xx.h SRAMCAN_BASE";
+    // pll1_q 100 MHz, 500 kbit/s: the most quanta that divide exactly, 25 (prescaler 8), sample
+    // point 22/25 = 88.0 % (nearest to 87.5 %)
+    using Can = h7::Fdcan<{.kernel_hz = 100'000'000, .cpu_hz = 400'000'000, .bitrate = 500'000}>;
+    EXPECT_EQ(Can::bit_timing.quanta(), 25u);
+    EXPECT_EQ(Can::bit_timing.prescaler, 8u);
+    EXPECT_EQ(Can::bit_timing.sample_permille(), 880u);
+    EXPECT_EQ(Can::irq0, 19u);
 }
 
 TEST(Cm7Mpu, RegionEncodings) {

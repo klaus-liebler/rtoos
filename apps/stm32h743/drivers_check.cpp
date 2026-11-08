@@ -11,9 +11,11 @@
 #include "rtos/devices/hx711.hpp"
 #include "rtos/devices/ina226.hpp"
 #include "rtos/port/cm7/cache.hpp"
+#include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/dma.hpp"
 #include "rtos/port/stm32h7/exti.hpp"
+#include "rtos/port/stm32h7/fdcan.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
@@ -77,6 +79,9 @@ using StepDma = h7::DmaChannel<{.controller = 2, .stream = 5, .request = h7::Dma
 RTOS_DMA_BUFFER std::array<std::uint16_t, 24> led_bits{};
 using Barrier = h7::ExtiLine<{h7::gpio::GpioPort::B, 10}, h7::ExtiEdge::Falling>;
 using Diag = h7::ExtiLine<{h7::gpio::GpioPort::D, 6}, h7::ExtiEdge::Both>;
+using Pressure = h7::Adc<h7::AdcId::Adc1, {.cpu_hz = cpu_hz, .channel = 18}>;
+using CpuTemperature = h7::CpuTemperature<{.cpu_hz = cpu_hz}>;
+using Can = h7::Fdcan<{.kernel_hz = clocks.pll1_q_hz(), .cpu_hz = cpu_hz, .bitrate = 500'000}>;
 }  // namespace
 
 void drivers_check() noexcept;
@@ -158,4 +163,24 @@ void drivers_check() noexcept {
     Diag::init();
     Diag::trigger();
     Diag::disable();
+
+    (void)Pressure::init();
+    Pressure::start_continuous();
+    (void)Pressure::read();
+    Pressure::stop();
+    std::uint16_t raw = 0;
+    (void)Pressure::convert(raw);
+    CpuTemperature::init();
+    if (CpuTemperature::ready()) {
+        CpuTemperature::start();
+    }
+    (void)CpuTemperature::centi_celsius();
+
+    (void)Can::init();
+    (void)Can::send({.id = 0x123, .length = 1, .data = {1}});
+    h7::CanFrame frame;
+    (void)Can::receive(frame);
+    (void)Can::rx_overflowed();
+    (void)Can::status();
+    Can::recover();
 }

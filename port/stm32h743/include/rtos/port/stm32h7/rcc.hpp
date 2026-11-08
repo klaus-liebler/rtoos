@@ -161,9 +161,12 @@ inline constexpr std::uint16_t enr_to_rstr = 0x58;
 }  // namespace detail
 
 namespace gate {
-using detail::ahb1, detail::ahb2, detail::ahb3, detail::apb1l, detail::apb2, detail::apb4, detail::gate;
+using detail::ahb1, detail::ahb2, detail::ahb3, detail::ahb4, detail::apb1h, detail::apb1l, detail::apb2, detail::apb4,
+    detail::gate;
 inline constexpr Gate sdmmc1 = gate(ahb3, 16);
-inline constexpr Gate dma1 = gate(ahb1, 0), dma2 = gate(ahb1, 1);
+inline constexpr Gate dma1 = gate(ahb1, 0), dma2 = gate(ahb1, 1), adc12 = gate(ahb1, 5);
+inline constexpr Gate adc3 = gate(ahb4, 24);
+inline constexpr Gate fdcan = gate(apb1h, 8);  ///< FDCAN1 and FDCAN2
 inline constexpr Gate rng = gate(ahb2, 6), sdmmc2 = gate(ahb2, 9);
 inline constexpr Gate tim2 = gate(apb1l, 0), tim3 = gate(apb1l, 1), tim4 = gate(apb1l, 2), tim5 = gate(apb1l, 3),
                       tim6 = gate(apb1l, 4), tim7 = gate(apb1l, 5), tim12 = gate(apb1l, 6), tim13 = gate(apb1l, 7),
