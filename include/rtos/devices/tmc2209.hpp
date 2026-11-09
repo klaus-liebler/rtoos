@@ -45,9 +45,12 @@ enum class Tmc2209Microsteps : std::uint8_t { M256 = 0, M128, M64, M32, M16, M8,
 
 namespace tmc2209 {
 // registers (datasheet 5)
-inline constexpr std::uint8_t gconf = 0x00, gstat = 0x01, ifcnt = 0x02, ioin = 0x06, ihold_irun = 0x10, tstep = 0x12,
-                              tcoolthrs = 0x14, vactual = 0x22, sgthrs = 0x40, sg_result = 0x41, coolconf = 0x42,
-                              mscnt = 0x6A, chopconf = 0x6C, drv_status = 0x6F;
+inline constexpr std::uint8_t gconf = 0x00, gstat = 0x01, ifcnt = 0x02, ioin = 0x06, ihold_irun = 0x10, tpowerdown = 0x11,
+                              tstep = 0x12, tpwmthrs = 0x13, tcoolthrs = 0x14, vactual = 0x22, sgthrs = 0x40, sg_result = 0x41,
+                              coolconf = 0x42, mscnt = 0x6A, chopconf = 0x6C, drv_status = 0x6F, pwmconf = 0x70,
+                              pwm_scale = 0x71, pwm_auto = 0x72;
+/// PWMCONF (5.6): pwm_autoscale (bit 18), pwm_autograd (bit 19); the reset value 0xC10D0024.
+inline constexpr std::uint32_t pwmconf_autoscale = 1u << 18, pwmconf_autograd = 1u << 19, pwmconf_reset = 0xC10D'0024u;
 /// DRV_STATUS (5.5.3): ot, s2ga, s2gb, s2vsa, s2vsb (bits 1..5); open load (bits 6/7) is
 /// not counted: it shows in fast motion and at standstill too.
 inline constexpr std::uint32_t drv_status_errors = 0x3Eu;
@@ -140,6 +143,26 @@ public:
         return write(gstat, 0x07) && write(gconf, gconf_) && read(gconf) == gconf_ && write(chopconf, chopconf_);
     }
 
+    /// StealthChop (false) or SpreadCycle (true) from now on (GCONF en_SpreadCycle).
+    bool set_spreadcycle(bool on) noexcept {
+        const std::uint32_t g = on ? (gconf_ | tmc2209::gconf_en_spreadcycle) : (gconf_ & ~tmc2209::gconf_en_spreadcycle);
+        if (!write(tmc2209::gconf, g)) return false;
+        gconf_ = g;
+        return true;
+    }
+    [[nodiscard]] bool spreadcycle() const noexcept { return (gconf_ & tmc2209::gconf_en_spreadcycle) != 0; }
+
+    /// Another micro step resolution (CHOPCONF MRES; the rest of CHOPCONF as init() left it).
+    bool set_microsteps(Tmc2209Microsteps steps) noexcept {
+        const std::uint32_t c = (chopconf_ & ~tmc2209::chopconf_mres_mask) | (static_cast<std::uint32_t>(steps) << tmc2209::chopconf_mres_pos);
+        if (!write(tmc2209::chopconf, c)) return false;
+        chopconf_ = c;
+        microsteps_ = 256u >> static_cast<unsigned>(steps);
+        return true;
+    }
+    /// Micro steps per full step (MRES).
+    [[nodiscard]] std::uint32_t microsteps() const noexcept { return microsteps_; }
+
     /// IHOLD, IRUN (0..31 of the full scale) and IHOLDDELAY (0..15).
     bool set_current(std::uint8_t hold, std::uint8_t run, std::uint8_t hold_delay) noexcept {
         return write(tmc2209::ihold_irun, (std::uint32_t{hold_delay & 0x0Fu} << 16) | (std::uint32_t{run & 0x1Fu} << 8) |
@@ -155,8 +178,10 @@ public:
     bool start_homing(const Tmc2209Homing& h, std::uint32_t now_ms) noexcept {
         using namespace tmc2209;
         homing_ = h;
-        // StealthChop (as init()), CoolStep off, TCOOLTHRS 450 (DIAG from ~104 full steps/s), SGTHRS
-        if (!write(gconf, gconf_) || !write(coolconf, 0) || !write(tcoolthrs, 450) ||
+        // StealthChop (StallGuard4 needs it, also if SpreadCycle was chosen: finish() restores GCONF),
+        // CoolStep off, TCOOLTHRS 450 (DIAG from ~104 full steps/s), SGTHRS. The caller sets CoolStep
+        // and TCOOLTHRS again afterwards if it uses them.
+        if (!write(gconf, gconf_ & ~gconf_en_spreadcycle) || !write(coolconf, 0) || !write(tcoolthrs, 450) ||
             !write(sgthrs, h.stall_threshold) || !velocity(-h.speed)) {
             phase_ = Phase::Idle;
             return false;
@@ -213,6 +238,10 @@ public:
         return HomingResult::Error;
     }
     [[nodiscard]] bool homing() const noexcept { return phase_ != Phase::Idle; }
+    /// Abort a homing at once: the motor stops (VACTUAL 0), GCONF as before.
+    void abort_homing() noexcept {
+        if (phase_ != Phase::Idle) (void)finish(HomingResult::Error);
+    }
     /// The last homing ended by the DIAG signal (true) or by polling SG_RESULT (false).
     [[nodiscard]] bool stall_by_signal() const noexcept { return stall_by_signal_; }
 
@@ -274,6 +303,7 @@ private:
     }
     HomingResult finish(HomingResult r) noexcept {
         (void)velocity(0);
+        if ((gconf_ & tmc2209::gconf_en_spreadcycle) != 0) (void)write(tmc2209::gconf, gconf_);  // SpreadCycle again
         phase_ = Phase::Idle;
         return r;
     }

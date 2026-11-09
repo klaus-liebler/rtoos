@@ -36,26 +36,32 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "rtos/motion/profile_stepper.hpp"
 #include "rtos/motion/sigmoid_stepper.hpp"
 
 namespace rtos::motion {
 
 /// `Tim`: a stm32h5::Timer with ARR preload; `Ch` its channel on the STEP pin; `Dma`: a
-/// stm32h5::DmaChannel, memory to peripheral, paced by the timer's update request.
-template <class Tim, unsigned Ch, class Dma, SigmoidRamp R, std::size_t Chunk = 32>
-class TimerStepper {
+/// stm32h5::DmaChannel, memory to peripheral, paced by the timer's update request. `M`: the
+/// motion plan - begin(steps) -> first period, period(k), total() - a SigmoidStepper (ramp fixed
+/// by the compiler: TimerStepper below) or a ProfileStepper (ramp chosen at run time: motion()).
+template <class Tim, unsigned Ch, class Dma, class M, std::size_t Chunk = 32>
+class BasicTimerStepper {
     using Item = std::conditional_t<Dma::config.memory_bytes == 4, std::uint32_t, std::uint16_t>;
     static_assert(Dma::config.memory_bytes == 2 || Dma::config.memory_bytes == 4, "items of 2 or 4 bytes");
     static_assert(Dma::config.peripheral_bytes == 4, "ARR is written as a 32-bit register");
     static_assert(Tim::preload, "the timer needs ARR preload (ARPE): the DMA writes the next period");
-    static_assert(Tim::tick_hz == R.tick_hz, "timer ticks and ramp ticks differ");
-    static_assert(SigmoidStepper<R>::max_ticks <= Tim::max_period, "the slowest step does not fit ARR");
-    static_assert(SigmoidStepper<R>::max_ticks <= (Dma::config.memory_bytes == 2 ? 0xFFFFu : 0xFFFF'FFFFu),
-                  "the slowest step does not fit a DMA item");
     static_assert(Chunk >= 2 && Chunk * sizeof(Item) <= 0xFFFF);
 
 public:
-    using Motion = SigmoidStepper<R>;
+    using Motion = M;
+    /// The longest step period ARR and a DMA item hold (a run-time profile is checked against it).
+    static constexpr std::uint32_t max_ticks =
+        Tim::max_period < (Dma::config.memory_bytes == 2 ? 0xFFFFu : 0xFFFF'FFFFu) ? Tim::max_period
+                                                                                    : (Dma::config.memory_bytes == 2 ? 0xFFFFu : 0xFFFF'FFFFu);
+
+    /// The motion plan, to configure a run-time profile - only while no move runs (false otherwise).
+    [[nodiscard]] Motion* motion() noexcept { return moving() ? nullptr : &plan_; }
 
     /// Timer output (toggle on CCR = 1), DMA channel; the counter stays stopped.
     void init() noexcept {
@@ -193,5 +199,18 @@ private:
     bool forward_ = true;
     std::atomic<bool> moving_{false};
 };
+
+/// The ramp fixed by the compiler (SigmoidRamp R): its slowest step is checked at compile time.
+template <class Tim, unsigned Ch, class Dma, SigmoidRamp R, std::size_t Chunk = 32>
+class TimerStepper : public BasicTimerStepper<Tim, Ch, Dma, SigmoidStepper<R>, Chunk> {
+    static_assert(Tim::tick_hz == R.tick_hz, "timer ticks and ramp ticks differ");
+    static_assert(SigmoidStepper<R>::max_ticks <= Tim::max_period, "the slowest step does not fit ARR");
+    static_assert(SigmoidStepper<R>::max_ticks <= (Dma::config.memory_bytes == 2 ? 0xFFFFu : 0xFFFF'FFFFu),
+                  "the slowest step does not fit a DMA item");
+};
+
+/// The ramp chosen at run time: motion()->configure(profile, Tim::tick_hz, max_ticks) between moves.
+template <class Tim, unsigned Ch, class Dma, std::size_t Chunk = 32>
+using ProfileTimerStepper = BasicTimerStepper<Tim, Ch, Dma, ProfileStepper, Chunk>;
 
 }  // namespace rtos::motion

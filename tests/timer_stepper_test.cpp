@@ -207,4 +207,42 @@ TEST(TimerStepper, StopAbortsAndCountsTheStepsDone) {
     EXPECT_TRUE(stepper.start(-5)) << "a new move after the abort";
 }
 
+// The ramp chosen at run time (ProfileStepper): the same edge-exact hardware path, periods computed
+// during the move by the DMA refill.
+TEST(ProfileTimerStepper, EveryEdgeAtItsPlannedTickWithBothShapes) {
+    using Dma = DmaMock<2>;
+    for (const auto shape : {rtos::motion::RampShape::Linear, rtos::motion::RampShape::Sigmoid}) {
+        for (std::int32_t steps : {1, 33, 700, -3000}) {
+            rtos::motion::ProfileTimerStepper<TimMock, 1, Dma, 32> stepper;
+            stepper.init();
+            ASSERT_NE(stepper.motion(), nullptr);
+            ASSERT_EQ(stepper.motion()->configure({.start_hz = 200, .cruise_hz = 4000, .accel = 20'000, .shape = shape},
+                                                  1'000'000, decltype(stepper)::max_ticks), nullptr);
+            ASSERT_TRUE(stepper.start(steps));
+            EXPECT_EQ(stepper.motion(), nullptr) << "no new profile while moving";
+            const auto& plan = stepper.plan();
+            const std::uint32_t n = plan.total();
+            run<decltype(stepper), Dma>(stepper, 100);
+            ASSERT_FALSE(stepper.moving());
+            ASSERT_EQ(hw.edges.size(), n);
+            std::uint64_t t = 0;
+            for (std::uint32_t k = 0; k < n; ++k) {
+                t += plan.period(k);
+                ASSERT_EQ(hw.edges[k], t) << "edge " << k + 1 << " of " << n;
+            }
+            EXPECT_EQ(stepper.position(), steps);
+        }
+    }
+}
+
+TEST(ProfileTimerStepper, AProfileTheTimerCannotMakeIsRefused) {
+    rtos::motion::ProfileTimerStepper<TimMock, 1, DmaMock<2>, 32> stepper;
+    auto* m = stepper.motion();
+    // 1 MHz ticks, 16-bit items: the first step at most 65535 ticks (15.3 steps/s), at least 10 ticks
+    EXPECT_NE(m->configure({.start_hz = 10, .cruise_hz = 1000, .accel = 1000}, 1'000'000, decltype(stepper)::max_ticks), nullptr);
+    EXPECT_NE(m->configure({.start_hz = 100, .cruise_hz = 200'000, .accel = 1000}, 1'000'000, decltype(stepper)::max_ticks), nullptr);
+    EXPECT_NE(m->configure({.start_hz = 500, .cruise_hz = 400, .accel = 1000}, 1'000'000, decltype(stepper)::max_ticks), nullptr);
+    EXPECT_EQ(m->configure({.start_hz = 16, .cruise_hz = 100'000, .accel = 1000}, 1'000'000, decltype(stepper)::max_ticks), nullptr);
+}
+
 }  // namespace
