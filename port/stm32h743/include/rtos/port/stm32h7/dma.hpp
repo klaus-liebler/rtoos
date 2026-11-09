@@ -115,6 +115,8 @@ class DmaChannel {
 
 public:
     static constexpr DmaConfig config = Config;  ///< the configuration (rtos::motion::TimerStepper reads it)
+    /// The stream, DMA1 0-7 and DMA2 8-15 (resource checks, rtos/distinct.hpp: no stream twice).
+    static constexpr unsigned id = (Config.controller - 1) * 8 + Config.stream;
     static constexpr std::uint8_t irq = dma_irq(Config.controller, Config.stream);
 
     static void init() noexcept {

@@ -107,6 +107,9 @@ class Ucpd {
     static_assert(timing.valid, "UCPD kernel clock or bit rate out of range (ucpd_clk 6-9 MHz, 270-330 kbit/s)");
 
 public:
+    static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
+    using rx_dma = RxDma;                              ///< its DMA channels (::id), same
+    using tx_dma = TxDma;
     static constexpr std::uint8_t irq = Hw.irq;
     static constexpr std::uint32_t cfgr1 = timing.cfgr1();
 

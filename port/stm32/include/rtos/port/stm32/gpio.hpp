@@ -67,6 +67,24 @@ struct PinConfig {
 }
 [[nodiscard]] constexpr PinConfig analog(Pin p) noexcept { return {.pin = p, .mode = Mode::Analog}; }
 
+/// No pin in two of the lists, or twice in one. configure<Pins>() checks a single list; this one
+/// checks the lists of a whole firmware (board package, application) against each other - a pin
+/// configured twice ends with whichever configure() ran last.
+template <std::size_t... N>
+[[nodiscard]] consteval bool pins_distinct(const std::array<PinConfig, N>&... lists) {
+    std::array<Pin, (N + ... + 0)> all{};
+    std::size_t n = 0;
+    ((void)[&] {
+        for (const PinConfig& c : lists) all[n++] = c.pin;
+    }(), ...);
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        for (std::size_t j = i + 1; j < all.size(); ++j) {
+            if (all[i] == all[j]) return false;
+        }
+    }
+    return true;
+}
+
 // ---- pin database ------------------------------------------------------------------------
 
 /// af of a function without an AF number: an additional (analog) function - ADC input, UCPD

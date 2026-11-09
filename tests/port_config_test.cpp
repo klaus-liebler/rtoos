@@ -5,9 +5,13 @@
 // can be checked against the specifications on the host.
 #include <gtest/gtest.h>
 
+#include <utility>
+
+#include "rtos/distinct.hpp"
 #include "rtos/port/stm32h5/adc.hpp"
 #include "rtos/port/stm32h5/clocks.hpp"
 #include "rtos/port/stm32h5/dts.hpp"
+#include "rtos/port/stm32h5/exti.hpp"
 #include "rtos/port/stm32h5/fdcan.hpp"
 #include "rtos/port/stm32h5/gpdma.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
@@ -272,6 +276,55 @@ TEST(UcpdTiming, DividersFromTheKernelClock) {
     EXPECT_TRUE(h5::ucpd_timing({.kernel_hz = 64'000'000}).valid);
     EXPECT_FALSE(h5::ucpd_timing({.kernel_hz = 4'000'000}).valid) << "ucpd_clk below 6 MHz";
     EXPECT_FALSE(h5::ucpd_timing({.kernel_hz = 16'000'000, .bit_rate = 400'000}).valid);
+}
+
+// ---- compile-time resource checks (rtos/distinct.hpp, gpio::pins_distinct) ------------------------
+// One EXTI line per pin number (EXTICR selects one port per line): PB5 and PC5 cannot both raise an
+// interrupt, the second init() of the line takes it from the first without a word.
+TEST(ResourceChecks, ExtiLinesPeripheralsDmaAndBusAddresses) {
+    using G = h5::gpio::GpioPort;
+    using Pb5 = h5::ExtiLine<h5::gpio::Pin{G::B, 5}, h5::ExtiEdge::Rising>;
+    using Pc5 = h5::ExtiLine<h5::gpio::Pin{G::C, 5}, h5::ExtiEdge::Rising>;
+    using Pc6 = h5::ExtiLine<h5::gpio::Pin{G::C, 6}, h5::ExtiEdge::Rising>;
+    static_assert(Pb5::line == 5 && Pc5::line == 5 && Pc6::line == 6);
+    static_assert(!rtos::distinct(std::array{Pb5::line, Pc5::line}), "PB5 and PC5 share EXTI line 5");
+    static_assert(rtos::distinct(std::array{Pb5::line, Pc6::line}));
+
+    // a peripheral is its base address, whichever driver uses it
+    using Tim2 = h5::Timer<h5::TimerId::Tim2, {.kernel_hz = 250'000'000, .tick_hz = 1'000'000}>;
+    using Tim3 = h5::Timer<h5::TimerId::Tim3, {.kernel_hz = 250'000'000, .tick_hz = 1'000'000}>;
+    using Clock2 = h5::MicrosecondTimer<h5::TimerId::Tim2, 250'000'000>;
+    static_assert(rtos::distinct(std::array{Tim2::base, Tim3::base}));
+    static_assert(!rtos::distinct(std::array{Tim2::base, Tim3::base, Clock2::base}), "TIM2 twice");
+    using Usart3 = h5::Usart<h5::UsartId::Usart3>;
+    using Uart5 = h5::Usart<h5::UsartId::Uart5>;
+    using Buffered3 = h5::BufferedUart<h5::UsartId::Usart3, {.kernel_hz = 125'000'000, .baud = 115'200}>;
+    static_assert(rtos::distinct(std::array{Usart3::base, Uart5::base}));
+    static_assert(!rtos::distinct(std::array{Usart3::base, Buffered3::base}), "USART3 twice");
+
+    using Dma2 = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim15Ch1, .direction = h5::DmaDirection::MemoryToPeripheral}>;
+    using Dma3 = h5::DmaChannel<{.channel = 3, .request = h5::DmaRequest::Tim15Up, .direction = h5::DmaDirection::MemoryToPeripheral}>;
+    using Dma2b = h5::DmaChannel<{.channel = 2, .request = h5::DmaRequest::Tim2Up, .direction = h5::DmaDirection::MemoryToPeripheral}>;
+    static_assert(rtos::distinct(std::array{Dma2::id, Dma3::id}));
+    static_assert(!rtos::distinct(std::array{Dma2::id, Dma3::id, Dma2b::id}), "GPDMA1 channel 2 twice");
+
+    // (bus, address): the same address on two buses is fine, twice on one bus is not
+    using I2c1 = h5::I2cMaster<h5::I2cId::I2c1, {.kernel_hz = 125'000'000, .cpu_hz = 250'000'000}>;
+    using I2c2 = h5::I2cMaster<h5::I2cId::I2c2, {.kernel_hz = 125'000'000, .cpu_hz = 250'000'000}>;
+    using P = std::pair<std::uintptr_t, std::uint8_t>;
+    static_assert(rtos::distinct(std::array{P{I2c1::base, 0x29}, P{I2c2::base, 0x29}}));
+    static_assert(!rtos::distinct(std::array{P{I2c1::base, 0x29}, P{I2c1::base, 0x29}}));
+}
+
+TEST(ResourceChecks, PinsAcrossConfigurationLists) {
+    namespace gpio = h5::gpio;
+    using G = gpio::GpioPort;
+    constexpr std::array board{gpio::output({G::H, 1}), gpio::input({G::C, 5})};
+    constexpr std::array app{gpio::output({G::A, 8}), gpio::input({G::C, 6})};
+    constexpr std::array clash{gpio::input({G::C, 5}, gpio::Pull::Down)};
+    static_assert(gpio::pins_distinct(board, app));
+    static_assert(!gpio::pins_distinct(board, app, clash), "PC5 in two lists");
+    static_assert(!gpio::pins_distinct(std::array{gpio::input({G::A, 8}), gpio::output({G::A, 8})}), "twice in one");
 }
 
 }  // namespace

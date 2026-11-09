@@ -28,6 +28,8 @@ class Vl53l0x {
     using Regs = I2cRegisters<Bus, Address>;
 
 public:
+    using bus = Bus;  ///< bus and address: for resource checks (rtos/distinct.hpp)
+    static constexpr std::uint8_t address = Address;
     [[nodiscard]] static bool probe() noexcept { return Regs::read8(vl53l0x::identification_model_id) == vl53l0x::model_id; }
 
     /// Start one measurement.

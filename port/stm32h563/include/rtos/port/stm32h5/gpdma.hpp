@@ -92,6 +92,8 @@ class DmaChannel {
 public:
     static constexpr std::uint8_t irq = static_cast<std::uint8_t>(27 + Config.channel);
     static constexpr DmaConfig config = Config;
+    /// The GPDMA1 channel (resource checks, rtos/distinct.hpp: no channel twice).
+    static constexpr unsigned id = Config.channel;
 
     static void init() noexcept {
         rcc::enable(rcc::gate::gpdma1);

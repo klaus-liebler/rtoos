@@ -17,12 +17,14 @@
 // database (stm32h7/pin_functions.hpp).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
 #include "rtos/net/address.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
+#include "rtos/port/stm32h7/usart.hpp"
 
 namespace board {
 
@@ -49,6 +51,49 @@ inline constexpr gpio::Pin console_tx_pin{gpio::GpioPort::D, 8};
 inline constexpr gpio::Pin console_rx_pin{gpio::GpioPort::D, 9};
 /// SD card detect switch (J3 DET, no external pull-up); init_sdcard() pulls it up.
 inline constexpr gpio::Pin sdcard_detect_pin{gpio::GpioPort::C, 15};
+
+/// The board package's pins, public for the product's compile-time resource checks
+/// (gpio::pins_distinct, rtos/distinct.hpp): every pin it configures, by function.
+namespace pins {
+/// LED off (active low), USART3 console: init()
+inline constexpr std::array base{
+    gpio::output(led_info_pin, /*initial_high*/ true),
+    gpio::alternate(console_tx_pin, gpio::Signal::USART3_TX),
+    gpio::alternate(console_rx_pin, gpio::Signal::USART3_RX, gpio::Speed::Low, gpio::Pull::Up),
+};
+/// RMII and the PHY reset, held low: init_ethernet()
+inline constexpr gpio::Pin phy_reset{gpio::GpioPort::A, 0};
+inline constexpr std::array ethernet{
+    gpio::alternate({gpio::GpioPort::A, 1}, gpio::Signal::ETH_REF_CLK, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 2}, gpio::Signal::ETH_MDIO, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 1}, gpio::Signal::ETH_MDC, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 7}, gpio::Signal::ETH_CRS_DV, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 4}, gpio::Signal::ETH_RXD0, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 5}, gpio::Signal::ETH_RXD1, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::B, 11}, gpio::Signal::ETH_TX_EN, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::B, 12}, gpio::Signal::ETH_TXD0, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::B, 13}, gpio::Signal::ETH_TXD1, gpio::Speed::VeryHigh),
+    gpio::output(phy_reset, /*initial_high*/ false),
+};
+/// SD card: SDMMC1, 1-bit bus (the board pulls D0, CK, CMD up); the card detect switch has no
+/// external pull-up. init_sdcard()
+inline constexpr std::array sdcard{
+    gpio::alternate({gpio::GpioPort::C, 8}, gpio::Signal::SDMMC1_D0, gpio::Speed::High),
+    gpio::alternate({gpio::GpioPort::C, 12}, gpio::Signal::SDMMC1_CK, gpio::Speed::High),
+    gpio::alternate({gpio::GpioPort::D, 2}, gpio::Signal::SDMMC1_CMD, gpio::Speed::High),
+    gpio::input(sdcard_detect_pin, gpio::Pull::Up),
+};
+/// USB: USB2_OTG_FS with its embedded full-speed PHY (ST pin data: PA11 OTG_FS_DM, PA12 OTG_FS_DP,
+/// AF10). init_usb()
+inline constexpr std::array usb{
+    gpio::alternate({gpio::GpioPort::A, 11}, gpio::Signal::USB_OTG_FS_DM, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 12}, gpio::Signal::USB_OTG_FS_DP, gpio::Speed::VeryHigh),
+};
+static_assert(gpio::pins_distinct(base, ethernet, sdcard, usb));
+}  // namespace pins
+
+/// The console UART (USART3): a product that lists its U(S)ARTs includes it.
+using Console = rtos::port::stm32h7::Usart<rtos::port::stm32h7::UsartId::Usart3>;
 
 /// MPU (DMA region non-cacheable), caches, clock tree, LED and console. Call first in main().
 void init() noexcept;

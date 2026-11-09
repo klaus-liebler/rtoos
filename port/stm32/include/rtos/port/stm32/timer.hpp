@@ -124,6 +124,7 @@ class Timer {
     static_assert(timer_update_within_1_percent(Config, regs), "update frequency more than 1 % off");
 
 public:
+    static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
     static constexpr std::uint8_t irq = Hw.irq;
     static constexpr std::uint32_t tick_hz = Config.kernel_hz / (regs.psc + 1);
     static constexpr std::uint32_t period_ticks = regs.arr + 1;  ///< as configured (update_hz)
@@ -326,6 +327,7 @@ class MicrosecondTimer {
     static_assert(Tim::max_period == 0xFFFF'FFFFu, "needs a 32-bit timer (H5: TIM2, TIM5; G4: TIM2)");
 
 public:
+    static constexpr std::uintptr_t base = Tim::base;
     static constexpr std::uint8_t irq = Tim::irq;
 
     static void init() noexcept {

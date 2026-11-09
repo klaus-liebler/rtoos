@@ -186,6 +186,35 @@ Choosing the pieces:
 - **Data shared with the protocols:** the `RegisterBank` with `Kernel::Lock` (one short lock per request), a `MessageQueue`, or `Kernel::notify` to wake the network thread.
 - **Short work that touches network objects** (broadcast a WebSocket status, react to a link change): a service in the network thread.
 
+### Nothing used twice: compile-time resource checks
+
+Each driver checks its own configuration; whether two drivers claim the same resource is the product's to check, once, where it lists its hardware. The drivers name what they occupy, `rtos::distinct()` ([distinct.hpp](../include/rtos/distinct.hpp)) compares at compile time:
+
+| Resource | Identity |
+|---|---|
+| Timer, U(S)ART, I2C, SPI, UCPD | `::base` (the instance's base address, whichever driver uses it: `Timer`, `MicrosecondTimer`, `Usart`, `BufferedUart`, ...) |
+| DMA | `DmaChannel::id`: the GPDMA1 channel (STM32H5), the stream (STM32H7: DMA1 0-7, DMA2 8-15); `Ucpd::rx_dma`/`tx_dma` |
+| EXTI | `ExtiLine::line` (= the pin number) |
+| I2C device | `(::bus::base, ::address)` |
+| Pins | `gpio::pins_distinct(lists...)`; the board package's lists are `board::pins::*` |
+
+```cpp
+static_assert(rtos::distinct(std::array{ScaleReady::line, SupplyAlert::line, Diag1::line}), "two EXTI interrupts on one line");
+static_assert(rtos::distinct(std::array{MotorPwm::base, StepTimer::base}), "a timer used twice");
+static_assert(rtos::distinct(std::array{StepDma::id, LedDma::id, Ucpd::rx_dma::id, Ucpd::tx_dma::id}), "a DMA channel twice");
+static_assert(rtos::distinct(std::array{board::Console::base, MotorUart::base}), "a U(S)ART twice");
+using BusAddress = std::pair<std::uintptr_t, std::uint8_t>;
+static_assert(rtos::distinct(std::array{BusAddress{Tof::bus::base, Tof::address},
+                                        BusAddress{Color::bus::base, Color::address}}), "two devices, one address");
+static_assert(gpio::pins_distinct(board::pins::base, board::pins::ethernet, app_pins), "a pin in two lists");
+```
+
+- Every resource has exactly one owner; sharing (one timer for two drivers, several devices behind one chip select) is not modelled. An I2C bus is not a resource of its devices, its addresses are.
+- **EXTI:** one pin per line number. The line's EXTICR field selects a single port, so PB5 and PC5 cannot both raise an interrupt, and the second `init()` takes the line from the first without a word.
+- **Pins:** `configure<Pins>()` rejects contradictions within one list; `pins_distinct()` checks the lists of the board package and the product against each other.
+- Two interrupt handlers for one IRQ are already a link error (two definitions of the same symbol).
+- Resources that exist only in one revision go into the check only there, like the FCU's revision-dependent lists in its `src/hardware.hpp`.
+
 ## 5. Certificates
 
 HTTPS needs a server certificate and key. OPC UA needs an RSA-2048 application certificate whose SubjectAltName carries the ApplicationUri, plus the CA certificate that client certificates must chain to. The firmware embeds DER files: `server.der`, `server.key.der`, `opcua.der`, `opcua.key.der`, `ca.der`.

@@ -26,7 +26,7 @@
 
 namespace rtos::port::stm32h7::gpio {
 
-using stm32::gpio::input, stm32::gpio::output, stm32::gpio::analog;
+using stm32::gpio::input, stm32::gpio::output, stm32::gpio::analog, stm32::gpio::pins_distinct;
 using stm32::gpio::Mode, stm32::gpio::Pin, stm32::gpio::PinConfig, stm32::gpio::PortPlan, stm32::gpio::Pull,
     stm32::gpio::Speed;
 

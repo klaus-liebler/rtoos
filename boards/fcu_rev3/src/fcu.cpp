@@ -13,47 +13,8 @@ namespace board {
 
 namespace h7 = rtos::port::stm32h7;
 namespace cache = rtos::port::cm7::cache;
-using Console = h7::Usart<h7::UsartId::Usart3>;
-using h7::gpio::GpioPort, h7::gpio::Signal, h7::gpio::Speed, h7::gpio::Pull;
 
 namespace {
-// LED off (active low), USART3 console
-constexpr std::array base_pins{
-    h7::gpio::output(led_info_pin, /*initial_high*/ true),
-    h7::gpio::alternate(console_tx_pin, Signal::USART3_TX),
-    h7::gpio::alternate(console_rx_pin, Signal::USART3_RX, Speed::Low, Pull::Up),
-};
-
-// RMII and the PHY reset, held low
-constexpr h7::gpio::Pin phy_reset{GpioPort::A, 0};
-constexpr std::array ethernet_pins{
-    h7::gpio::alternate({GpioPort::A, 1}, Signal::ETH_REF_CLK, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::A, 2}, Signal::ETH_MDIO, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::C, 1}, Signal::ETH_MDC, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::A, 7}, Signal::ETH_CRS_DV, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::C, 4}, Signal::ETH_RXD0, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::C, 5}, Signal::ETH_RXD1, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::B, 11}, Signal::ETH_TX_EN, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::B, 12}, Signal::ETH_TXD0, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::B, 13}, Signal::ETH_TXD1, Speed::VeryHigh),
-    h7::gpio::output(phy_reset, /*initial_high*/ false),
-};
-
-// SD card: SDMMC1, 1-bit bus (the board pulls D0, CK, CMD up); the card detect switch has no
-// external pull-up
-constexpr std::array sdcard_pins{
-    h7::gpio::alternate({GpioPort::C, 8}, Signal::SDMMC1_D0, Speed::High),
-    h7::gpio::alternate({GpioPort::C, 12}, Signal::SDMMC1_CK, Speed::High),
-    h7::gpio::alternate({GpioPort::D, 2}, Signal::SDMMC1_CMD, Speed::High),
-    h7::gpio::input(sdcard_detect_pin, Pull::Up),
-};
-
-// USB: USB2_OTG_FS with its embedded full-speed PHY (ST pin data: PA11 OTG_FS_DM, PA12 OTG_FS_DP, AF10)
-constexpr std::array usb_pins{
-    h7::gpio::alternate({GpioPort::A, 11}, Signal::USB_OTG_FS_DM, Speed::VeryHigh),
-    h7::gpio::alternate({GpioPort::A, 12}, Signal::USB_OTG_FS_DP, Speed::VeryHigh),
-};
-
 /// Busy wait of at least `cycles` CPU cycles (>= 1 cycle per iteration).
 void spin(std::uint32_t cycles) noexcept {
     for (std::uint32_t i = 0; i < cycles; ++i) {
@@ -69,21 +30,21 @@ void init() noexcept {
     cache::enable_icache();
     cache::enable_dcache();
     h7::rcc::configure_clocks<clocks>();
-    h7::gpio::configure<base_pins>();
+    h7::gpio::configure<pins::base>();
     Console::configure<h7::UartConfig{.kernel_hz = clocks.pclk1_hz(), .baud = console_baud, .fifo = false}>();
 }
 
 void init_ethernet() noexcept {
-    h7::gpio::configure<ethernet_pins>();
+    h7::gpio::configure<pins::ethernet>();
     spin(sysclk_hz / 10'000);  // >= 100 us reset pulse (LAN8742A)
-    h7::gpio::write(phy_reset, true);
+    h7::gpio::write(pins::phy_reset, true);
     spin(sysclk_hz / 500);  // >= 2 ms until the PHY answers on MDIO
 }
 
-void init_sdcard() noexcept { h7::gpio::configure<sdcard_pins>(); }
+void init_sdcard() noexcept { h7::gpio::configure<pins::sdcard>(); }
 
 void init_usb() noexcept {
-    h7::gpio::configure<usb_pins>();
+    h7::gpio::configure<pins::usb>();
     h7::UsbOtgHardware<clocks.hclk_hz(), clocks.cpu_hz()>::enable_clocks();
 }
 

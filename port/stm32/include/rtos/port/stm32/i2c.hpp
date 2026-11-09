@@ -171,6 +171,7 @@ class I2cMaster {
     static constexpr std::uint32_t cycles_per_us = Config.cpu_hz / 1'000'000;
 
 public:
+    static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
     static constexpr std::uint8_t irq_event = Hw.irq_event, irq_error = Hw.irq_error;
 
     /// Clock on, timing, analog filter on.

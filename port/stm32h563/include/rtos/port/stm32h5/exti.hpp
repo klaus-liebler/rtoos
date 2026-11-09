@@ -44,7 +44,14 @@ using IMR1 = PReg<base + 0x80>;
 template <gpio::Pin P, ExtiEdge E>
 class ExtiLine {
     static_assert(P.number < 16, "EXTI lines 0-15 are the GPIO pins");
+
+public:
+    /// The EXTI line (= the pin number). One pin per line: EXTICR selects a single port per line,
+    /// the last init() of a line wins silently - check all lines of a firmware with
+    /// static_assert(rtos::distinct(std::array{LineA::line, LineB::line, ...})).
     static constexpr unsigned line = P.number;
+
+private:
     static constexpr std::uint32_t bit = 1u << line;
     using CR = exti_detail::EXTICR<line / 4>;
     static constexpr unsigned cr_shift = 8 * (line % 4);

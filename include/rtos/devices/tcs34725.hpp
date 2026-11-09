@@ -49,6 +49,8 @@ class Tcs34725 {
     using Regs = I2cRegisters<Bus, 0x29>;
 
 public:
+    using bus = Bus;  ///< bus and (fixed) address: for resource checks (rtos/distinct.hpp)
+    static constexpr std::uint8_t address = 0x29;
     static constexpr std::uint8_t atime_register = static_cast<std::uint8_t>(atime_count);
 
     [[nodiscard]] static bool probe() noexcept {

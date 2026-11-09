@@ -17,12 +17,14 @@
 //              PA5 TX_EN    PC10 TXD0 PB15 TXD1        PA0 ETH_RST (GPIO, low active)
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
 #include "rtos/net/address.hpp"
 #include "rtos/port/stm32h5/clocks.hpp"
 #include "rtos/port/stm32h5/gpio.hpp"
+#include "rtos/port/stm32h5/usart.hpp"
 
 namespace board {
 
@@ -50,6 +52,50 @@ inline constexpr rtos::port::stm32h5::gpio::Pin console_tx_pin{rtos::port::stm32
 inline constexpr rtos::port::stm32h5::gpio::Pin console_rx_pin{rtos::port::stm32h5::gpio::GpioPort::D, 9};
 /// SD card detect switch (J3 DET), revision 2 only; init_sdcard() pulls it up.
 inline constexpr rtos::port::stm32h5::gpio::Pin sdcard_detect_pin{rtos::port::stm32h5::gpio::GpioPort::D, 4};
+
+/// The board package's pins, public for the product's compile-time resource checks
+/// (gpio::pins_distinct, rtos/distinct.hpp): every pin it configures, by function.
+namespace pins {
+namespace gpio = rtos::port::stm32h5::gpio;
+/// LED off (active low), USART3 console (AF7): init()
+inline constexpr std::array base{
+    gpio::output(led_info_pin, /*initial_high*/ true),
+    gpio::alternate(console_tx_pin, gpio::Signal::USART3_TX),
+    gpio::alternate(console_rx_pin, gpio::Signal::USART3_RX, gpio::Speed::Low, gpio::Pull::Up),
+};
+/// RMII and the PHY reset, held low: init_ethernet()
+inline constexpr gpio::Pin phy_reset{gpio::GpioPort::A, 0};
+inline constexpr std::array ethernet{
+    gpio::alternate({gpio::GpioPort::A, 1}, gpio::Signal::ETH_RMII_REF_CLK, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 2}, gpio::Signal::ETH_MDIO, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 1}, gpio::Signal::ETH_MDC, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 7}, gpio::Signal::ETH_RMII_CRS_DV, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 4}, gpio::Signal::ETH_RMII_RXD0, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 5}, gpio::Signal::ETH_RMII_RXD1, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::A, 5}, gpio::Signal::ETH_RMII_TX_EN, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::C, 10}, gpio::Signal::ETH_RMII_TXD0, gpio::Speed::VeryHigh),
+    gpio::alternate({gpio::GpioPort::B, 15}, gpio::Signal::ETH_RMII_TXD1, gpio::Speed::VeryHigh),
+    gpio::output(phy_reset, /*initial_high*/ false),
+};
+/// SD card: SDMMC1, 1-bit bus; CMD and D0 pulled up. Revision 2: card detect switch (J3 DET, no
+/// external pull-up) on PD4, pulled up here - on revision 1 PD4 is the INA226 ALERT. init_sdcard()
+inline constexpr auto sdcard = [] {
+    constexpr std::array bus{
+        gpio::alternate({gpio::GpioPort::A, 10}, gpio::Signal::SDMMC1_D0, gpio::Speed::High, gpio::Pull::Up),
+        gpio::alternate({gpio::GpioPort::C, 12}, gpio::Signal::SDMMC1_CK, gpio::Speed::High),
+        gpio::alternate({gpio::GpioPort::D, 2}, gpio::Signal::SDMMC1_CMD, gpio::Speed::High, gpio::Pull::Up),
+    };
+    if constexpr (revision == 1) {
+        return bus;
+    } else {
+        return std::array{bus[0], bus[1], bus[2], gpio::input(sdcard_detect_pin, gpio::Pull::Up)};
+    }
+}();
+static_assert(gpio::pins_distinct(base, ethernet, sdcard));
+}  // namespace pins
+
+/// The console UART (USART3): a product that lists its U(S)ARTs includes it.
+using Console = rtos::port::stm32h5::Usart<rtos::port::stm32h5::UsartId::Usart3>;
 
 /// Clock tree, MPU, ICACHE, LED and console. Call first in main(). (Without UCPD, revision 2,
 /// the dead-battery pull-downs are already off: board_early_init(), called by Reset_Handler.)

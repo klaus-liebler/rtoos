@@ -65,6 +65,8 @@ class Ina226 {
     using Regs = I2cRegisters<Bus, C.address>;
 
 public:
+    using bus = Bus;  ///< bus and address: for resource checks (rtos/distinct.hpp)
+    static constexpr std::uint8_t address = C.address;
     static constexpr std::uint16_t calibration = static_cast<std::uint16_t>(cal);
 
     /// The manufacturer ID answers "TI".

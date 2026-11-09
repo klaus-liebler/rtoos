@@ -7,6 +7,9 @@
 // STM32CubeMX db (wait states, pin database), stm32h7xx_hal_flash_ex.h (programming delay).
 #include <gtest/gtest.h>
 
+#include <utility>
+
+#include "rtos/distinct.hpp"
 #include "rtos/port/cm7/mpu.hpp"
 #include "rtos/port/stm32h7/adc.hpp"
 #include "rtos/port/stm32h7/clocks.hpp"
@@ -310,6 +313,43 @@ TEST(H7Flash, SectorsAndFlashWords) {
     EXPECT_EQ(Missions::program_bytes, 32u);
     // flash::Region<0x081E'0000, 256 * 1024, ...> (beyond the flash) and
     // flash::Region<0x080E'0000, 256 * 1024, ...> (across the banks) do not compile.
+}
+
+// ---- compile-time resource checks (rtos/distinct.hpp, gpio::pins_distinct) ------------------------
+// The H7's DMA: a stream of DMA1 or DMA2 (id 0-7, 8-15); EXTI: one pin per line as on the H5 (the
+// shared interrupts EXTI9_5/EXTI15_10 do not change that).
+TEST(H7ResourceChecks, ExtiLinesDmaStreamsAndPeripherals) {
+    using G = h7::gpio::GpioPort;
+    using Pd6 = h7::ExtiLine<h7::gpio::Pin{G::D, 6}, h7::ExtiEdge::Rising>;
+    using Pa6 = h7::ExtiLine<h7::gpio::Pin{G::A, 6}, h7::ExtiEdge::Falling>;
+    using Pe4 = h7::ExtiLine<h7::gpio::Pin{G::E, 4}, h7::ExtiEdge::Rising>;
+    static_assert(Pd6::line == 6 && Pa6::line == 6 && Pe4::line == 4);
+    static_assert(!rtos::distinct(std::array{Pd6::line, Pa6::line}), "PD6 and PA6 share EXTI line 6");
+    static_assert(rtos::distinct(std::array{Pd6::line, Pe4::line}));
+
+    using D1s0 = h7::DmaChannel<{.controller = 1, .stream = 0, .request = h7::DmaRequest::Tim15Ch1,
+                                 .direction = h7::DmaDirection::MemoryToPeripheral}>;
+    using D2s0 = h7::DmaChannel<{.controller = 2, .stream = 0, .request = h7::DmaRequest::Tim15Up,
+                                 .direction = h7::DmaDirection::MemoryToPeripheral}>;
+    using D1s0b = h7::DmaChannel<{.controller = 1, .stream = 0, .request = h7::DmaRequest::Tim2Up,
+                                  .direction = h7::DmaDirection::MemoryToPeripheral}>;
+    static_assert(D1s0::id == 0 && D2s0::id == 8);
+    static_assert(rtos::distinct(std::array{D1s0::id, D2s0::id}), "stream 0 of DMA1 and of DMA2");
+    static_assert(!rtos::distinct(std::array{D1s0::id, D2s0::id, D1s0b::id}), "DMA1 stream 0 twice");
+
+    using Usart1 = h7::Usart<h7::UsartId::Usart1>;
+    using Uart5 = h7::Usart<h7::UsartId::Uart5>;
+    static_assert(rtos::distinct(std::array{Usart1::base, Uart5::base}));
+    static_assert(!rtos::distinct(std::array{Usart1::base, Uart5::base, Usart1::base}));
+}
+
+TEST(H7ResourceChecks, PinsAcrossConfigurationLists) {
+    namespace gpio = h7::gpio;
+    using G = gpio::GpioPort;
+    constexpr std::array board{gpio::output({G::E, 1}), gpio::input({G::C, 15})};
+    constexpr std::array app{gpio::output({G::D, 10}), gpio::input({G::C, 15}, gpio::Pull::Up)};
+    static_assert(gpio::pins_distinct(board));
+    static_assert(!gpio::pins_distinct(board, app), "PC15 in two lists");
 }
 
 }  // namespace

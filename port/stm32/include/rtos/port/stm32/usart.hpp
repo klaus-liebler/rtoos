@@ -99,6 +99,7 @@ consteval UartRegisters checked_uart_registers() {
 template <UsartHw Hw>
 class Usart {
 public:
+    static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
     static constexpr std::uint8_t irq = Hw.irq;
 
     /// Clock on, frame format, baud rate; transmitter and receiver enabled, no interrupts.
@@ -161,6 +162,7 @@ class BufferedUart {
     using U = Usart<Hw>;
 
 public:
+    static constexpr std::uintptr_t base = U::base;
     static constexpr std::uint8_t irq = U::irq;
 
     /// Configure and enable the receive interrupt. The caller sets the NVIC priority and

@@ -91,6 +91,7 @@ class SpiMaster {
     static constexpr std::uint32_t cycles_per_us = (Config.cpu_hz != 0 ? Config.cpu_hz : Config.kernel_hz) / 1'000'000;
 
 public:
+    static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
     static constexpr std::uint8_t irq = Hw.irq;
     static constexpr std::uint32_t bus_hz = spi_bus_hz(Config);
     /// Frames (up to 8 bits) that fit the TxFIFO: a transfer of at most this many runs without a gap.
