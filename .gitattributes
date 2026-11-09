@@ -2,4 +2,7 @@
 *.der binary
 *.br binary
 *.bin binary
+# the PLC differential tests (docs/plc.md)
+tests/plc_corpus/*.img binary
+tests/plc_corpus/*.trace binary
 task.md -text

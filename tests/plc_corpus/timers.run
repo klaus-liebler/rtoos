@@ -1,0 +1,6 @@
+cycles 60
+dt 10
+set 5 0 01
+set 30 0 00
+set 33 0 01
+set 35 0 00

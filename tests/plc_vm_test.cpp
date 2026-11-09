@@ -311,6 +311,16 @@ TEST(PlcVm, SinglePrecisionIsRoundedPerOperation) {
     EXPECT_EQ(m.gd(8), static_cast<double>(0.1f));
 }
 
+TEST(PlcVm, SixtyFourBitIntegerToRealIsRoundedOnce) {
+    // 2^60 + 2^36 + 1 lies just above the midpoint of two floats; rounding via a double first would
+    // land exactly on the midpoint and round to even (down). The TypeScript VM has the same case.
+    Machine m;
+    Asm a;
+    a.push64((1ull << 60) + (1ull << 36) + 1).op(Op::I64S_TO_F32).stg32(0);
+    EXPECT_EQ(run(m, a).state, RunState::done);
+    EXPECT_EQ(m.gf(0), 0x1p60f + 0x1p37f);
+}
+
 TEST(PlcVm, RoundHalfAwayFromZeroAndTruncate) {
     Machine m;
     Asm a;

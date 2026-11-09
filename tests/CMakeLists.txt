@@ -45,7 +45,8 @@ add_executable(rtos_tests
     opcua_o6_subscriptions_test.cpp
     opcua_codec_test.cpp
     terminal_test.cpp
-    plc_vm_test.cpp)
+    plc_vm_test.cpp
+    plc_corpus_test.cpp)
 target_link_libraries(rtos_tests PRIVATE rtos_kernel rtos_tls rtos_opcua rtos_plc rtos_filex rtos_littlefs rtos_certs GTest::gtest_main)
 # The chip drivers' compile-time configuration (constexpr register values) is tested on the host.
 target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -55,6 +56,8 @@ target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
                            ${PROJECT_SOURCE_DIR}/port/cortex_m7/include)
 # the STM32G431 pin database is filtered for one package (port/stm32g431/CMakeLists.txt)
 target_compile_definitions(rtos_tests PRIVATE RTOS_STM32G431_PACKAGE=UFQFPN48)
+# the differential tests' images and traces (docs/plc.md)
+target_compile_definitions(rtos_tests PRIVATE PLC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/plc_corpus")
 # UBSan in trap mode needs no runtime library; static linking makes the test
 # executable independent of the toolchain's DLLs.
 target_compile_options(rtos_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
