@@ -182,7 +182,8 @@ bool Session::HandleCreate(const RequestHeader &header, ByteReader &requestBody,
     if(!w.WriteByteString(std::string_view(reinterpret_cast<const char *>(serverNonce_), NONCE_SIZE), false)) return false;
     // serverCertificate: leaf + CA on a secured channel, null on SecurityPolicy None
     if(secured ? !WriteServerCertificateChain(w) : !w.WriteByteString(std::string_view{}, true)) return false;
-    if(!EncodeEndpoints(w, effectiveEndpointUrl)) return false; // ServerEndpoints
+    // ServerEndpoints without certificates (Part 4 5.6.2.2; with them the response exceeds the send buffer)
+    if(!EncodeEndpoints(w, effectiveEndpointUrl, false)) return false;
     if(!w.WriteInt32(-1)) return false;                        // ServerSoftwareCertificates: null
     if(serverSignatureLen > 0) {
         if(!w.WriteString(RSA_SHA256_URI)) return false;

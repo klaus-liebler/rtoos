@@ -246,6 +246,9 @@ struct Created {
     ua::NodeId token;
     UaBytes server_nonce;
     bool server_certificate_null = true;
+    std::size_t server_certificate_size = 0;
+    /// serverEndpoints: the size of each one's serverCertificate (0: null or empty)
+    std::vector<std::size_t> endpoint_certificate_sizes;
 };
 struct ActivateOptions {
     bool sign = true;                     // a ClientSignature on a secured channel
@@ -748,6 +751,35 @@ public:
         r.ReadByteString(nonce, nonce_null);
         r.ReadByteString(server_certificate, out.server_certificate_null);
         out.server_nonce.assign(nonce.begin(), nonce.end());
+        out.server_certificate_size = server_certificate.size();
+        ua::Int32 endpoints = 0;
+        r.ReadInt32(endpoints);
+        for (ua::Int32 i = 0; i < endpoints && r.Ok(); i++) {
+            ua::String url, policy, profile;
+            ua::ApplicationDescription app;
+            std::string_view certificate;
+            bool certificate_null = true;
+            ua::Int32 mode = 0, tokens = 0;
+            Byte level = 0;
+            r.ReadString(url);
+            ua::DecodeApplicationDescription(r, app);
+            r.ReadByteString(certificate, certificate_null);
+            r.ReadInt32(mode);
+            r.ReadString(policy);
+            r.ReadInt32(tokens);
+            for (ua::Int32 t = 0; t < tokens; t++) {
+                ua::String id, issued, issuer, token_policy;
+                ua::Int32 type = 0;
+                r.ReadString(id);
+                r.ReadInt32(type);
+                r.ReadString(issued);
+                r.ReadString(issuer);
+                r.ReadString(token_policy);
+            }
+            r.ReadString(profile);
+            r.ReadByte(level);
+            if (r.Ok()) out.endpoint_certificate_sizes.push_back(certificate.size());
+        }
         return out;
     }
 
@@ -1498,6 +1530,25 @@ TEST_F(OpcUaTest, CreateSessionOnASignedChannelNeedsItsClientAndANonce) {
     created = create_session(std::nullopt, 16);
     ASSERT_TRUE(created.response);
     EXPECT_EQ(created.response->result, ua::StatusCode::BadNonceInvalid);
+}
+
+// Regression: the CreateSessionResponse carried the certificate chain (leaf + CA) four times - once as
+// serverCertificate and once in each of the three serverEndpoints. With the FCU's certificates (leaf
+// 1287 bytes, CA 975) that is more than the 8192 bytes of the send buffer: the server closed the
+// connection instead of answering, for every client. Part 4 5.6.2.2 recommends serverEndpoints with
+// the fields a client verifies only (no certificate).
+TEST_F(OpcUaTest, CreateSessionResponseHasItsCertificateOnceAndFitsRealCertificates) {
+    ASSERT_TRUE(hello());
+    ASSERT_TRUE(open_basic(client_cert, client_key));
+    const Created created = create_session();
+    ASSERT_TRUE(created.response);
+    ASSERT_TRUE(ua::IsGood(created.response->result));
+    EXPECT_EQ(created.server_certificate_size, sizeof server_cert + sizeof ca_cert) << "serverCertificate: leaf + CA";
+    EXPECT_EQ(created.endpoint_certificate_sizes, (std::vector<std::size_t>{0, 0, 0})) << "serverEndpoints without certificates";
+    // the same response with a chain of 3000 bytes (the FCU's: 2262) must fit the send buffer with room
+    // for the message and security headers and the SignAndEncrypt padding and signature
+    const std::size_t with_real_chain = created.response->bytes.size() - created.server_certificate_size + 3000;
+    EXPECT_LE(with_real_chain, 8192u - 512u);
 }
 
 // ---- SignAndEncrypt, crypto (ported from open62541 tests/encryption) ------------------------------

@@ -43,10 +43,11 @@ bool EncodeUserTokenPolicy(ByteWriter &w, const UserTokenPolicy &v) {
     return w.WriteString(v.securityPolicyUri);
 }
 
-bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v) {
+bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v, bool withCertificate) {
     if(!w.WriteString(v.endpointUrl)) return false;
     if(!EncodeApplicationDescription(w, v.server)) return false;
-    if(!WriteServerCertificateChain(w)) return false; // leaf + CA, see secure_channel.hpp
+    // leaf + CA, see secure_channel.hpp - or null (EncodeEndpoints)
+    if(withCertificate ? !WriteServerCertificateChain(w) : !w.WriteByteString(std::string_view{}, true)) return false;
     if(!w.WriteInt32(v.securityMode)) return false;
     if(!w.WriteString(v.securityPolicyUri)) return false;
     // userIdentityTokens: exactly one entry (Anonymous).
@@ -75,10 +76,11 @@ EndpointDescription BuildEndpoint(std::string_view endpointUrl, Int32 securityMo
     return ep;
 }
 
-bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl) {
-    return w.WriteInt32(3) && EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN_AND_ENCRYPT)) &&
-           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN)) &&
-           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_NONE));
+bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl, bool withCertificates) {
+    return w.WriteInt32(3) &&
+           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN_AND_ENCRYPT), withCertificates) &&
+           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_SIGN), withCertificates) &&
+           EncodeEndpointDescription(w, BuildEndpoint(endpointUrl, SECURITY_MODE_NONE), withCertificates);
 }
 
 bool HandleFindServers(const RequestHeader &header, ByteReader &requestBody, std::string_view endpointUrl,

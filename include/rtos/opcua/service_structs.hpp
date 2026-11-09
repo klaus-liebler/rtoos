@@ -52,7 +52,7 @@ struct EndpointDescription {
     String transportProfileUri;
     Byte securityLevel = 0;
 };
-bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v);
+bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v, bool withCertificate = true);
 
 // Builds this server's one and only endpoint (opc.tcp://<host>:<port>,
 // SecurityPolicy#Basic256Sha256, SecurityMode Sign, anonymous auth) -- used by both
@@ -63,7 +63,11 @@ bool EncodeEndpointDescription(ByteWriter &w, const EndpointDescription &v);
 /// The endpoint of SecurityPolicy None (mode 1) or Basic256Sha256 Sign (2) / SignAndEncrypt (3).
 EndpointDescription BuildEndpoint(std::string_view endpointUrl, Int32 securityMode);
 // Both endpoints of this server (GetEndpoints, CreateSession's ServerEndpoints).
-bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl);
+/// The three endpoints (SignAndEncrypt, Sign, None). `withCertificates`: each with the server's
+/// certificate chain (GetEndpoints: the client takes the certificate from there); false: with a null
+/// certificate (CreateSessionResponse, Part 4 5.6.2.2: only the fields a client verifies - the chain
+/// three more times does not fit the send buffer).
+bool EncodeEndpoints(ByteWriter &w, std::string_view endpointUrl, bool withCertificates = true);
 
 // Reads and discards a length-prefixed array of String -- LocaleIds/ProfileUris/... wherever
 // this server accepts but ignores the filter.
