@@ -48,9 +48,24 @@ struct Context {
     std::uint32_t frame_top = 0;
     std::uint32_t frame_end = 0;
     std::uint32_t now_ms = 0;
+    /// The cycle in progress: the task's program it runs and the budget left (kept while halted).
+    std::uint32_t program = 0;
+    std::uint32_t remaining = 0;
+    bool halted = false;
 };
 
-enum class RunState : std::uint8_t { done, trapped };
+/// done: the cycle ran through; trapped: a runtime error; halted: a breakpoint or a step stopped it
+/// before an instruction - resume() continues there (docs/plc.md "Debugging").
+enum class RunState : std::uint8_t { done, trapped, halted };
+
+enum class StepKind : std::uint8_t { none, into, over, out };
+
+/// What halts a cycle. `breakpoints`: code offsets, sorted, in the application's storage.
+struct DebugSettings {
+    std::span<const std::uint32_t> breakpoints{};
+    StepKind step = StepKind::none;
+    std::uint32_t step_depth = 0;  ///< the call depth the step started at (over, out)
+};
 
 struct RunResult {
     RunState state = RunState::done;
@@ -72,7 +87,23 @@ public:
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
 
     /// One cycle of `task`: every program of it, in order. `now_ms`: the cycle's start time (TIME_MS).
+    /// Not while the task is halted.
     [[nodiscard]] RunResult run_cycle(std::size_t task, std::uint32_t now_ms) noexcept;
+
+    /// Debugging: continues a halted cycle where it stopped (that instruction runs unchecked).
+    [[nodiscard]] RunResult resume(std::size_t task) noexcept;
+    /// Leaves a halted cycle unfinished (STOP, reset, a new program).
+    void abandon(std::size_t task) noexcept { contexts_[task].halted = false; }
+    [[nodiscard]] bool halted(std::size_t task) const noexcept { return contexts_[task].halted; }
+    /// What halts from the next instruction on (none: nothing - one branch per instruction).
+    void set_debug(DebugSettings d) noexcept {
+        debug_ = d;
+        debugging_ = !d.breakpoints.empty() || d.step != StepKind::none;
+    }
+    [[nodiscard]] const Context& context(std::size_t task) const noexcept { return contexts_[task]; }
+    /// The image's statement starts (ascending code offsets).
+    [[nodiscard]] std::size_t statement_count() const noexcept { return statement_count_; }
+    [[nodiscard]] bool statement_start(std::uint32_t pc) const noexcept;
 
     [[nodiscard]] std::size_t task_count() const noexcept { return task_count_; }
     [[nodiscard]] TaskInfo task(std::size_t i) const noexcept;
@@ -87,7 +118,9 @@ public:
 
 private:
     LoadError verify_code() noexcept;
-    RunResult execute(Context& c, std::uint32_t budget) noexcept;
+    RunResult proceed(std::size_t task, bool resumed) noexcept;
+    RunResult execute(Context& c, std::uint32_t budget, bool resumed) noexcept;
+    [[nodiscard]] bool stops(std::uint32_t pc, std::uint32_t depth) const noexcept;
 
     std::span<std::uint8_t> data_;
     std::span<Context> contexts_;
@@ -99,6 +132,10 @@ private:
     std::uint32_t io_offset_ = 0;
     std::size_t io_count_ = 0;
     std::array<bool, native_count> natives_listed_{};
+    std::uint32_t statement_offset_ = 0;
+    std::size_t statement_count_ = 0;
+    DebugSettings debug_{};
+    bool debugging_ = false;
     bool loaded_ = false;
 };
 

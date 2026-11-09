@@ -71,6 +71,7 @@ struct Builder {
     };
     std::vector<Task> tasks{Task{}};
     std::vector<Native> natives;
+    std::vector<std::uint32_t> statements;  ///< statement starts (single step)
     std::uint16_t isa = isa_version;
     std::uint32_t hash = isa_hash;
 
@@ -133,6 +134,9 @@ struct Builder {
             app16(0);
             app32(native_info[static_cast<std::size_t>(n)].signature);
         }
+        put32(hdr::statement_offset, static_cast<std::uint32_t>(img.size()));
+        put32(hdr::statement_count, static_cast<std::uint32_t>(statements.size()));
+        for (const std::uint32_t s : statements) app32(s);
         std::memcpy(img.data(), image_magic.data(), image_magic.size());
         std::uint16_t v = isa;
         std::memcpy(&img[hdr::isa_version], &v, 2);
@@ -649,6 +653,146 @@ TEST(PlcVerifier, MemoryLayout) {
     b.tasks[2].frame_size = 32;
     b.tasks[1].frame_size = 64;
     EXPECT_EQ(m.load(b), LoadError::task_range);
+}
+
+// ---- debugging (docs/plc.md "Debugging") ------------------------------------------------------------
+
+/// main: s1 g0 := 1; s2 CALL fn; s3 g8 := 3.   fn: f1 g4 := 2; f2 g12 := 5.
+struct Stepping {
+    Builder b;
+    std::uint32_t s1 = 0, s2 = 0, s3 = 0, f1 = 0, f2 = 0;
+    Stepping() {
+        Asm a;
+        a.enter(0);
+        s1 = a.here();
+        a.push(1).stg32(0);
+        s2 = a.here();
+        const std::uint32_t call = a.here() + 1;
+        a.op(Op::CALL).u32(0);
+        s3 = a.here();
+        a.push(3).stg32(8);
+        a.op(Op::RET);
+        const std::uint32_t fn = a.here();
+        a.enter(0);
+        f1 = a.here();
+        a.push(2).stg32(4);
+        f2 = a.here();
+        a.push(5).stg32(12);
+        a.op(Op::RET);
+        std::memcpy(&a.code[call], &fn, 4);
+        b.code = a.code;
+        b.statements = {s1, s2, s3, f1, f2};
+    }
+};
+
+TEST(PlcDebug, BreakpointHaltsBeforeTheInstructionResumeRunsItOnce) {
+    Stepping p;
+    Machine m;
+    ASSERT_EQ(m.load(p.b), LoadError::none);
+    EXPECT_EQ(m.vm.statement_count(), 5u);
+    const std::array bps{p.f1};
+    m.vm.set_debug({.breakpoints = bps});
+    RunResult r = m.vm.run_cycle(0, 0);
+    ASSERT_EQ(r.state, RunState::halted);
+    EXPECT_EQ(r.pc, p.f1);
+    EXPECT_TRUE(m.vm.halted(0));
+    EXPECT_EQ(m.vm.context(0).depth, 2u);  // inside fn
+    EXPECT_EQ(m.g32(0), 1u);
+    EXPECT_EQ(m.g32(4), 0u);
+    r = m.vm.resume(0);  // the breakpoint stays: the instruction it halted before runs, no second halt
+    EXPECT_EQ(r.state, RunState::done);
+    EXPECT_FALSE(m.vm.halted(0));
+    EXPECT_EQ(m.g32(4), 2u);
+    EXPECT_EQ(m.g32(8), 3u);
+    EXPECT_EQ(m.vm.run_cycle(0, 0).state, RunState::halted);  // the next cycle halts there again
+}
+
+TEST(PlcDebug, StepIntoOverOut) {
+    Stepping p;
+    const std::array at_call{p.s2};
+    const std::array at_fn{p.f1};
+    {
+        Machine m;  // into: from the call into fn
+        ASSERT_EQ(m.load(p.b), LoadError::none);
+        m.vm.set_debug({.breakpoints = at_call});
+        ASSERT_EQ(m.vm.run_cycle(0, 0).pc, p.s2);
+        m.vm.set_debug({.step = StepKind::into});
+        const RunResult r = m.vm.resume(0);
+        EXPECT_EQ(r.state, RunState::halted);
+        EXPECT_EQ(r.pc, p.f1);
+    }
+    {
+        Machine m;  // over: fn runs through, halts at the caller's next statement
+        ASSERT_EQ(m.load(p.b), LoadError::none);
+        m.vm.set_debug({.breakpoints = at_call});
+        ASSERT_EQ(m.vm.run_cycle(0, 0).pc, p.s2);
+        m.vm.set_debug({.step = StepKind::over, .step_depth = m.vm.context(0).depth});
+        const RunResult r = m.vm.resume(0);
+        EXPECT_EQ(r.pc, p.s3);
+        EXPECT_EQ(m.g32(4), 2u);
+        EXPECT_EQ(m.g32(12), 5u);
+    }
+    {
+        Machine m;  // out: from inside fn back to the caller
+        ASSERT_EQ(m.load(p.b), LoadError::none);
+        m.vm.set_debug({.breakpoints = at_fn});
+        ASSERT_EQ(m.vm.run_cycle(0, 0).pc, p.f1);
+        m.vm.set_debug({.step = StepKind::out, .step_depth = m.vm.context(0).depth});
+        const RunResult r = m.vm.resume(0);
+        EXPECT_EQ(r.pc, p.s3);
+        EXPECT_EQ(m.vm.context(0).depth, 1u);
+        EXPECT_EQ(m.g32(12), 5u);  // the rest of fn ran
+    }
+}
+
+TEST(PlcDebug, AbandonLeavesTheHaltedCycleAndNoDebugMeansNoHalt) {
+    Stepping p;
+    Machine m;
+    ASSERT_EQ(m.load(p.b), LoadError::none);
+    const std::array bps{p.s3};
+    m.vm.set_debug({.breakpoints = bps});
+    ASSERT_EQ(m.vm.run_cycle(0, 0).state, RunState::halted);
+    m.vm.abandon(0);
+    m.vm.set_debug({});
+    EXPECT_FALSE(m.vm.halted(0));
+    EXPECT_EQ(m.vm.run_cycle(0, 0).state, RunState::done);  // a fresh cycle
+    EXPECT_EQ(m.g32(8), 3u);
+}
+
+TEST(PlcDebug, HaltKeepsTheBudget) {
+    Stepping p;
+    p.b.tasks[0].budget = 13;  // the whole cycle needs 13 instructions (main 7, fn 6)
+    Machine m;
+    ASSERT_EQ(m.load(p.b), LoadError::none);
+    m.vm.set_debug({.step = StepKind::into});
+    RunResult r = m.vm.run_cycle(0, 0);
+    std::uint32_t total = r.instructions;
+    while (r.state == RunState::halted) {
+        r = m.vm.resume(0);
+        total += r.instructions;
+    }
+    EXPECT_EQ(r.state, RunState::done);  // one budget for the cycle, not one per piece
+    EXPECT_EQ(total, 13u);
+    p.b.tasks[0].budget = 12;
+    Machine n;
+    ASSERT_EQ(n.load(p.b), LoadError::none);
+    n.vm.set_debug({.step = StepKind::into});
+    r = n.vm.run_cycle(0, 0);
+    while (r.state == RunState::halted) r = n.vm.resume(0);
+    EXPECT_EQ(r.trap, Trap::BUDGET);
+}
+
+TEST(PlcVerifier, StatementTable) {
+    Stepping p;
+    Machine m;
+    p.b.statements = {p.s2, p.s1};  // out of order
+    EXPECT_EQ(m.load(p.b), LoadError::statement_range);
+    p.b.statements = {p.s1 + 1};  // inside PUSH_I32
+    EXPECT_EQ(m.load(p.b), LoadError::statement_range);
+    p.b.statements = {p.s1, p.s1};  // twice
+    EXPECT_EQ(m.load(p.b), LoadError::statement_range);
+    p.b.statements = {};
+    EXPECT_EQ(m.load(p.b), LoadError::none);
 }
 
 }  // namespace

@@ -107,6 +107,50 @@ TEST_P(PlcCorpus, TraceIsByteIdenticalToTheTypeScriptVm) {
     }
 }
 
+// Debugging changes nothing (docs/plc.md "Debugging"): with "step into" set the cycle halts before every
+// statement and resumes there; the trace - the instructions summed over the pieces, the state, the
+// data - is still the TypeScript VM's, byte for byte.
+TEST_P(PlcCorpus, HaltingBeforeEveryStatementChangesNothing) {
+    const fs::path img = GetParam();
+    const auto image = read_file(img);
+    const Plan plan = read_plan(fs::path(img).replace_extension(".run"));
+    const auto trace = read_file(fs::path(img).replace_extension(".trace"));
+    static std::array<std::uint8_t, 32 * 1024> data;
+    static std::array<Context, max_tasks> contexts;
+    Vm vm{data, contexts};
+    ASSERT_EQ(vm.load(image), LoadError::none);
+    ASSERT_GT(vm.statement_count(), 0u);
+    vm.set_debug({.step = StepKind::into});
+
+    const std::uint32_t data_size = rd32(&trace[0]);
+    const std::uint32_t cycles = rd32(&trace[4]);
+    const std::size_t record = 12 + data_size;
+    std::uint32_t halts = 0;
+    for (std::uint32_t k = 0; k < cycles; ++k) {
+        for (const Set& s : plan.sets) {
+            if (s.cycle == k) std::ranges::copy(s.bytes, data.begin() + s.addr);
+        }
+        RunResult r = vm.run_cycle(0, k * plan.dt);
+        std::uint32_t instructions = r.instructions;
+        while (r.state == RunState::halted) {
+            ASSERT_TRUE(vm.halted(0));
+            ASSERT_TRUE(vm.statement_start(r.pc)) << "cycle " << k << ": halted at " << r.pc;
+            ++halts;
+            r = vm.resume(0);
+            instructions += r.instructions;
+        }
+        ASSERT_FALSE(vm.halted(0));
+        const std::uint8_t* expected = &trace[8 + k * record];
+        ASSERT_EQ(r.state == RunState::done ? 0 : 1, expected[0]) << "cycle " << k;
+        ASSERT_EQ(static_cast<unsigned>(r.trap), expected[1]) << "cycle " << k;
+        ASSERT_EQ(r.pc, rd32(expected + 4)) << "cycle " << k;
+        ASSERT_EQ(instructions, rd32(expected + 8)) << "cycle " << k;
+        ASSERT_TRUE(std::equal(data.begin(), data.begin() + data_size, expected + 12)) << "cycle " << k;
+        if (r.state == RunState::trapped) break;
+    }
+    EXPECT_GT(halts, 0u);
+}
+
 INSTANTIATE_TEST_SUITE_P(Corpus, PlcCorpus, testing::ValuesIn(corpus()),
                          [](const testing::TestParamInfo<fs::path>& info) { return info.param.stem().string(); });
 

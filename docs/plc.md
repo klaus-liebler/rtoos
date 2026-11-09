@@ -84,6 +84,21 @@ occurs, or the **instruction budget** of the call is used up (trap `BUDGET`: a d
 the same in the emulators and on the hardware). After a trap the program stays stopped where it
 was: PC and the trap code are kept for the error message.
 
+### Debugging
+
+A cycle can **halt** before an instruction (`RunState::halted`) and continue there with `resume()`;
+`abandon()` leaves the halted cycle (STOP, reset, a new program). The context keeps the task's program
+and the remaining budget, so a halt mid-cycle loses nothing; the budget does not run while halted.
+What halts is set with `set_debug()`:
+
+- **breakpoints**: code offsets in the application's storage (sorted), checked before every
+  instruction;
+- **single step**: `into` halts at the next statement start (the image's statement table) at any call
+  depth, `over` at one with the call depth at most the step's, `out` at one with a smaller depth.
+
+The instruction a cycle halted before runs without being checked again when it resumes. Without
+breakpoints and step the interpreter pays one predictable branch per instruction.
+
 ## Image format
 
 Little-endian. Sections are 4-byte aligned, the offsets count from the start of the image.
@@ -92,7 +107,7 @@ Little-endian. Sections are 4-byte aligned, the offsets count from the start of 
 |---|---|---|
 | 0 | 8 | magic `"FCUPLC\0\1"` |
 | 8 | 2 | ISA version |
-| 10 | 2 | header size (80) |
+| 10 | 2 | header size (88) |
 | 12 | 4 | image length |
 | 16 | 4 | CRC-32 (IEEE 802.3, as zlib) over bytes 20 … length-1 |
 | 20 | 4 | ISA hash |
@@ -105,8 +120,12 @@ Little-endian. Sections are 4-byte aligned, the offsets count from the start of 
 | 56 | 4 + 4 | tasks: offset, count |
 | 64 | 4 + 4 | I/O bindings: offset, count |
 | 72 | 4 + 4 | natives: offset, count |
+| 80 | 4 + 4 | statements: offset, count |
 
 The image contains no time stamp: the same project gives a byte-identical image.
+
+**Statements**: the code offsets (`u32`, strictly ascending) where a source statement begins - the
+places a single step halts at (see Debugging); the IDE's debug information maps them to lines.
 
 **Initial values**: records `addr: u32, length: u32, bytes[length]`, each padded to 4 bytes. The rest of
 the data segment starts as 0.
@@ -135,7 +154,8 @@ I/O bindings, a range of the I/O table). Program list entry (8 bytes): `entry: u
 - every jump target is the start of an instruction, every `CALL`/`CALL_FB` target and every program
   entry is an `ENTER`;
 - every `G` address plus its access width is inside the data segment;
-- every `SYSCALL` names a native that the image lists and the VM provides with the same signature.
+- every `SYSCALL` names a native that the image lists and the VM provides with the same signature;
+- every statement offset is the start of an instruction, in strictly ascending order.
 
 What only the run time can know is checked when it happens: `L`/`T`/indirect addresses, the stacks,
 the frame area, the budget, division by zero, conversions and `CHK_*`.

@@ -2,6 +2,7 @@
 // The PLC bytecode VM (docs/plc.md): loader, verifier, interpreter, standard natives.
 #include "rtos/plc/vm.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <contracts>
@@ -84,10 +85,12 @@ LoadError Vm::load(std::span<const std::uint8_t> image) noexcept {
     const std::uint32_t task_count = rd32(h + hdr::task_count);
     const std::uint32_t io_count = rd32(h + hdr::io_count);
     const std::uint32_t native_count_ = rd32(h + hdr::native_count);
+    const std::uint32_t statement_count = rd32(h + hdr::statement_count);
     if (!section(hdr::code_offset, code_size) || !section(hdr::init_offset, init_size) ||
         !section(hdr::task_offset, std::uint64_t{task_count} * task_record_size) ||
         !section(hdr::io_offset, std::uint64_t{io_count} * io_record_size) ||
-        !section(hdr::native_offset, std::uint64_t{native_count_} * native_record_size)) {
+        !section(hdr::native_offset, std::uint64_t{native_count_} * native_record_size) ||
+        !section(hdr::statement_offset, std::uint64_t{statement_count} * 4)) {
         return LoadError::section;
     }
     if (data_size > data_.size()) return LoadError::data_too_large;
@@ -100,6 +103,8 @@ LoadError Vm::load(std::span<const std::uint8_t> image) noexcept {
     task_count_ = task_count;
     io_offset_ = rd32(h + hdr::io_offset);
     io_count_ = io_count;
+    statement_offset_ = rd32(h + hdr::statement_offset);
+    statement_count_ = statement_count;
 
     // natives: known, same signature
     natives_listed_ = {};
@@ -218,7 +223,39 @@ LoadError Vm::verify_code() noexcept {
             if (!is_enter(rd32(&image_[t.programs + p * program_record_size]))) return LoadError::call_target;
         }
     }
+    // statement starts: instruction starts, strictly ascending (statement_start() searches them)
+    for (std::size_t i = 0; i < statement_count_; ++i) {
+        const std::uint32_t s = rd32(&image_[statement_offset_ + i * 4]);
+        if (!is_start(s) || (i > 0 && s <= rd32(&image_[statement_offset_ + (i - 1) * 4]))) {
+            return LoadError::statement_range;
+        }
+    }
     return LoadError::none;
+}
+
+bool Vm::statement_start(std::uint32_t pc) const noexcept {
+    std::size_t lo = 0, hi = statement_count_;
+    while (lo < hi) {
+        const std::size_t mid = (lo + hi) / 2;
+        const std::uint32_t s = rd32(&image_[statement_offset_ + mid * 4]);
+        if (s == pc) return true;
+        if (s < pc) lo = mid + 1;
+        else hi = mid;
+    }
+    return false;
+}
+
+/// Halts before `pc` at call depth `depth`? (Only asked while debugging.)
+bool Vm::stops(std::uint32_t pc, std::uint32_t depth) const noexcept {
+    const auto& bp = debug_.breakpoints;
+    if (std::binary_search(bp.begin(), bp.end(), pc)) return true;
+    switch (debug_.step) {
+        case StepKind::none: return false;
+        case StepKind::into: return statement_start(pc);
+        case StepKind::over: return depth <= debug_.step_depth && statement_start(pc);
+        case StepKind::out: return depth < debug_.step_depth && statement_start(pc);
+    }
+    return false;
 }
 
 TaskInfo Vm::task(std::size_t i) const noexcept {
@@ -235,37 +272,54 @@ IoBinding Vm::io(std::size_t i) const noexcept {
 // ---- execution ------------------------------------------------------------------------------------
 
 RunResult Vm::run_cycle(std::size_t task_index, std::uint32_t now_ms) noexcept {
-    contract_assert(loaded_ && task_index < task_count_);
+    contract_assert(loaded_ && task_index < task_count_ && !contexts_[task_index].halted);
     const TaskInfo t = task(task_index);
     Context& c = contexts_[task_index];
     c.now_ms = now_ms;
     c.frame_top = t.frame_base;
     c.frame_end = t.frame_base + t.frame_size;
+    c.program = 0;
+    c.remaining = t.budget;
+    return proceed(task_index, false);
+}
+
+RunResult Vm::resume(std::size_t task_index) noexcept {
+    contract_assert(loaded_ && task_index < task_count_ && contexts_[task_index].halted);
+    return proceed(task_index, true);
+}
+
+RunResult Vm::proceed(std::size_t task_index, bool resumed) noexcept {
+    const TaskInfo t = task(task_index);
+    Context& c = contexts_[task_index];
     RunResult total;
-    std::uint32_t remaining = t.budget;
-    for (std::uint32_t p = 0; p < t.program_count; ++p) {
-        const std::uint8_t* rec = &image_[t.programs + p * program_record_size];
-        c.sp = 0;
-        c.pc = rd32(rec);
-        c.self = rd32(rec + 4);
-        c.fp = c.frame_top;
-        c.calls[0] = {Context::no_return, c.fp, c.self};
-        c.depth = 1;
-        const RunResult r = execute(c, remaining);
+    for (; c.program < t.program_count; ++c.program) {
+        if (!resumed) {
+            const std::uint8_t* rec = &image_[t.programs + c.program * program_record_size];
+            c.sp = 0;
+            c.pc = rd32(rec);
+            c.self = rd32(rec + 4);
+            c.fp = c.frame_top;
+            c.calls[0] = {Context::no_return, c.fp, c.self};
+            c.depth = 1;
+        }
+        const RunResult r = execute(c, c.remaining, resumed);
+        resumed = false;
         total.instructions += r.instructions;
-        if (r.state == RunState::trapped) {
+        c.remaining -= r.instructions;
+        if (r.state != RunState::done) {
+            c.halted = r.state == RunState::halted;
             total.state = r.state;
             total.trap = r.trap;
             total.trap_code = r.trap_code;
             total.pc = r.pc;
             return total;
         }
-        remaining -= r.instructions;
     }
+    c.halted = false;
     return total;
 }
 
-RunResult Vm::execute(Context& c, std::uint32_t budget) noexcept {
+RunResult Vm::execute(Context& c, std::uint32_t budget, bool resumed) noexcept {
     const std::uint8_t* const code = code_.data();
     std::uint8_t* const data = data_.data();
     const std::uint64_t dsize = data_size_;
@@ -321,8 +375,21 @@ RunResult Vm::execute(Context& c, std::uint32_t budget) noexcept {
     case Op::ST##M##_64: { PLC_NEED(1); const std::uint64_t ad = (ADDR); PLC_ADDR(ad, 8);                    \
         const std::uint64_t v = st[--sp]; std::memcpy(data + ad, &v, 8); break; }
 
+    bool skip = resumed;  // the instruction it halted before runs now
     for (;;) {
         at = pc;
+        if (debugging_) [[unlikely]] {
+            if (skip) {
+                skip = false;
+            } else if (stops(pc, c.depth)) {
+                r.state = RunState::halted;
+                r.pc = pc;
+                r.instructions = count;
+                c.sp = sp;
+                c.pc = pc;
+                return r;
+            }
+        }
         if (count == budget) PLC_TRAP(Trap::BUDGET);
         ++count;
         const std::uint8_t opcode = code[pc];

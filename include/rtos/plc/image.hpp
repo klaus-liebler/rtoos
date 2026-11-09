@@ -14,7 +14,7 @@
 namespace rtos::plc {
 
 inline constexpr std::array<std::uint8_t, 8> image_magic{'F', 'C', 'U', 'P', 'L', 'C', 0, 1};
-inline constexpr std::uint16_t header_size = 80;
+inline constexpr std::uint16_t header_size = 88;
 inline constexpr std::size_t task_record_size = 32;
 inline constexpr std::size_t program_record_size = 8;
 inline constexpr std::size_t io_record_size = 12;
@@ -25,7 +25,8 @@ namespace hdr {
 inline constexpr std::size_t isa_version = 8, header_size = 10, length = 12, crc = 16, isa_hash = 20,
                              io_map_hash = 24, project_hash = 28, compiler_version = 32, code_offset = 36,
                              code_size = 40, data_size = 44, init_offset = 48, init_size = 52, task_offset = 56,
-                             task_count = 60, io_offset = 64, io_count = 68, native_offset = 72, native_count = 76;
+                             task_count = 60, io_offset = 64, io_count = 68, native_offset = 72, native_count = 76,
+                             statement_offset = 80, statement_count = 84;
 }  // namespace hdr
 
 enum class LoadError : std::uint8_t {
@@ -51,6 +52,7 @@ enum class LoadError : std::uint8_t {
     native_unknown,    ///< the image lists a native this VM does not have
     native_signature,  ///< ... or has with another signature
     native_not_listed, ///< a SYSCALL of a native the image does not list
+    statement_range,   ///< a statement offset that is no instruction start, or out of order
 };
 
 [[nodiscard]] constexpr const char* to_string(LoadError e) noexcept {
@@ -58,7 +60,7 @@ enum class LoadError : std::uint8_t {
                                      "isa_hash", "section", "code_too_large", "data_too_large", "init_range",
                                      "task_range", "program_range", "io_range", "bad_opcode", "truncated",
                                      "jump_target", "call_target", "data_address", "native_unknown",
-                                     "native_signature", "native_not_listed"};
+                                     "native_signature", "native_not_listed", "statement_range"};
     return names[static_cast<std::size_t>(e)];
 }
 
