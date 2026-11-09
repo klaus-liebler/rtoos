@@ -165,6 +165,43 @@ TEST(RegisterBank, WriteHookAfterSuccessfulWritesOnly) {
     EXPECT_EQ(values, (std::array<std::uint16_t, 3>{1, 2, 3}));
 }
 
+TEST(RegisterBank, WriteFilterRefusesWholeBlocksWithException02) {
+    // registers 4..5 belong to a PLC program: protocol writes touching them change nothing
+    struct State {
+        bool owned = true;
+        int hooks = 0;
+    } st;
+    RegisterBank<8, 0, CountingGuard> bank{WriteHook{&st, [](void* s, std::uint16_t, std::uint16_t) noexcept {
+                                                      ++static_cast<State*>(s)->hooks;
+                                                  }}};
+    bank.set_write_filter({&st, [](void* s, std::uint16_t start, std::uint16_t count) noexcept {
+                               return !static_cast<State*>(s)->owned || start + count <= 4 || start >= 6;
+                           }});
+    std::array<std::byte, max_pdu> response{};
+    // write multiple 3..5: touches 4 and 5 -> exception 02, register 3 unchanged too
+    EXPECT_EQ(process_pdu(bank, bytes({0x10, 0x00, 0x03, 0x00, 0x03, 0x06, 0, 1, 0, 2, 0, 3}), response), 2u);
+    EXPECT_EQ(response[0], std::byte{0x90});
+    EXPECT_EQ(response[1], std::byte{0x02});
+    EXPECT_EQ(bank.holding(3), 0);
+    EXPECT_EQ(bank.holding(4), 0);
+    // write single 5 -> exception 02
+    EXPECT_EQ(process_pdu(bank, bytes({0x06, 0x00, 0x05, 0x00, 0x09}), response), 2u);
+    EXPECT_EQ(response[0], std::byte{0x86});
+    EXPECT_EQ(response[1], std::byte{0x02});
+    // outside the owned registers, and reading them: allowed
+    EXPECT_EQ(process_pdu(bank, bytes({0x06, 0x00, 0x06, 0x00, 0x09}), response), 5u);
+    EXPECT_EQ(bank.holding(6), 9);
+    bank.set_holding(4, 77);  // the application (the PLC) is never filtered
+    EXPECT_EQ(process_pdu(bank, bytes({0x03, 0x00, 0x04, 0x00, 0x01}), response), 4u);
+    EXPECT_EQ(response[2], std::byte{0});  // [fc, byte count, high, low]
+    EXPECT_EQ(response[3], std::byte{77});
+    EXPECT_EQ(st.hooks, 1) << "the hook runs after successful writes only";
+    // the owner gives the registers back: writes go through again
+    st.owned = false;
+    EXPECT_EQ(process_pdu(bank, bytes({0x06, 0x00, 0x05, 0x00, 0x09}), response), 5u);
+    EXPECT_EQ(bank.holding(5), 9);
+}
+
 TEST(RegisterBank, ApplicationBlocksOnBothTablesWithoutHook) {
     int hooks = 0;
     RegisterBank<8, 8, CountingGuard> bank{WriteHook{&hooks, [](void* h, std::uint16_t, std::uint16_t) noexcept {

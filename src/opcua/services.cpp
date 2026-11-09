@@ -124,8 +124,8 @@ StatusCode WriteNodeAttribute(const ServiceContext &ctx, const NodeId &nodeId, U
     // Nodes are immutable data (see address_space.hpp) -- a Variable with the Write access bit
     // set but no WriteCallback is a node-definition bug, not a "write into staticValue" case.
     if(!node->writeCallback) return StatusCode::BadNotWritable;
-    // the type is right: the application's own check (range, state) refused the value
-    return node->writeCallback(node->userContext, value) ? StatusCode::Good : StatusCode::BadOutOfRange;
+    // the type is right: the application decides (Good, BadOutOfRange, BadNotWritable)
+    return node->writeCallback(node->userContext, value);
 }
 
 struct DecodedDataValue {

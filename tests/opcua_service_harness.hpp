@@ -34,9 +34,9 @@ inline ua::Int32 g_answer = 42;
 inline ua::Double g_temperature = 21.5;
 
 inline ua::Variant read_answer(void*) { return ua::Variant::Of(g_answer); }
-inline bool write_answer(void*, const ua::Variant& v) {
+inline ua::StatusCode write_answer(void*, const ua::Variant& v) {
     g_answer = *v.GetIf<ua::Int32>();  // the server checked the type
-    return true;
+    return ua::StatusCode::Good;
 }
 inline ua::Variant read_temperature(void*) { return ua::Variant::Of(g_temperature); }
 
@@ -44,9 +44,9 @@ inline ua::Variant read_temperature(void*) { return ua::Variant::Of(g_temperatur
 inline ua::Variant g_sbyte = ua::Variant::Of(ua::SByte{0}), g_uint16 = ua::Variant::Of(ua::UInt16{0}),
                    g_float = ua::Variant::Of(ua::Float{0}), g_bool = ua::Variant::Of(false);
 inline ua::Variant read_stored(void* context) { return *static_cast<ua::Variant*>(context); }
-inline bool write_stored(void* context, const ua::Variant& v) {
+inline ua::StatusCode write_stored(void* context, const ua::Variant& v) {
     *static_cast<ua::Variant*>(context) = v;
-    return true;
+    return ua::StatusCode::Good;
 }
 
 inline constexpr ua::NodeId kAnswer = ua::NodeId::Str(1, "the.answer");

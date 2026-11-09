@@ -85,13 +85,13 @@ ua::UInt16 g_setpoint = 0;  ///< the setpoint's own storage
 constexpr ua::UInt16 kSerialNumber = 4711;
 
 ua::Variant read_setpoint(void* context) { return ua::Variant::Of(*static_cast<ua::UInt16*>(context)); }
-bool write_setpoint(void* context, const ua::Variant& value) {
+ua::StatusCode write_setpoint(void* context, const ua::Variant& value) {
     const ua::UInt16* v = value.GetIf<ua::UInt16>();
     if (v == nullptr || *v > 1000) {
-        return false;  // the application's own range check
+        return ua::StatusCode::BadOutOfRange;  // the application's own range check
     }
     *static_cast<ua::UInt16*>(context) = *v;
-    return true;
+    return ua::StatusCode::Good;
 }
 
 constexpr std::array kAppNodes = {
@@ -2046,13 +2046,14 @@ TEST(OpcUaRegisters, Int32AndHexStringFromRegisters) {
     rtos::modbus::RegisterBank<4, 6> bank;
     ua::registers::Bind(bank);
     constexpr ua::registers::Register set_point{rtos::modbus::Table::Holding, 1};
-    EXPECT_TRUE(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::Int32{-2})));
+    EXPECT_EQ(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::Int32{-2})), ua::StatusCode::Good);
     EXPECT_EQ(bank.holding(1), 0xFFFF);
     EXPECT_EQ(bank.holding(2), 0xFFFE);
     const auto back = ua::registers::ReadInt32(ua::registers::Context(set_point));
     ASSERT_NE(std::get_if<ua::Int32>(&back.storage), nullptr);
     EXPECT_EQ(*std::get_if<ua::Int32>(&back.storage), -2);
-    EXPECT_FALSE(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::UInt16{1})));
+    EXPECT_EQ(ua::registers::WriteInt32(ua::registers::Context(set_point), ua::Variant::Of(ua::UInt16{1})),
+              ua::StatusCode::BadTypeMismatch);
 
     const std::array<std::uint16_t, 3> uid{0x0045, 0x0017, 0xA0B1};
     bank.set_inputs(2, uid);
@@ -2060,6 +2061,29 @@ TEST(OpcUaRegisters, Int32AndHexStringFromRegisters) {
     const auto text = ua::registers::ReadHexString(ua::registers::Context(chip_id));
     ASSERT_NE(std::get_if<ua::String>(&text.storage), nullptr);
     EXPECT_EQ(std::get_if<ua::String>(&text.storage)->value, "00450017A0B1");
+}
+
+TEST(OpcUaRegisters, WriteRefusedByTheBanksFilterIsBadNotWritable) {
+    // a PLC program owns holding register 1: the value is fine, the register is not writable now
+    rtos::modbus::RegisterBank<4, 0> bank;
+    ua::registers::Bind(bank);
+    bank.set_write_filter({nullptr, [](void*, std::uint16_t start, std::uint16_t count) noexcept {
+                               return start + count <= 1 || start > 1;
+                           }});
+    constexpr ua::registers::Register owned{rtos::modbus::Table::Holding, 1};
+    constexpr ua::registers::Register free{rtos::modbus::Table::Holding, 2};
+    EXPECT_EQ(ua::registers::WriteUInt16(ua::registers::Context(owned), ua::Variant::Of(ua::UInt16{5})),
+              ua::StatusCode::BadNotWritable);
+    EXPECT_EQ(bank.holding(1), 0);
+    EXPECT_EQ(ua::registers::WriteUInt16(ua::registers::Context(free), ua::Variant::Of(ua::UInt16{5})), ua::StatusCode::Good);
+    EXPECT_EQ(bank.holding(2), 5);
+    // a 32-bit value over registers 0 and 1 touches the owned one: refused as a whole
+    constexpr ua::registers::Register pair{rtos::modbus::Table::Holding, 0};
+    EXPECT_EQ(ua::registers::WriteUInt32(ua::registers::Context(pair), ua::Variant::Of(ua::UInt32{0x00010002})),
+              ua::StatusCode::BadNotWritable);
+    EXPECT_EQ(bank.holding(0), 0);
+    const auto back = ua::registers::ReadUInt16(ua::registers::Context(owned));
+    EXPECT_NE(std::get_if<ua::UInt16>(&back.storage), nullptr) << "reading stays allowed";
 }
 
 }  // namespace

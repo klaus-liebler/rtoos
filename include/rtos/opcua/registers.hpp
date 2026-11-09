@@ -35,10 +35,17 @@ inline bool Read(void *context, std::span<UInt16> out) {
     return g_map != nullptr && r.address + out.size() <= g_map->size(r.table) &&
            g_map->read(r.table, r.address, out) == modbus::Exception::None;
 }
-inline bool Write(void *context, std::span<const UInt16> values) {
+/// A refusal of the register bank's write filter (IllegalDataAddress) is BadNotWritable: the
+/// register is not writable right now (e.g. a PLC program owns it), the value was fine.
+inline StatusCode Write(void *context, std::span<const UInt16> values) {
     const auto &r = *static_cast<const Register *>(context);
-    return g_map != nullptr && r.table == modbus::Table::Holding && r.address + values.size() <= g_map->size(r.table) &&
-           g_map->write(r.address, values) == modbus::Exception::None;
+    if(g_map == nullptr || r.table != modbus::Table::Holding || r.address + values.size() > g_map->size(r.table))
+        return StatusCode::BadNotWritable;
+    switch(g_map->write(r.address, values)) {
+    case modbus::Exception::None: return StatusCode::Good;
+    case modbus::Exception::IllegalDataAddress: return StatusCode::BadNotWritable;
+    default: return StatusCode::BadOutOfRange;
+    }
 }
 template <class T>
 bool Value(const Variant &v, T &out) {
@@ -54,17 +61,17 @@ inline Variant ReadUInt16(void *context) {
     UInt16 v = 0;
     return detail::Read(context, {&v, 1}) ? Variant::Of(v) : Variant{};
 }
-inline bool WriteUInt16(void *context, const Variant &value) {
+inline StatusCode WriteUInt16(void *context, const Variant &value) {
     UInt16 v = 0;
-    return detail::Value(value, v) && detail::Write(context, {&v, 1});
+    return detail::Value(value, v) ? detail::Write(context, {&v, 1}) : StatusCode::BadTypeMismatch;
 }
 inline Variant ReadInt16(void *context) {
     UInt16 v = 0;
     return detail::Read(context, {&v, 1}) ? Variant::Of(static_cast<Int16>(v)) : Variant{};
 }
-inline bool WriteInt16(void *context, const Variant &value) {
+inline StatusCode WriteInt16(void *context, const Variant &value) {
     Int16 v = 0;
-    if(!detail::Value(value, v)) return false;
+    if(!detail::Value(value, v)) return StatusCode::BadTypeMismatch;
     const auto u = static_cast<UInt16>(v);
     return detail::Write(context, std::span<const UInt16>(&u, 1));
 }
@@ -72,9 +79,9 @@ inline Variant ReadUInt32(void *context) {
     UInt16 w[2] = {};
     return detail::Read(context, w) ? Variant::Of(static_cast<UInt32>((UInt32{w[0]} << 16) | w[1])) : Variant{};
 }
-inline bool WriteUInt32(void *context, const Variant &value) {
+inline StatusCode WriteUInt32(void *context, const Variant &value) {
     UInt32 v = 0;
-    if(!detail::Value(value, v)) return false;
+    if(!detail::Value(value, v)) return StatusCode::BadTypeMismatch;
     const UInt16 w[2] = {static_cast<UInt16>(v >> 16), static_cast<UInt16>(v)};
     return detail::Write(context, w);
 }
@@ -82,9 +89,9 @@ inline Variant ReadInt32(void *context) {
     UInt16 w[2] = {};
     return detail::Read(context, w) ? Variant::Of(static_cast<Int32>((UInt32{w[0]} << 16) | w[1])) : Variant{};
 }
-inline bool WriteInt32(void *context, const Variant &value) {
+inline StatusCode WriteInt32(void *context, const Variant &value) {
     Int32 v = 0;
-    if(!detail::Value(value, v)) return false;
+    if(!detail::Value(value, v)) return StatusCode::BadTypeMismatch;
     const auto u = static_cast<UInt32>(v);
     const UInt16 w[2] = {static_cast<UInt16>(u >> 16), static_cast<UInt16>(u)};
     return detail::Write(context, w);

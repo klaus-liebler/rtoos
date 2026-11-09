@@ -14,6 +14,13 @@
 //
 // on_write (optional) runs after a protocol write, outside the guard, in the
 // protocol's thread (e.g. wake the thread that acts on a new set point).
+//
+// A WriteFilter (optional) decides under the guard whether a protocol write may
+// change the registers at all, e.g. while a PLC program owns the outputs: a
+// refused block changes no register (no partial write) and the protocol answers
+// IllegalDataAddress (Modbus exception 0x02, OPC UA Bad_NotWritable). The filter
+// runs with the guard held (BASEPRI on the target): short, no kernel calls. The
+// application side (set_holding, ...) is never filtered.
 #pragma once
 
 #include <algorithm>
@@ -34,6 +41,12 @@ struct WriteHook {
     void (*written)(void* context, std::uint16_t start, std::uint16_t count) noexcept = nullptr;
 };
 
+struct WriteFilter {
+    void* context = nullptr;
+    /// May a protocol write the holding registers start .. start+count-1?
+    bool (*permit)(void* context, std::uint16_t start, std::uint16_t count) noexcept = nullptr;
+};
+
 template <std::size_t Holding, std::size_t Input, class Guard = NoGuard>
 class RegisterBank final : public RegisterMap {
     static_assert(Holding <= 65536 && Input <= 65536);
@@ -41,6 +54,12 @@ class RegisterBank final : public RegisterMap {
 public:
     RegisterBank() noexcept = default;
     explicit RegisterBank(WriteHook hook) noexcept : hook_(hook) {}
+
+    /// Installs (or with {} removes) the protocol write filter; at any time.
+    void set_write_filter(WriteFilter filter) noexcept {
+        [[maybe_unused]] const Guard guard{};
+        filter_ = filter;
+    }
     RegisterBank(const RegisterBank&) = delete;
     RegisterBank& operator=(const RegisterBank&) = delete;
 
@@ -105,6 +124,10 @@ public:
     Exception write(std::uint16_t start, std::span<const std::uint16_t> values) noexcept override {
         {
             [[maybe_unused]] const Guard guard{};
+            if (filter_.permit != nullptr &&
+                !filter_.permit(filter_.context, start, static_cast<std::uint16_t>(values.size()))) {
+                return Exception::IllegalDataAddress;
+            }
             std::ranges::copy(values, holding_.begin() + start);
         }
         if (hook_.written != nullptr) {
@@ -117,6 +140,7 @@ private:
     std::array<std::uint16_t, Holding> holding_{};
     std::array<std::uint16_t, Input> input_{};
     WriteHook hook_{};
+    WriteFilter filter_{};
 };
 
 }  // namespace rtos::modbus

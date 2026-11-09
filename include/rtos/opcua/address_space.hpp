@@ -38,7 +38,9 @@ class AddressSpace;
 using ReadCallback = Variant (*)(void *context);
 // Returns false if the value's type/range is unacceptable (-> BadTypeMismatch/BadOutOfRange
 // upstream in the Write service handler).
-using WriteCallback = bool (*)(void *context, const Variant &value);
+/// Good, or why the application refused the value: BadOutOfRange (its own range or state check),
+/// BadNotWritable (not writable right now, e.g. owned by a PLC program).
+using WriteCallback = StatusCode (*)(void *context, const Variant &value);
 
 struct Node {
     NodeId nodeId{};
