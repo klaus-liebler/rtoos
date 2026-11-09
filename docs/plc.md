@@ -155,6 +155,8 @@ and a power loss never leaves half a program:
   two 128 KB sectors of bank 2); the image may be up to 124 KB.
 - [plc_slot_store_test.cpp](../tests/plc_slot_store_test.cpp) cuts the power after every flash operation of
   a commit and of a journal move, for both geometries: afterwards the old or the new program is complete.
+- [apps/plcslots](../apps/plcslots/main.cpp) runs the store in the real flash layout of both chips in Renode
+  (`plcslots_renode`, `h743_plcslots_renode`), against the flash interface models (unlock, sector erase).
 
 ## Instruction set
 

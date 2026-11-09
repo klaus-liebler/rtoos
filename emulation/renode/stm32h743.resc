@@ -6,6 +6,7 @@ $bin?=@build/arm-h743/apps/stm32h743/h743_selftest.elf
 
 using sysbus
 mach create $name
+include $ORIGIN/STM32H7_FLASH.cs
 machine LoadPlatformDescription $ORIGIN/stm32h743.repl
 
 macro reset

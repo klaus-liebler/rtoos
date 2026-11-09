@@ -34,6 +34,7 @@ PLATFORMS = {
     "fcu": ("fcu", "fcu.resc", "usart3"),
     "stm32g431": ("stm32g431", "stm32g431.resc", "usart1"),
     "stm32h743": ("stm32h743", "stm32h743.resc", "usart3"),
+    "fcu_rev3": ("stm32h743", "fcu_rev3.resc", "usart3"),  # Renode only: the FCU revision 3 board
 }
 
 

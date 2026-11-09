@@ -10,6 +10,8 @@ rtos_add_firmware(fcu_exti SOURCES exti/main.cpp LIBRARIES rtos_board_fcu)
 # littlefs in the last 256 KB of bank 2: the image must stay below it
 rtos_add_firmware(fcu_flashfs SOURCES flashfs/main.cpp LIBRARIES rtos_board_fcu rtos_littlefs
                   FLASH_DATA_START 0x081C0000)
+# the PLC's A/B program slots in the same flash region (docs/plc.md "Program store")
+rtos_add_firmware(fcu_plcslots SOURCES plcslots/main.cpp LIBRARIES rtos_board_fcu FLASH_DATA_START 0x081C0000)
 # compile check of all chip drivers (instantiated with the FCU's clocks, not linked)
 add_library(rtos_drivers_check OBJECT drivers_check.cpp)
 target_link_libraries(rtos_drivers_check PRIVATE rtos_board_fcu)
@@ -43,6 +45,11 @@ if(EXISTS "${RTOS_RENODE}")
              COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:fcu_flashfs> --exe ${RTOS_RENODE}
                      --result "FLASHFS RESULT")
     set_tests_properties(flashfs_renode PROPERTIES TIMEOUT 120)
+    # the PLC's program slots against the same flash interface model
+    add_test(NAME plcslots_renode
+             COMMAND Python3::Interpreter ${RTOS_RUNNER} renode $<TARGET_FILE:fcu_plcslots> --exe ${RTOS_RENODE}
+                     --result "PLCSLOTS RESULT")
+    set_tests_properties(plcslots_renode PROPERTIES TIMEOUT 120)
     # HX711 behind the bit-timed SPI model: readings with interrupts during the transfer
     # (PD_SCK on MOSI: a pause with MOSI high > 60 us powers the chip down).
     add_test(NAME hx711_renode

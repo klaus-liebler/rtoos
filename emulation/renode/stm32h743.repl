@@ -181,20 +181,11 @@ elif request.IsRead:
         request.Value = regs.get(request.Offset, 0)
 '''
 
-// FLASH interface: ACR as a register file (reset 0x37: the new latency reads back at once);
-// every other register reads 0 (not busy, no errors).
-flashInterface: Python.PythonPeripheral @ sysbus 0x52002000
-    size: 0x400
-    initable: true
-    script: '''
-if request.IsInit:
-    regs = {0x000: 0x00000037}
-elif request.IsWrite:
-    if request.Offset == 0x000:
-        regs[0x000] = request.Value & 0xFFFFFFFF
-elif request.IsRead:
-    request.Value = regs[0x000] if request.Offset == 0x000 else 0
-'''
+// FLASH interface: own model STM32H7_FLASH.cs (stm32h743.resc and fcu_rev3.resc compile it): ACR,
+// unlock keys and the sector erase per bank, never busy (the PLC's program slots, littlefs).
+flashInterface: MTD.STM32H7_FLASH @ sysbus 0x52002000
+    flashBase: 0x08000000
+    flashSize: 0x200000
 
 sysbus:
     init:
