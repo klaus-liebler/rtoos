@@ -24,6 +24,8 @@
 #include "rtos/port/stm32h5/ucpd.hpp"
 #include "rtos/port/stm32h5/usart.hpp"
 #include "rtos/port/stm32h5/usb_device.hpp"
+#include "rtos/port/stm32h5/flash_program.hpp"
+#include "rtos/plc/slot_store.hpp"
 
 namespace h5 = rtos::port::stm32h5;
 
@@ -194,3 +196,6 @@ void drivers_check() noexcept {
     (void)Spi2::write(b);
     (void)Spi2::read(b);
 }
+
+// the PLC's program slots in the FCU's flash: the last 256 KB of bank 2 (docs/plc.md)
+template class rtos::plc::SlotStore<h5::flash::Region<0x081C'0000, 256 * 1024, board::sysclk_hz>>;

@@ -140,6 +140,22 @@ I/O bindings, a range of the I/O table). Program list entry (8 bytes): `entry: u
 What only the run time can know is checked when it happens: `L`/`T`/indirect addresses, the stacks,
 the frame area, the budget, division by zero, conversions and `CHK_*`.
 
+## Program store
+
+[slot_store.hpp](../include/rtos/plc/slot_store.hpp) keeps the image and a small device configuration
+(control source, autostart) in two A/B slots of the MCU's own flash, so the PLC starts without an SD card
+and a power loss never leaves half a program:
+
+- `commit(image, config)` erases and writes the **inactive** slot: image first, the header (sequence
+  number, length, CRCs, configuration) last. A slot counts only with a valid header and an intact image;
+  `mount()` takes the valid slot with the highest sequence number, the other one is the previous program.
+- `set_config()` appends a record (one program unit) to the active slot's journal at its end; the newest
+  valid record wins. A full journal moves: the image is copied into the other slot with a fresh journal.
+- On the FCU both chips use 256 KB at `0x081C'0000` (STM32H563: 2 x 16 sectors of 8 KB, STM32H743: the last
+  two 128 KB sectors of bank 2); the image may be up to 124 KB.
+- [plc_slot_store_test.cpp](../tests/plc_slot_store_test.cpp) cuts the power after every flash operation of
+  a commit and of a journal move, for both geometries: afterwards the old or the new program is complete.
+
 ## Instruction set
 
 <!-- plc_isa:begin -->

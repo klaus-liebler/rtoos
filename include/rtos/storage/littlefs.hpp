@@ -24,20 +24,10 @@
 #include <span>
 
 #include "lfs.h"
+#include "rtos/storage/flash_memory.hpp"
 
 namespace rtos::storage {
 
-/// Raw NOR flash as littlefs needs it: erase blocks, program units, read anywhere.
-template <class F>
-concept FlashMemory = requires(F& f, std::uint32_t block, std::uint32_t offset, std::span<std::byte> in,
-                               std::span<const std::byte> out) {
-    { F::block_bytes } -> std::convertible_to<std::uint32_t>;    // erase unit
-    { F::block_count } -> std::convertible_to<std::uint32_t>;
-    { F::program_bytes } -> std::convertible_to<std::uint32_t>;  // program unit
-    { f.read(block, offset, in) } noexcept -> std::same_as<bool>;
-    { f.program(block, offset, out) } noexcept -> std::same_as<bool>;
-    { f.erase(block) } noexcept -> std::same_as<bool>;
-};
 
 template <FlashMemory Flash, std::size_t CacheBytes = 512, std::size_t LookaheadBytes = 16>
 class LittleFs {

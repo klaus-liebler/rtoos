@@ -20,6 +20,7 @@
 #include "rtos/port/stm32h7/exti.hpp"
 #include "rtos/port/stm32h7/fdcan.hpp"
 #include "rtos/port/stm32h7/flash_program.hpp"
+#include "rtos/plc/slot_store.hpp"
 #include "rtos/port/stm32h7/gpio.hpp"
 #include "rtos/port/stm32h7/mpu.hpp"
 #include "rtos/port/stm32h7/i2c.hpp"
@@ -214,3 +215,6 @@ void drivers_check() noexcept {
     (void)ethernet.irq();
     (void)ethernet.phy_read(h7::lan8742::bsr);
 }
+
+// the PLC's program slots in the FCU's flash: the last two sectors of bank 2 (docs/plc.md)
+template class rtos::plc::SlotStore<h7::flash::Region<0x081C'0000, 256 * 1024, clocks.cpu_hz()>>;
