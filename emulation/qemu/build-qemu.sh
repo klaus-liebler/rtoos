@@ -29,15 +29,27 @@ mkdir -p "$WORK"
 cd "$WORK"
 
 # ---- download and verify --------------------------------------------------------
-[ -f "$TARBALL" ] || curl -fsSLO "https://download.qemu.org/$TARBALL"
-[ -f "$TARBALL.sig" ] || curl -fsSLO "https://download.qemu.org/$TARBALL.sig"
+# Downloads go to a .part file and are renamed only when complete: an interrupted download (the
+# connection reset) must not stay behind as the tarball, which the next run would take as present.
+fetch() {
+    [ -f "$1" ] && return 0
+    curl -fsSL --retry 5 --retry-all-errors -o "$1.part" "https://download.qemu.org/$1"
+    mv "$1.part" "$1"
+}
+fetch "$TARBALL"
+fetch "$TARBALL.sig"
 export GNUPGHOME="$WORK/gnupg"
 mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
 if ! gpg --batch --list-keys "$QEMU_KEY_FPR" >/dev/null 2>&1; then
-    curl -fsS "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$QEMU_KEY_FPR" | gpg --batch --import
+    # gpg --import exits with 2 when it cannot start gpg-agent (MSYS2), although the public key is
+    # imported - only whether the key is there counts
+    curl -fsS "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$QEMU_KEY_FPR" | gpg --batch --import || true
+    gpg --batch --list-keys "$QEMU_KEY_FPR" >/dev/null 2>&1 || { echo "error: key $QEMU_KEY_FPR not imported" >&2; exit 1; }
 fi
 if ! gpg --batch --status-fd 1 --verify "$TARBALL.sig" "$TARBALL" 2>/dev/null | grep -q "VALIDSIG $QEMU_KEY_FPR"; then
-    echo "error: $TARBALL is not signed by $QEMU_KEY_FPR" >&2
+    # a damaged download is removed, the next run fetches it again
+    rm -f "$TARBALL" "$TARBALL.sig"
+    echo "error: $TARBALL is not signed by $QEMU_KEY_FPR (removed; run again to download it anew)" >&2
     exit 1
 fi
 echo "signature OK ($QEMU_KEY_FPR)"
