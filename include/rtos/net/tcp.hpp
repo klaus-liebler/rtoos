@@ -913,7 +913,7 @@ private:
         }
         auto& s = c.tx_[c.tx_head_];
         if (s.packet->use_count() > 1) {
-            c.deadline_ms_ = ip_.now_ms() + 10;  // still in the TX DMA: retry shortly
+            c.deadline_ms_ = ip_.now_ms() + 10;  // still in the TX DMA: retry shortly (expire() checks first)
             return;
         }
         s.packet->set_view(s.tcp_offset, s.tcp_length);
@@ -937,6 +937,14 @@ private:
         }
         if (c.tx_count_ == 0) {
             c.deadline_ms_ = 0;
+            return;
+        }
+        if (c.tx_[c.tx_head_].packet->use_count() > 1) {
+            // Still in the TX DMA (the driver has not released it): nothing can be retransmitted
+            // yet, so this is no attempt - neither counted nor backed off. Counted, a frame the
+            // driver held a while used up every retry in 10 ms steps and reset the connection
+            // without a single retransmission on the wire.
+            c.deadline_ms_ = ip_.now_ms() + 10;
             return;
         }
         if (++c.retries_ > max_retries) {

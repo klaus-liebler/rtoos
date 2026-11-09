@@ -263,6 +263,10 @@ public:
     }
 
     net::PacketRef receive() noexcept {
+        // Sent frames go back to their owners here too, not only at the next transmit(): the last
+        // frame of a burst would otherwise stay referenced, and TCP cannot retransmit a segment
+        // whose buffer is still "in the DMA" (the TX interrupt wakes the network thread for this).
+        reclaim_tx();
         for (;;) {
             Descriptor& d = rx_[rx_next_];
             const std::uint32_t status = d.d3;

@@ -572,6 +572,31 @@ TEST_F(TcpTest, RetransmissionWaitsForTxDma) {
     EXPECT_EQ(driver.tx.size(), 1u);  // now it goes out
 }
 
+// Regression (FCU revision 3, STM32H743, in Renode): the Ethernet driver released a sent frame
+// only at its next transmit, so the last segment of a burst stayed "in the DMA"; the peer's
+// delayed ACK (Windows: up to 200 ms) let the RTO expire, and every 10 ms re-check counted as a
+// retransmission and doubled the RTO - nine checks later, within 100 ms, the connection was
+// reset without one retransmission on the wire. A held segment is no attempt.
+TEST_F(TcpTest, SegmentHeldByTxDmaUsesUpNoRetransmissions) {
+    connect();  // RTO = 200 ms
+    deliver(tcp(peer_port, port, peer_seq, iss + 1, tcp_flag::ack | tcp_flag::psh, "data"));
+    peer_seq += 4;
+    ASSERT_EQ(driver.tx.size(), 1u);  // held by the "DMA" (sent() would release it)
+    for (int i = 0; i < 100; ++i) {
+        poll(10);  // one second with the segment held: 80 re-checks after the RTO
+    }
+    EXPECT_EQ(server.closed, 0);
+    EXPECT_EQ(driver.tx.size(), 1u);  // nothing re-sent while held
+    EXPECT_EQ(sent().size(), 1u);     // the DMA is done with it
+    poll(10);
+    ASSERT_EQ(sent().size(), 1u);  // the first real retransmission
+    poll(399);
+    EXPECT_TRUE(sent().empty());  // the backoff starts there: 400 ms, not 2^80
+    poll(1);
+    EXPECT_EQ(sent().size(), 1u);
+    EXPECT_EQ(server.closed, 0);
+}
+
 TEST_F(TcpTest, OutOfOrderSegmentIsDroppedWithDuplicateAck) {
     connect();
     server.echo = false;
