@@ -100,7 +100,7 @@ void LPTIM2_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler"))
 void TIM15_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
 void TIM16_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
 void TIM17_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
-void USB_FS_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
+void USB_DRD_FS_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
 void CRS_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
 void UCPD1_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
 void FMC_IRQHandler() noexcept __attribute__((weak, alias("Default_Handler")));
@@ -255,7 +255,7 @@ struct VectorTable {
         &TIM15_IRQHandler,                       // irq  71 TIM15
         &TIM16_IRQHandler,                       // irq  72 TIM16
         &TIM17_IRQHandler,                       // irq  73 TIM17
-        &USB_FS_IRQHandler,                      // irq  74 USB_FS
+        &USB_DRD_FS_IRQHandler,                  // irq  74 USB_DRD_FS
         &CRS_IRQHandler,                         // irq  75 CRS
         &UCPD1_IRQHandler,                       // irq  76 UCPD1
         &FMC_IRQHandler,                         // irq  77 FMC

@@ -25,7 +25,12 @@ function(rtos_add_firmware name)
     endif()
     target_link_options(${name} PRIVATE -Wl,-Map=$<TARGET_FILE_DIR:${name}>/${name}.map)
     set_target_properties(${name} PROPERTIES SUFFIX .elf)
+    # every interrupt handler in the vector table (a misspelled one would link silently and leave
+    # its interrupt to Default_Handler: tools/check_vectors.py)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_custom_command(TARGET ${name} POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/check_vectors.py ${CMAKE_NM} ${CMAKE_OBJCOPY}
+                $<TARGET_FILE:${name}> $<TARGET_FILE_DIR:${name}>/${name}.map
         COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${name}>
         COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${name}> $<TARGET_FILE_DIR:${name}>/${name}.bin)
 endfunction()
