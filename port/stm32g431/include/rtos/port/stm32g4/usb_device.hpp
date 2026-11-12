@@ -41,6 +41,10 @@ struct UsbHardware {
         rcc::enable(rcc::gate::usb);
     }
 
+    /// The H5's "buffer description table update after CTR" erratum (stm32h5::UsbHardware) is
+    /// not listed for the G4's 16-bit PMA controller: nothing to wait for.
+    static void settle_rx() noexcept {}
+
     /// Interrupts off while the thread changes a register the ISR also writes.
     struct Masked {
         std::uint32_t primask;

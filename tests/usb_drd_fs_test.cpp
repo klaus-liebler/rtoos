@@ -35,6 +35,22 @@ struct SimulatedUsb {
     std::uint32_t cntr = 3, flags = 0, daddr = 0, bcdr = 0;  // flags: ISTR without CTR/IDN
     std::array<std::uint32_t, 512> pma{};
     bool setup_needs_valid = false;  ///< variant: SETUP only accepted with STAT_RX = VALID
+    /// Variant, the H5 erratum (ES0561/ES0587: "buffer description table update completes after
+    /// CTR interrupt triggers"): an OUT packet's count and data reach the PMA only when the driver
+    /// has waited (settle_rx()); before, the previous packet's are there.
+    bool late_buffer_table = false;
+    struct Late {
+        unsigned ep;
+        Bytes data;
+    };
+    std::optional<Late> late;
+    void settle() {
+        if (late) {
+            write_bytes(rx_buffer(late->ep), late->data);
+            pma[(8 * late->ep + 4) / 4] = (pma[(8 * late->ep + 4) / 4] & 0xFC00'FFFFu) | (static_cast<std::uint32_t>(late->data.size()) << 16);
+            late.reset();
+        }
+    }
 
     static constexpr std::uint32_t toggles = (3u << 4) | (1u << 6) | (3u << 12) | (1u << 14);
     static constexpr std::uint32_t vtrx = 1u << 15, vttx = 1u << 7, setup = 1u << 11;
@@ -107,6 +123,7 @@ struct SimRegs {
     void set_bcdr(std::uint32_t v) noexcept { s->bcdr = v; }
     std::uint32_t pma_read(std::size_t offset) noexcept { return s->pma[offset / 4]; }
     void pma_write(std::size_t offset, std::uint32_t v) noexcept { s->pma[offset / 4] = v; }
+    void settle_rx() noexcept { s->settle(); }
 };
 
 using Driver = h5::UsbDrdFs<SimRegs>;
@@ -142,8 +159,10 @@ struct Host {
             default: break;
         }
         EXPECT_LE(data.size(), s.rx_capacity(ep));
-        s.write_bytes(s.rx_buffer(ep), data);
-        s.pma[(8 * ep + 4) / 4] = (s.pma[(8 * ep + 4) / 4] & 0xFC00'FFFFu) | (static_cast<std::uint32_t>(data.size()) << 16);
+        s.late = SimulatedUsb::Late{ep, data};
+        if (!s.late_buffer_table) {
+            s.settle();
+        }
         s.chep[ep] |= SimulatedUsb::vtrx;
         s.chep[ep] ^= 1u << 14;
         s.set_field(ep, 12, stat_nak);
@@ -266,6 +285,37 @@ TEST_F(UsbDrdFsTest, BulkOutEndsWithAShortPacketAndNaksWhileIdle) {
     EXPECT_EQ(buffer[157], std::byte{3});
     EXPECT_EQ(host.out(1, Bytes(10, 4)), Handshake::Nak) << "idle again";
     EXPECT_FALSE(drv.transfer(0x81, as_span(buffer), false)) << "IN 1 is not open";
+}
+
+// FCU revision 1 (STM32H563, real board): USB networking (CDC-NCM) received the first few blocks,
+// then nearly every NTB was rejected - 2048-byte transfers with garbage headers. The controller
+// raises CTR before the packet's count and data are in the PMA (erratum, see SimulatedUsb::
+// late_buffer_table); the driver read COUNT_RX at once and got the previous packet's: a full packet
+// after a short one ended the transfer early, a short one after full ones did not end it, and the
+// transfers lost the block boundaries. Neither emulator nor the plain register model shows it.
+TEST_F(UsbDrdFsTest, OutCountIsReadOnlyAfterTheBufferTableSettled) {
+    sim.late_buffer_table = true;
+    ASSERT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
+    // a first transfer that ends with a short packet: the PMA's count is then 30
+    std::vector<std::byte> first(200);
+    ASSERT_TRUE(drv.transfer(0x01, as_span(first), false));
+    ASSERT_EQ(host.out(1, Bytes(30, 9)), Handshake::Ack);
+    auto ev = drain(drv);
+    ASSERT_EQ(ev.size(), 1u);
+    EXPECT_EQ(ev[0].length, 30);
+    // the next block: two full packets and a short one - not ended by the stale count of 30
+    std::vector<std::byte> second(200);
+    ASSERT_TRUE(drv.transfer(0x01, as_span(second), false));
+    EXPECT_EQ(host.out(1, Bytes(64, 1)), Handshake::Ack);
+    EXPECT_TRUE(drain(drv).empty()) << "a full packet does not end the transfer";
+    EXPECT_EQ(host.out(1, Bytes(64, 2)), Handshake::Ack);
+    EXPECT_EQ(host.out(1, Bytes(10, 3)), Handshake::Ack);
+    ev = drain(drv);
+    ASSERT_EQ(ev.size(), 1u);
+    EXPECT_EQ(ev[0].length, 138);
+    EXPECT_EQ(second[0], std::byte{1});
+    EXPECT_EQ(second[64], std::byte{2});
+    EXPECT_EQ(second[137], std::byte{3});
 }
 
 TEST_F(UsbDrdFsTest, OutTransferEndsWhenTheBufferIsFull) {

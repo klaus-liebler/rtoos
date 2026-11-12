@@ -232,6 +232,8 @@ public:
             const unsigned n = istr & istr_idn;
             const std::uint32_t chep = regs_.chep(n);
             if ((chep & vtrx) != 0) {
+                // the packet's count and data in the PMA may still be on their way (Regs::settle_rx)
+                regs_.settle_rx();
                 clear_ctr(n, vtrx);
                 if ((chep & setup) != 0) {
                     on_setup();

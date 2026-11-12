@@ -39,6 +39,18 @@ struct UsbHardware {
         rcc::enable(rcc::gate::usbfs);
     }
 
+    /// Wait until a received packet's count and data are in the PMA. Errata (ST ES0561 STM32H503,
+    /// ES0587 STM32U535, same USB_DRD_FS IP as the H563): "Buffer description table update
+    /// completes after CTR interrupt triggers" - read at once, COUNT_RX can still be the previous
+    /// packet's. On the FCU revision 1 a full packet then looked short or a short one full, the OUT
+    /// transfers lost the boundaries of the NCM blocks and nearly every NTB was rejected. The
+    /// workaround (TinyUSB fsdev, ST's HAL): at least 800 ns at full speed - 200 cycles at the
+    /// H563's 250 MHz; the loop takes more than 5 cycles per pass.
+    static void settle_rx() noexcept {
+        for (volatile std::uint32_t i = 0; i < 40; i = i + 1) {
+        }
+    }
+
     /// Interrupts off while the thread changes a register the ISR also writes.
     struct Masked {
         std::uint32_t primask;
