@@ -68,6 +68,11 @@ SECTIONS
     . = ALIGN(8);
     _ebss = .;
   } > RAM
+  /* the DMA buffers are part of .bss here (zeroed with it): no ranges of their own */
+  PROVIDE(__dma_start = _ebss);
+  PROVIDE(__dma_end = _ebss);
+  PROVIDE(__sdmmc_start = _ebss);
+  PROVIDE(__sdmmc_end = _ebss);
 
   ASSERT(_ebss + _min_msp_size <= _estack, "RAM overflow: no room for the main stack")
 }

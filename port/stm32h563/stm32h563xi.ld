@@ -69,13 +69,20 @@ SECTIONS
     _ebss = .;
   } > RAM
 
+  /* DMA buffers: zeroed at start-up like .bss (startup.cpp), then __init_array constructs what
+     has a constructor. Not loaded: an initial value other than 0 would be lost -
+     tools/check_noload.py refuses the image then. */
   .dma_buffer (NOLOAD) :
   {
     . = ALIGN(32);
     __dma_start = .;
     *(.dma_buffer .dma_buffer.*)
     . = ALIGN(32);
+    __dma_end = .;
   } > RAM_DMA
+  /* no SDMMC buffer section on the H5 (startup.cpp zeroes an empty range) */
+  PROVIDE(__sdmmc_start = __dma_end);
+  PROVIDE(__sdmmc_end = __dma_end);
 
   ASSERT(_ebss + _min_msp_size <= _estack, "RAM overflow: no room for the main stack")
 }

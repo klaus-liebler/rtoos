@@ -196,7 +196,8 @@ private:
     Motion plan_;
     std::uint32_t total_ = 0, produced_ = 0, finished_items_ = 0;
     std::int32_t position_ = 0;
-    bool forward_ = true;
+    bool forward_ = false;  // set by start(); all members start at 0: the object lives in a NOLOAD DMA section
+
     std::atomic<bool> moving_{false};
 };
 

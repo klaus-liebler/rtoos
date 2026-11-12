@@ -85,8 +85,9 @@ SECTIONS
     _ebss = .;
   } > RAM
 
-  /* DMA buffers: not zeroed at start-up (as on the H5); objects with constructors are
-     constructed by __init_array. */
+  /* DMA buffers: zeroed at start-up like .bss (startup.cpp), then __init_array constructs what
+     has a constructor. Not loaded: an initial value other than 0 would be lost -
+     tools/check_noload.py refuses the image then. */
   .dma_buffer (NOLOAD) :
   {
     . = ALIGN(32);
@@ -96,12 +97,14 @@ SECTIONS
     __dma_end = .;
   } > RAM_DMA
 
-  /* SDMMC1 buffers (RTOS_SDMMC_BUFFER): not zeroed, constructed by __init_array. */
+  /* SDMMC1 buffers (RTOS_SDMMC_BUFFER): zeroed at start-up as .dma_buffer. */
   .sdmmc_buffer (NOLOAD) :
   {
     . = ALIGN(32);
+    __sdmmc_start = .;
     *(.sdmmc_buffer .sdmmc_buffer.*)
     . = ALIGN(32);
+    __sdmmc_end = .;
   } > RAM_SDMMC
 
   /* The main stack's room in the DTCM (nothing else is placed there yet). */

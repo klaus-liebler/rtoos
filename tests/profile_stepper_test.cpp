@@ -2,6 +2,7 @@
 // ProfileStepper: step periods of a ramp chosen at run time (linear or sigmoid acceleration).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -19,6 +20,19 @@ ProfileStepper make(RampShape shape, std::uint32_t start = 200, std::uint32_t cr
     ProfileStepper p;
     EXPECT_EQ(p.configure({.start_hz = start, .cruise_hz = cruise, .accel = accel, .shape = shape}, tick_hz, 0xFFFF), nullptr);
     return p;
+}
+
+// A TimerStepper (with its ProfileStepper) lives in a DMA section: zeroed at start-up, not loaded
+// from flash. Its start values must therefore all be 0 - non-zero defaults (the former default
+// profile) never arrived, and with an unzeroed section the stepper read SRAM garbage at boot (FCU
+// revision 1 locked up). Zero means "not configured": no move until configure().
+TEST(ProfileStepper, StartsAllZeroAndPlansNothingUntilConfigured) {
+    static constinit ProfileStepper fresh;  // static: zero-initialized first, then the defaults
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&fresh);
+    EXPECT_TRUE(std::all_of(bytes, bytes + sizeof fresh, [](unsigned char b) { return b == 0; }));
+    ProfileStepper p;
+    EXPECT_EQ(p.begin(100), 0u);
+    EXPECT_EQ(p.total(), 0u);
 }
 
 TEST(ProfileStepper, LinearRampHasConstantAcceleration) {

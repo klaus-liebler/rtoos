@@ -60,6 +60,10 @@ public:
 
     /// Plan a move of `steps` (sign = direction): the ticks until the first step, 0: nothing to do.
     std::uint32_t begin(std::int32_t steps) noexcept {
+        if (tick_hz_ == 0) {  // never configured: no move
+            total_ = 0;
+            return 0;
+        }
         total_ = static_cast<std::uint32_t>(steps >= 0 ? steps : -steps);
         ramp_steps_ = total_ / 2 < ramp_ ? total_ / 2 : ramp_;
         return total_ == 0 ? 0 : period(0);
@@ -93,10 +97,13 @@ private:
     [[nodiscard]] std::uint32_t ticks(float hz) const noexcept { return static_cast<std::uint32_t>(static_cast<float>(tick_hz_) / hz + 0.5f); }
     [[nodiscard]] std::uint32_t ramp_period(std::uint32_t s) const noexcept { return ticks(rate(s)); }
 
-    StepProfile profile_{};
-    std::uint32_t tick_hz_ = 1'000'000;
-    std::uint32_t ramp_ = 0, ramp_steps_ = 0, total_ = 0, cruise_ticks_ = 1000;
-    float sig_lo_ = 0, sig_span_ = 1;
+    // Every member starts at 0, "not configured" (begin() plans nothing until configure()): a
+    // ProfileStepper inside a TimerStepper lives in a DMA section, which is zeroed at start-up but
+    // not loaded - a start value other than 0 would never arrive (tools/check_noload.py).
+    StepProfile profile_{.start_hz = 0, .cruise_hz = 0, .accel = 0, .shape = RampShape::Linear, .steepness = 0};
+    std::uint32_t tick_hz_ = 0;
+    std::uint32_t ramp_ = 0, ramp_steps_ = 0, total_ = 0, cruise_ticks_ = 0;
+    float sig_lo_ = 0, sig_span_ = 0;
 };
 
 }  // namespace rtos::motion

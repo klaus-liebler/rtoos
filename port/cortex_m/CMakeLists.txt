@@ -31,6 +31,9 @@ function(rtos_add_firmware name)
     add_custom_command(TARGET ${name} POST_BUILD
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/check_vectors.py ${CMAKE_NM} ${CMAKE_OBJCOPY}
                 $<TARGET_FILE:${name}> $<TARGET_FILE_DIR:${name}>/${name}.map
+        # DMA sections are zeroed, not loaded: no start value other than 0 there (tools/check_noload.py)
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/check_noload.py ${CMAKE_OBJDUMP}
+                $<TARGET_FILE_DIR:${name}>/${name}.map ${CMAKE_BINARY_DIR}
         COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${name}>
         COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${name}> $<TARGET_FILE_DIR:${name}>/${name}.bin)
 endfunction()

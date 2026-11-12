@@ -163,7 +163,7 @@ private:
     std::uint32_t done_ = 0;
     std::uint32_t ramp_steps_ = 0;
     std::int32_t position_ = 0;
-    bool forward_ = true;
+    bool forward_ = false;  // set by begin(); all members start at 0 (TimerStepper: NOLOAD DMA section)
 };
 
 }  // namespace rtos::motion

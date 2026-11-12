@@ -17,6 +17,8 @@
 
 extern "C" {
 extern std::uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+/// The DMA regions outside .bss (linker scripts; empty where the chip has none).
+extern std::uint32_t __dma_start, __dma_end, __sdmmc_start, __sdmmc_end;
 extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
 int main();
@@ -37,6 +39,18 @@ int main();
         *dst++ = *src++;
     }
     for (std::uint32_t* dst = &_sbss; dst < &_ebss;) {
+        *dst++ = 0;
+    }
+    // The DMA sections are zeroed like .bss - the start value C++ gives every object before its
+    // constructor runs. Not zeroed, an object that the compiler constant-initializes (no
+    // constructor in __init_array) kept what the SRAM held after power-on: FCU revision 1 locked
+    // up at boot (a stepper's "moving" flag set, its motion plan null). Emulators start with zeroed
+    // RAM, so only the board showed it. Non-zero start values cannot live there at all (NOLOAD:
+    // nothing is copied) - tools/check_noload.py refuses such an image.
+    for (std::uint32_t* dst = &__dma_start; dst < &__dma_end;) {
+        *dst++ = 0;
+    }
+    for (std::uint32_t* dst = &__sdmmc_start; dst < &__sdmmc_end;) {
         *dst++ = 0;
     }
     for (auto* ctor = __init_array_start; ctor != __init_array_end; ++ctor) {
