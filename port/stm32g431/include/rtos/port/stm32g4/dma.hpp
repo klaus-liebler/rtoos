@@ -63,6 +63,9 @@ inline constexpr std::uint32_t ccr_en = 1u << 0, ccr_tcie = 1u << 1, ccr_teie = 
 inline constexpr std::uint32_t ccr_psize_pos = 8, ccr_msize_pos = 10, ccr_pl_pos = 12;
 // ISR / IFCR: 4 bits per channel (GIF, TCIF, HTIF, TEIF) at 4 (channel - 1)
 inline constexpr std::uint32_t isr_tcif = 1u << 1, isr_teif = 1u << 3, flags_all = 0xFu;
+/// TCIF, HTIF, TEIF without GIF: erratum ES0431 2.3.1 - clearing GIF in the cycle a transfer
+/// error comes loses TEIF and the channel stays enabled; GIF only with the channel disabled.
+inline constexpr std::uint32_t flags_events = 0xEu;
 }  // namespace dma_detail
 
 /// CCR for `c` without EN and the interrupt enables.
@@ -131,8 +134,8 @@ public:
     }
     /// Data items still to move.
     [[nodiscard]] static std::uint32_t remaining() noexcept { return CNDTR::read() & 0xFFFFu; }
-    /// In the ISR: acknowledge the flags.
-    static void clear() noexcept { IFCR::write(dma_detail::flags_all << flag_shift); }
+    /// In the ISR: acknowledge the event flags (not GIF: the channel may still run, ES0431 2.3.1).
+    static void clear() noexcept { IFCR::write(dma_detail::flags_events << flag_shift); }
 
     /// Abort: disable the channel (it becomes idle, the registers writable again).
     static void stop() noexcept {

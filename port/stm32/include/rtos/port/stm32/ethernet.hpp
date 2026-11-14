@@ -16,6 +16,12 @@
 // Threading: transmit()/receive()/poll_link() run in the network thread. The ETH
 // interrupt only calls irq() (acknowledge + report) and wakes that thread.
 //
+// Erratum ES0565 2.22.10 (STM32H563, not the H743): in RMII 10 Mbit/s mode the MAC can add a
+// fake nibble to a good frame and flag it with a dribble and a CRC error, and the MTL drops it.
+// A chip with it (EthernetHw::rmii_10m_fake_dribble) gets ST's workaround while the link runs at
+// 10 Mbit/s: MTLRXQOMR.FEP forwards error frames, and receive() takes those whose only errors are
+// dribble + CRC; every other error frame is still dropped.
+//
 // Placement: the descriptor rings are members, so put the object in DMA-reachable,
 // non-cacheable memory (RTOS_DMA_BUFFER); on the H7 the DMA cannot reach the DTCM.
 #pragma once
@@ -36,6 +42,7 @@ struct EthernetHw {
     std::uintptr_t base;
     void (*enable)() noexcept;  ///< bus and kernel clocks on, RMII selected (before the DMA reset)
     std::uint8_t irq;
+    bool rmii_10m_fake_dribble = false;  ///< erratum ES0565 2.22.10 (see the header)
 };
 
 namespace eth_reg {
@@ -79,7 +86,7 @@ inline constexpr std::uint32_t mdio_goc_read = 3u << 2;   // ETH_MACMDIOAR_MOC_R
            : hclk_hz < 250'000'000 ? 0x400u   // /102
                                    : 0x500u;  // /124
 }
-inline constexpr std::uint32_t mtl_tsf = 1u << 1, mtl_rsf = 1u << 5;
+inline constexpr std::uint32_t mtl_tsf = 1u << 1, mtl_fep = 1u << 4, mtl_rsf = 1u << 5;  // FEP: SVD STM32H563
 inline constexpr std::uint32_t dmamr_swr = 1u << 0;
 inline constexpr std::uint32_t dmasbmr_aal = 1u << 12;
 inline constexpr std::uint32_t dma_st = 1u << 0;  // DMACTXCR.ST / DMACRXCR.SR
@@ -98,6 +105,11 @@ inline constexpr std::uint32_t tdes3_fd = 0x2000'0000u, tdes3_ld = 0x1000'0000u;
 inline constexpr std::uint32_t rdes3_ioc = 0x4000'0000u, rdes3_buf1v = 0x0100'0000u;
 inline constexpr std::uint32_t rdes3_wb_fd = 0x2000'0000u, rdes3_wb_ld = 0x1000'0000u, rdes3_wb_es = 0x0000'8000u,
                                rdes3_wb_pl = 0x0000'7FFFu, rdes3_wb_ctxt = 0x4000'0000u;
+/// The error bits of RDES3 (write-back): CRC, giant, watchdog, overflow, receive, dribble
+/// (stm32h5xx_hal_eth.h ETH_DMARXNDESCWBF_CE/GP/RWT/OE/RE/DE).
+inline constexpr std::uint32_t rdes3_wb_ce = 0x0100'0000u, rdes3_wb_de = 0x0008'0000u;
+inline constexpr std::uint32_t rdes3_wb_errors = rdes3_wb_ce | 0x0080'0000u | 0x0040'0000u | 0x0020'0000u |
+                                                 0x0010'0000u | rdes3_wb_de;
 }  // namespace eth_reg
 
 namespace lan8742 {  // ST stm32-lan8742/lan8742.h
@@ -228,6 +240,10 @@ public:
                 cr |= maccr_fes;
             }
             MACCR::write(cr);
+            if constexpr (Hw.rmii_10m_fake_dribble) {  // erratum: forward error frames at 10 Mbit/s
+                fake_dribble_ = (cr & maccr_fes) == 0;
+                MTLRXQOMR::write(fake_dribble_ ? MTLRXQOMR::read() | mtl_fep : MTLRXQOMR::read() & ~mtl_fep);
+            }
         }
         link_ = up;
         return up;
@@ -277,7 +293,8 @@ public:
             rx_next_ = (rx_next_ + 1) % RxCount;
             const bool complete = (status & (eth_reg::rdes3_wb_fd | eth_reg::rdes3_wb_ld)) ==
                                   (eth_reg::rdes3_wb_fd | eth_reg::rdes3_wb_ld);
-            if (!complete || (status & (eth_reg::rdes3_wb_es | eth_reg::rdes3_wb_ctxt)) != 0) {
+            if (!complete || (status & eth_reg::rdes3_wb_ctxt) != 0 ||
+                ((status & eth_reg::rdes3_wb_es) != 0 && !fake_dribble(status))) {
                 ++rx_errors_;
                 rearm_same(index);
                 continue;
@@ -375,7 +392,13 @@ private:
     net::MacAddress mac_;
     unsigned phy_;
     std::uint32_t mdio_cr_ = eth_reg::mdio_clock_range(0);
+    /// Erratum ES0565 2.22.10: a good frame with a fake nibble at 10 Mbit/s (only dribble + CRC).
+    [[nodiscard]] bool fake_dribble(std::uint32_t status) const noexcept {
+        return fake_dribble_ && (status & eth_reg::rdes3_wb_errors) == (eth_reg::rdes3_wb_ce | eth_reg::rdes3_wb_de);
+    }
+
     bool link_ = false;
+    bool fake_dribble_ = false;  ///< 10 Mbit/s on a chip with the erratum: FEP on
     std::uint32_t rx_errors_ = 0;
     std::uint32_t rx_dropped_ = 0;
 };

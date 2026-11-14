@@ -17,7 +17,10 @@
 //               data (BCNT bytes follow in the RX FIFO), 6 = SETUP data (8 bytes), 3/4 = the
 //               transfer / SETUP stage done; then DOEPINTn.XFRC / STUP
 //   transmit    DIEPTSIZn (PKTCNT 1, XFRSIZ), DIEPCTLn.CNAK + EPENA, the packet into TX FIFO n;
-//               DIEPINTn.XFRC when the host took it
+//               DIEPINTn.XFRC when the host took it. A zero-length packet: erratum ES0392 2.25.7
+//               ("potential unexpected transfer on the USB bus instead of a zero-length packet") -
+//               SNAK, 20 AHB cycles, EPENA, 15 AHB cycles, CNAK; the waits are reads of DIEPCTLn
+//               (each crosses the AHB: at least one AHB cycle, whatever the CPU clock)
 //
 // One packet at a time per endpoint, as the USB_DRD_FS driver (usb_device.hpp): each IN packet
 // goes out from the transfer buffer, each OUT packet is read straight into it; the interrupt
@@ -394,6 +397,14 @@ private:
         }
         d.in_flight = chunk;
         write(dieptsiz(n), tsiz_pktcnt_1 | chunk);
+        if (chunk == 0) {  // erratum ES0392 2.25.7, see the header
+            write(diepctl(n), read(diepctl(n)) | ctl_snak);
+            ahb_cycles(n, zlp_snak_cycles);
+            write(diepctl(n), read(diepctl(n)) | ctl_epena);
+            ahb_cycles(n, zlp_epena_cycles);
+            write(diepctl(n), read(diepctl(n)) | ctl_cnak);
+            return;
+        }
         write(diepctl(n), read(diepctl(n)) | ctl_cnak | ctl_epena);
         const std::byte* p = d.buffer + d.done;
         for (std::size_t i = 0; i < chunk; i += 4) {
@@ -404,6 +415,14 @@ private:
             regs_.tx_push(n, w);
         }
     }
+
+    /// At least `cycles` AHB cycles: as many reads of DIEPCTLn.
+    void ahb_cycles(unsigned n, unsigned cycles) noexcept {
+        for (unsigned i = 0; i < cycles; ++i) {
+            (void)read(otg::diepctl(n));
+        }
+    }
+    static constexpr unsigned zlp_snak_cycles = 20, zlp_epena_cycles = 15;
 
     void arm_out(unsigned n) noexcept {
         using namespace otg;

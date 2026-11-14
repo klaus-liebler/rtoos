@@ -15,7 +15,8 @@ target_compile_definitions(rtos_stm32g431 INTERFACE RTOS_STM32G431_PACKAGE=${RTO
 target_link_options(rtos_stm32g431 INTERFACE -T${CMAKE_CURRENT_SOURCE_DIR}/stm32g431xb.ld)
 set_property(TARGET rtos_stm32g431 APPEND PROPERTY INTERFACE_LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/stm32g431xb.ld)
 
-# Vector table. Added to every firmware image as objects (rtos_add_firmware).
-add_library(rtos_stm32g431_vectors OBJECT src/vectors.cpp)
+# Vector table and the start-up's errata data (src/errata.cpp). Added to every firmware image as
+# objects (rtos_add_firmware), so they override the weak defaults.
+add_library(rtos_stm32g431_vectors OBJECT src/vectors.cpp src/errata.cpp)
 target_link_libraries(rtos_stm32g431_vectors PRIVATE rtos_stm32g431)
 set(RTOS_CHIP_VECTORS rtos_stm32g431_vectors CACHE INTERNAL "vector table of the chip of this build")

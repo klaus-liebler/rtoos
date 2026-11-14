@@ -99,6 +99,7 @@ RTOS_DMA_BUFFER h7::Ethernet<Pool> ethernet{pool, rtos::net::MacAddress{}, 0};
 
 void drivers_check() noexcept;
 void drivers_check() noexcept {
+    h7::apply_errata();
     h7::configure_mpu();
     rtos::port::cm7::cache::enable_icache();
     rtos::port::cm7::cache::enable_dcache();

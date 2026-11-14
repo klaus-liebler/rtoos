@@ -14,7 +14,11 @@
 // * PendSV (lowest priority) performs every context switch; SysTick runs at the
 //   same lowest priority, so a tick never preempts a half-done switch.
 // * FPU: lazy stacking (ASPEN|LSPEN). s16-s31 are saved only for threads that have
-//   actually used the FPU (EXC_RETURN.FType == 0).
+//   actually used the FPU (EXC_RETURN.FType == 0). The Cortex-M4 port turns the lazy part off
+//   (LazyFpStacking = false: ASPEN only): Arm erratum 776924 (ES0431 2.1.2) - with lazy stacking
+//   a VDIV/VSQRT interrupted by an ISR of at most two instructions may not write its result;
+//   rtoos cannot know how short an application's ISR is. The cost: an interrupt of a thread that
+//   uses the FPU stacks s0-s15 and FPSCR at once (17 words more).
 #pragma once
 
 #include <cstddef>
@@ -34,8 +38,9 @@ extern "C" {
 namespace rtos::port::cortex_m {
 
 /// `PrioBits`: implemented NVIC priority bits; `KernelPriority`: the most urgent priority the
-/// kernel lock masks (ISRs with priority 0 .. KernelPriority - 1 are never masked).
-template <unsigned PrioBits, unsigned KernelPriority>
+/// kernel lock masks (ISRs with priority 0 .. KernelPriority - 1 are never masked);
+/// `LazyFpStacking`: FPCCR.LSPEN (see the design decisions above).
+template <unsigned PrioBits, unsigned KernelPriority, bool LazyFpStacking = true>
 struct CoreServices {
     static_assert(PrioBits >= 2 && PrioBits <= 8, "the NVIC implements 2..8 priority bits");
     static_assert(KernelPriority >= 1 && KernelPriority < (1u << PrioBits),
@@ -162,7 +167,11 @@ struct CoreServices {
         scb::SHPR3::write((scb::SHPR3::read() & 0x0000'FFFFu) | (lowest_priority << 16) | (lowest_priority << 24));
         scb::SHPR2::write(scb::SHPR2::read() & 0x00FF'FFFFu);
 #if defined(__ARM_FP)
-        fpu::FPCCR::set(fpu::fpccr_aspen | fpu::fpccr_lspen);
+        if constexpr (LazyFpStacking) {
+            fpu::FPCCR::set(fpu::fpccr_aspen | fpu::fpccr_lspen);
+        } else {
+            fpu::FPCCR::write((fpu::FPCCR::read() & ~fpu::fpccr_lspen) | fpu::fpccr_aspen);
+        }
 #endif
         systick::CTRL::write(0);
         systick::LOAD::write(core_clock_hz / tick_hz - 1u);

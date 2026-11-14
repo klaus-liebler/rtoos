@@ -14,6 +14,10 @@
 //   DxEPINTn    rc_w1
 //   DOEPTSIZn   a received OUT packet takes one from PKTCNT and its bytes from XFRSIZ; a SETUP takes
 //               one from EP0's STUPCNT
+//   ZLP erratum ES0392 2.25.7: an IN endpoint enabled for a zero-length packet sends a wrong data
+//               packet unless the driver wrote SNAK, waited 20 AHB cycles, set EPENA (SNAK still
+//               on), waited 15 AHB cycles, then CNAK - the driver's register reads are the AHB
+//               cycles counted here (each read is at least one)
 // A simulated host sends SETUP, OUT and IN tokens. Neither emulator models this core, so these
 // tests stand in for it until the driver runs on the board.
 #include <gtest/gtest.h>
@@ -49,6 +53,12 @@ struct SimulatedOtg {
     std::array<std::deque<std::uint32_t>, 8> tx;
     std::array<bool, 8> in_nak{}, out_nak{};
     std::array<unsigned, 8> in_pid{}, out_pid{};
+    // ZLP erratum: register reads by the driver, when SNAK / EPENA were last written per IN endpoint
+    static constexpr std::uint64_t never = ~std::uint64_t{0};
+    std::uint64_t reads = 0;
+    std::array<std::uint64_t, 8> snak_read{never, never, never, never, never, never, never, never};
+    std::array<std::uint64_t, 8> zlp_epena_read{};
+    std::array<bool, 8> zlp_pending{}, zlp_garbage{};
 
     static bool is_ctl(std::uint32_t o, bool& in, unsigned& n) {
         if (o >= 0x900 && o < 0xB00 && (o - 0x900) % 0x20 == 0) {
@@ -128,6 +138,9 @@ struct SimulatedOtg {
             r[o] = v & ~(otg::grstctl_csrst | otg::grstctl_txfflsh | otg::grstctl_rxfflsh);
         } else if (is_ctl(o, in, n)) {
             const std::uint32_t old = get(o);
+            if (in) {
+                zlp_erratum(n, old, v);
+            }
             std::uint32_t nv = (v & ~(cnak | snak | sd0pid | epdis | epena)) | (old & epena) | (v & epena);
             if ((v & cnak) != 0) (in ? in_nak : out_nak)[n] = false;
             if ((v & snak) != 0) (in ? in_nak : out_nak)[n] = true;
@@ -156,6 +169,21 @@ struct SimulatedOtg {
         return w;
     }
     unsigned dad() const { return (get(otg::dcfg) >> 4) & 0x7F; }
+
+    /// A write to DIEPCTLn (before it takes effect): does the ZLP sequence hold?
+    void zlp_erratum(unsigned n, std::uint32_t old, std::uint32_t v) {
+        if ((v & epena) != 0 && (old & epena) == 0 && (get(otg::dieptsiz(n)) & 0x7FFFFu) == 0) {
+            zlp_garbage[n] = !in_nak[n] || (v & cnak) != 0 || snak_read[n] == never || reads - snak_read[n] < 20;
+            zlp_pending[n] = true;
+            zlp_epena_read[n] = reads;
+        } else if ((v & cnak) != 0 && zlp_pending[n]) {
+            zlp_garbage[n] = zlp_garbage[n] || reads - zlp_epena_read[n] < 15;
+            zlp_pending[n] = false;
+        }
+        if ((v & snak) != 0) {
+            snak_read[n] = reads;
+        }
+    }
 };
 
 struct SimRegs {
@@ -164,7 +192,10 @@ struct SimRegs {
     static constexpr std::uint32_t tx_fifo_words = 16;
     SimulatedOtg* s = nullptr;
     struct Masked {};
-    std::uint32_t read(std::uint32_t o) noexcept { return s->read(o); }
+    std::uint32_t read(std::uint32_t o) noexcept {
+        ++s->reads;
+        return s->read(o);
+    }
     void write(std::uint32_t o, std::uint32_t v) noexcept { s->write(o, v); }
     std::uint32_t rx_pop() noexcept { return s->rx_pop(); }
     void tx_push(unsigned n, std::uint32_t w) noexcept { s->tx[n].push_back(w); }
@@ -243,6 +274,10 @@ struct Host {
             s.tx[ep].pop_front();
             for (std::size_t b = 0; b < 4 && i + b < len; ++b) packet[i + b] = static_cast<std::uint8_t>(w >> (8 * b));
         }
+        if (len == 0 && s.zlp_garbage[ep]) {
+            packet = {0xDE, 0xAD};  // the erratum: a data packet instead of the zero-length one
+        }
+        s.zlp_garbage[ep] = false;
         if (pid != nullptr) *pid = s.in_pid[ep];
         s.in_pid[ep] ^= 1;
         s.r[otg::diepctl(ep)] &= ~epena;
@@ -353,6 +388,28 @@ TEST_F(UsbOtgFsTest, SetupThenInDataStageWithAZeroLengthPacket) {
     EXPECT_EQ(ev[0].length, 0);
     EXPECT_EQ(sim.get(otg::doeptsiz(0)), (3u << 29) | (1u << 19) | 24u) << "prepared for the next SETUP (HAL's EP0_OutStart)";
     (void)hs;
+}
+
+// ES0392 2.25.7 "potential unexpected transfer on the USB bus instead of a zero-length packet":
+// the driver enabled every IN packet with CNAK + EPENA in one write - for a zero-length packet
+// (control status stages, bulk transfers of a multiple of 64 bytes with zlp) the core can then
+// send a data packet instead. Both the status stage and a bulk ZLP must reach the host empty.
+TEST_F(UsbOtgFsTest, ZeroLengthPacketsFollowTheErratumSequence) {
+    // control status stage IN (a SET request: no data, the device answers with a ZLP)
+    ASSERT_EQ(host.setup({0x00, 0x09, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00}), Handshake::Ack);
+    (void)drain(drv);
+    ASSERT_TRUE(drv.transfer(0x80, {}, false));
+    const auto status = host.in(0);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(status->empty()) << "status stage: a zero-length packet";
+    // bulk IN of exactly one packet with zlp: 64 bytes, then the ZLP
+    ASSERT_TRUE(drv.open({0x81, usb::TransferType::Bulk, 64}));
+    std::vector<std::byte> data(64, std::byte{1});
+    ASSERT_TRUE(drv.transfer(0x81, data, true));
+    EXPECT_EQ(host.in(1)->size(), 64u);
+    const auto zlp = host.in(1);
+    ASSERT_TRUE(zlp.has_value());
+    EXPECT_TRUE(zlp->empty()) << "bulk: a zero-length packet";
 }
 
 TEST_F(UsbOtgFsTest, ShortInTransferNeedsNoZeroLengthPacket) {

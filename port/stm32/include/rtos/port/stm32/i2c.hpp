@@ -34,7 +34,17 @@
 // kernel clock and the bus speed (i2c_timing(), the I2C-bus specification UM10204 limits) and
 // checked there - prescaler and counters in range, SCL not faster than asked, not slower than
 // 90 % of it. At run time init() writes constants.
-// After a timeout or bus error the peripheral is reset; recover() also resets it in RCC.
+// After a timeout or lost arbitration the peripheral is reset; recover() also resets it in RCC.
+//
+// Silicon errata (ES0565 STM32H563 2.14.x, ES0392 STM32H743 2.19.x, ES0431 STM32G431 2.11.x):
+//   * "Spurious bus error detection in controller mode": BERR can be set while the transfer goes
+//     on undisturbed; ST: clear it, nothing else. The driver does so - a transfer ends with a
+//     NACK, STOP, lost arbitration or its timeout, never on BERR alone.
+//   * "Wrong data sampling when tSU;DAT is shorter than one I2C kernel clock period": the kernel
+//     clock must be at least 4 / 10 / 20 MHz for standard / fast / fast-mode plus
+//     (i2c_kernel_clock_ok(), checked at compile time).
+//   * "Transmission stalled after first byte transfer" (H743, G431): only with an APB to kernel
+//     clock ratio between 1.5 and 3 - every board here clocks the I2C from its PCLK (ratio 1).
 #pragma once
 
 #include <concepts>
@@ -102,6 +112,12 @@ inline constexpr std::uint64_t filter_ps = 50'000;  // analog filter delay, mini
     return {};
 }
 
+/// Errata "wrong data sampling when tSU;DAT is shorter than one I2C kernel clock period": a
+/// kernel clock period no longer than the mode's minimum data setup time (250/100/50 ns).
+[[nodiscard]] constexpr bool i2c_kernel_clock_ok(std::uint32_t kernel_hz, std::uint32_t bus_hz) noexcept {
+    return std::uint64_t{kernel_hz} * i2c_detail::mode(bus_hz).setup_ns >= 1'000'000'000ull;
+}
+
 /// SCL frequency that `t` produces at `kernel_hz` (with the synchronisation delays above).
 [[nodiscard]] constexpr std::uint32_t i2c_frequency(const I2cTiming& t, std::uint32_t kernel_hz) noexcept {
     using namespace i2c_detail;
@@ -124,6 +140,8 @@ struct I2cConfig {
 template <I2cConfig C>
 consteval I2cTiming checked_i2c_timing() {
     static_assert(C.bus_hz >= 10'000 && C.bus_hz <= 1'000'000, "I2C bus speed outside 10 kHz .. 1 MHz");
+    static_assert(i2c_kernel_clock_ok(C.kernel_hz, C.bus_hz),
+                  "I2C kernel clock too slow for the mode's data setup time (errata: at least 4/10/20 MHz)");
     constexpr I2cTiming t = i2c_timing(C.kernel_hz, C.bus_hz);
     static_assert(t.valid, "no I2C timing for this kernel clock and bus speed (prescaler or counters out of range)");
     static_assert(i2c_frequency(t, C.kernel_hz) <= C.bus_hz, "I2C timing faster than the bus speed");
@@ -159,6 +177,7 @@ inline constexpr std::uint32_t cr2_nbytes_pos = 16;
 inline constexpr std::uint32_t isr_txe = 1u << 0, isr_txis = 1u << 1, isr_rxne = 1u << 2, isr_nackf = 1u << 4,
                                isr_stopf = 1u << 5, isr_tc = 1u << 6, isr_berr = 1u << 8, isr_arlo = 1u << 9,
                                isr_busy = 1u << 15;
+inline constexpr std::uint32_t icr_berrcf = 1u << 8;
 inline constexpr std::uint32_t icr_all = (1u << 3) | (1u << 4) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) |
                                          (1u << 11) | (1u << 12) | (1u << 13);
 }  // namespace i2c_detail
@@ -302,12 +321,17 @@ public:
         }
     }
 
-    /// Error interrupt (interrupt-driven mode): bus error or lost arbitration ends the transfer.
+    /// Error interrupt (interrupt-driven mode): lost arbitration ends the transfer; a bus error
+    /// alone is cleared and the transfer goes on (erratum "spurious bus error", see the header).
     static void on_error_irq() noexcept
         requires interrupt_driven
     {
         using namespace i2c_detail;
         const std::uint32_t isr = ISR::read();
+        if ((isr & (isr_berr | isr_arlo)) == isr_berr) {
+            ICR::write(icr_berrcf);
+            return;
+        }
         x_.result = (isr & isr_arlo) != 0 ? I2cResult::ArbitrationLost : I2cResult::BusError;
         (void)fail(x_.result);
         finish();
@@ -394,8 +418,8 @@ private:
                 ISR::write(isr_txe);  // flush TXDR
                 return I2cResult::Nack;
             }
-            if ((isr & isr_berr) != 0) {
-                return fail(I2cResult::BusError);
+            if ((isr & isr_berr) != 0) {  // spurious in controller mode (erratum): clear, go on
+                ICR::write(icr_berrcf);
             }
             if ((isr & isr_arlo) != 0) {
                 return fail(I2cResult::ArbitrationLost);

@@ -24,8 +24,10 @@ void spin(std::uint32_t cycles) noexcept {
 }  // namespace
 
 void init() noexcept {
-    // MPU first (it makes the DMA region non-cacheable), then the caches - the D-cache enable
-    // invalidates every line; nothing written through it yet - then the clocks.
+    // Errata settings of the silicon revision first (AXI SRAM reads on revision Y), then the MPU
+    // (it makes the DMA region non-cacheable), then the caches - the D-cache enable invalidates
+    // every line; nothing written through it yet - then the clocks.
+    h7::apply_errata();
     h7::configure_mpu();
     cache::enable_icache();
     cache::enable_dcache();

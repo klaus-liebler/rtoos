@@ -25,6 +25,16 @@
 // Transfers in hardware alone (start()/finish()): up to fifo_frames frames go into the TxFIFO,
 // CSTART, return; the end-of-transfer interrupt (irq) calls finish(), which takes the received
 // frames from the RxFIFO. No polling, no CPU while the bits move.
+//
+// End of a transfer, silicon errata (ES0565 STM32H563 2.18.2, ES0392 STM32H743 2.22.6 and
+// 2.22.2): disabling the SPI right after EOT can cut the last SCK pulse (EOT comes when the last
+// bit is sampled, half an SCK period before the pulse ends - at 250 MHz PCLK and 781 kHz SCK the
+// CPU is far faster); and on the H743 a CSTART within one SCK period after EOT can stall the
+// master. So the SPI stays enabled after EOT (its outputs keep their levels) and is disabled only
+// when the next transfer needs TSIZE written - by then normally long past; only a transfer that
+// follows within one SCK period waits for the rest of it (eot_guard_cycles, on the DWT cycle
+// counter). Disabling and re-enabling between transfers is also ST's first workaround for the
+// stall.
 #pragma once
 
 #include <contracts>
@@ -61,6 +71,14 @@ struct SpiConfig {
     return c.kernel_hz / (2u << spi_mbr(c));
 }
 
+/// CPU cycles in one SCK period (rounded up): after EOT the SPI is not disabled sooner (errata,
+/// see the header).
+[[nodiscard]] constexpr std::uint32_t spi_eot_guard_cycles(const SpiConfig& c) noexcept {
+    const std::uint32_t cpu = c.cpu_hz != 0 ? c.cpu_hz : c.kernel_hz;
+    const std::uint32_t bus = spi_bus_hz(c);
+    return (cpu + bus - 1) / bus;
+}
+
 /// One SPI of a chip.
 struct SpiHw {
     std::uintptr_t base;
@@ -89,6 +107,7 @@ class SpiMaster {
                                           ((Config.mode & 2u) != 0 ? spi_detail::cfg2_cpol : 0u) |
                                           (Config.lsb_first ? spi_detail::cfg2_lsbfrst : 0u);
     static constexpr std::uint32_t cycles_per_us = (Config.cpu_hz != 0 ? Config.cpu_hz : Config.kernel_hz) / 1'000'000;
+    static constexpr std::uint32_t eot_guard_cycles = spi_eot_guard_cycles(Config);
 
 public:
     static constexpr std::uintptr_t base = Hw.base;  ///< the instance (resource checks: rtos/distinct.hpp)
@@ -122,9 +141,10 @@ public:
     /// TxFIFO, CSTART, the end-of-transfer interrupt on. False if one is running or tx is too long.
     static bool start(std::span<const std::byte> tx) noexcept {
         using namespace spi_detail;
-        if (tx.empty() || tx.size() > fifo_frames || (CR1::read() & cr1_spe) != 0) {
+        if (tx.empty() || tx.size() > fifo_frames || IER::read() != 0) {
             return false;
         }
+        disable_after_eot();
         CR2::write(static_cast<std::uint32_t>(tx.size()));
         CR1::write(cr1_ssi | cr1_spe);
         for (const std::byte b : tx) {
@@ -137,7 +157,7 @@ public:
     }
 
     /// In the SPI interrupt: false if the transfer has not ended; else the received frames into
-    /// `rx` (the size start() sent), the SPI disabled, the interrupt off.
+    /// `rx` (the size start() sent), the interrupt off (the SPI stays enabled: see the header).
     static bool finish(std::span<std::byte> rx) noexcept {
         using namespace spi_detail;
         if ((SR::read() & sr_eot) == 0) {
@@ -147,8 +167,7 @@ public:
             b = (SR::read() & sr_rxp) != 0 ? static_cast<std::byte>(rxdr8()) : std::byte{0xFF};
         }
         IER::write(0);
-        IFCR::write(ifcr_all);
-        CR1::write(cr1_ssi);
+        ended();
         return true;
     }
 
@@ -166,6 +185,7 @@ private:
         if (n == 0) {
             return true;
         }
+        disable_after_eot();
         const std::uint32_t start = cortex_m::CycleCounter::now();
         const std::uint32_t limit = timeout_us * cycles_per_us;
         CR2::write(static_cast<std::uint32_t>(n));  // TSIZE
@@ -201,9 +221,31 @@ private:
                 ok = false;
             }
         }
-        IFCR::write(ifcr_all);
-        CR1::write(cr1_ssi);  // SPE = 0: also flushes the FIFOs after a timeout
+        if (ok) {
+            ended();
+        } else {
+            IFCR::write(ifcr_all);
+            CR1::write(cr1_ssi);  // SPE = 0 at once: flushes the FIFOs after a timeout
+        }
         return ok;
+    }
+
+    /// EOT: flags cleared, the SPI left enabled until the next transfer (errata, see the header).
+    static void ended() noexcept {
+        IFCR::write(spi_detail::ifcr_all);
+        eot_cycle_ = cortex_m::CycleCounter::now();
+        eot_pending_ = true;
+    }
+
+    /// SPE = 0 before a transfer writes TSIZE - not within one SCK period after the last EOT.
+    static void disable_after_eot() noexcept {
+        if (!eot_pending_) {
+            return;
+        }
+        while (cortex_m::CycleCounter::now() - eot_cycle_ < eot_guard_cycles) {
+        }
+        CR1::write(spi_detail::cr1_ssi);
+        eot_pending_ = false;
     }
 
     // Byte accesses: a 32-bit access to TXDR/RXDR would move four frames (data packing).
@@ -219,6 +261,8 @@ private:
     using IFCR = cortex_m::Reg<Hw.base + 0x18>;
 
     static inline std::byte fill_{0xFF};
+    static inline std::uint32_t eot_cycle_ = 0;
+    static inline bool eot_pending_ = false;  ///< SPE still on after an EOT
 };
 
 }  // namespace rtos::port::stm32

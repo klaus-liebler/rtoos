@@ -33,6 +33,7 @@ void init() noexcept {
     // The MPU before the caches (it decides what is cacheable: SRAM1/2 not), then the caches:
     // the D-cache enable invalidates every line, and nothing that must survive has been written
     // through it yet (.data/.bss are written before main(), cache off).
+    h7::apply_errata();  // revision Y: AXI SRAM reads (ES0392 2.2.10)
     h7::configure_mpu();
     cache::enable_icache();
     cache::enable_dcache();

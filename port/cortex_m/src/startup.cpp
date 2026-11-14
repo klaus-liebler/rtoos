@@ -28,7 +28,28 @@ int main();
 /// globals, no FPU. Default: nothing; a board overrides it.
 [[gnu::weak]] void board_early_init() noexcept {}
 
-[[noreturn]] void Reset_Handler() noexcept {
+/// SRAM instances the reset entry reads once before anything is written to RAM, 0-terminated.
+/// A chip with ST's "SRAM write error" erratum (ES0431 2.2.6, STM32G431: after a reset at a
+/// critical instant the first access to an SRAM instance restores it - and a write there is
+/// lost) defines it in its vector-table objects; default: none.
+[[gnu::weak]] extern const std::uintptr_t rtos_sram_first_reads[] = {0};
+
+[[noreturn]] void rtos_reset_body() noexcept;
+
+/// The reset vector: the reads of rtos_sram_first_reads in registers only - the first write to
+/// RAM (a stack push) comes after them - then the C++ start-up.
+[[gnu::naked, noreturn]] void Reset_Handler() noexcept {
+    __asm volatile(
+        "   ldr     r0, =rtos_sram_first_reads\n"
+        "1: ldr     r1, [r0], #4             \n"
+        "   cbz     r1, 2f                   \n"
+        "   ldr     r1, [r1]                 \n"
+        "   b       1b                       \n"
+        "2: b       rtos_reset_body          \n"
+        "   .ltorg                           \n");
+}
+
+[[noreturn]] void rtos_reset_body() noexcept {
     board_early_init();
 
     // Grant full access to the FPU (CP10/CP11) before any FP instruction can run.

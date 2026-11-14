@@ -7,7 +7,7 @@
 //   saved SP -> r4 r5 r6 r7 r8 r9 r10 r11 EXC_RETURN   (software frame, 9 words)
 //               [s16 ... s31]                           (only if EXC_RETURN.FType == 0)
 //               r0 r1 r2 r3 r12 lr pc xPSR              (hardware frame)
-//               [s0 ... s15 FPSCR reserved]             (hardware, lazy, if FP active)
+//               [s0 ... s15 FPSCR reserved]             (hardware, if FP active; not lazy: erratum 776924)
 //
 // A fresh thread stores EXC_RETURN = 0 (sentinel, cortex_m::CoreServices::init_stack) and is
 // resumed with the EXC_RETURN template captured by the start-up SVC (Thread mode, PSP, no FP

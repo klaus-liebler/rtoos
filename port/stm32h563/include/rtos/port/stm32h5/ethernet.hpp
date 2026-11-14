@@ -34,7 +34,9 @@ inline void enable() noexcept {
 }
 }  // namespace eth_detail
 
-inline constexpr stm32::EthernetHw ethernet_hw{.base = periph_alias + 0x0002'8000, .enable = &eth_detail::enable, .irq = 106};
+/// rmii_10m_fake_dribble: erratum ES0565 2.22.10 (stm32/ethernet.hpp).
+inline constexpr stm32::EthernetHw ethernet_hw{.base = periph_alias + 0x0002'8000, .enable = &eth_detail::enable, .irq = 106,
+                                               .rmii_10m_fake_dribble = true};
 
 template <net::PacketAllocator Pool, std::size_t RxCount = 8, std::size_t TxCount = 8>
 using Ethernet = stm32::Ethernet<ethernet_hw, Pool, RxCount, TxCount>;

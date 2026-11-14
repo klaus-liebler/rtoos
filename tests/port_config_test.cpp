@@ -71,6 +71,19 @@ TEST(I2cTiming, ComparableToTheVendorToolAt80MHz) {
 static_assert(h5::checked_i2c_timing<h5::I2cConfig{.kernel_hz = 250'000'000, .cpu_hz = 250'000'000}>().valid);
 static_assert(h5::checked_uart_registers<h5::UartConfig{.kernel_hz = 250'000'000, .baud = 115'200}>().brr == 2170);
 
+// Errata ES0565 2.14.1 / ES0392 2.19.3 / ES0431 2.11.1: SDA is sampled wrongly when the
+// kernel clock period exceeds the mode's minimum data setup time - at least 4 / 10 / 20 MHz.
+TEST(I2cTiming, KernelClockCoversTheDataSetupTime) {
+    namespace st = rtos::port::stm32;
+    EXPECT_TRUE(st::i2c_kernel_clock_ok(4'000'000, 100'000));
+    EXPECT_FALSE(st::i2c_kernel_clock_ok(3'999'999, 100'000));
+    EXPECT_TRUE(st::i2c_kernel_clock_ok(10'000'000, 400'000));
+    EXPECT_FALSE(st::i2c_kernel_clock_ok(8'000'000, 400'000));
+    EXPECT_TRUE(st::i2c_kernel_clock_ok(20'000'000, 1'000'000));
+    EXPECT_FALSE(st::i2c_kernel_clock_ok(16'000'000, 1'000'000));
+    EXPECT_TRUE(st::i2c_kernel_clock_ok(125'000'000, 100'000)) << "the FCU's PCLK1";
+}
+
 TEST(UartConfig, RegistersFromTheConfiguration) {
     constexpr h5::UartRegisters r = h5::uart_registers(
         {.kernel_hz = 250'000'000, .baud = 1'000'000, .parity = h5::Parity::Even, .half_duplex = true});
@@ -173,6 +186,19 @@ TEST(SpiConfig, PrescalerIsTheSmallestWithinTheBusLimit) {
     EXPECT_EQ(h5::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 50'000'000}), 0u) << "/2";
     EXPECT_EQ(h5::spi_mbr({.kernel_hz = 100'000'000, .max_bus_hz = 49'999'999}), 1u) << "/4";
     EXPECT_EQ(h5::spi_mbr({.kernel_hz = 250'000'000, .max_bus_hz = 100'000}), 8u) << "below / 256: invalid";
+}
+
+// Errata ES0565 2.18.2 / ES0392 2.22.6, 2.22.2: the SPI is not disabled (nor restarted) within
+// one SCK period after EOT - in CPU cycles, rounded up.
+TEST(SpiConfig, EotGuardIsOneSckPeriod) {
+    namespace st = rtos::port::stm32;
+    // the HX711: SCK 781.25 kHz, CPU 250 MHz -> 320 cycles (1.28 us)
+    EXPECT_EQ(st::spi_eot_guard_cycles({.kernel_hz = 100'000'000, .max_bus_hz = 1'000'000, .cpu_hz = 250'000'000}), 320u);
+    // without cpu_hz the kernel clock counts: / 128 -> 128 cycles
+    EXPECT_EQ(st::spi_eot_guard_cycles({.kernel_hz = 100'000'000, .max_bus_hz = 1'000'000}), 128u);
+    // rounded up: 400 MHz CPU, 100 MHz / 2 = 50 MHz SCK -> 8; 250 MHz CPU, 100 MHz / 4 -> 10
+    EXPECT_EQ(st::spi_eot_guard_cycles({.kernel_hz = 100'000'000, .max_bus_hz = 50'000'000, .cpu_hz = 400'000'000}), 8u);
+    EXPECT_EQ(st::spi_eot_guard_cycles({.kernel_hz = 100'000'000, .max_bus_hz = 30'000'000, .cpu_hz = 250'000'000}), 10u);
 }
 
 TEST(TimerConfig, PwmGetsTheFinestPrescalerThatFits) {

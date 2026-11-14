@@ -4,7 +4,7 @@
 // unchanged (cm7/port.hpp: same ARMv7-M exception model and FP frame).
 //
 // Everything but the context switch is the Cortex-M core both ports share (cortex_m/core.hpp:
-// BASEPRI kernel lock, PendSV, SysTick, lazy FPU stacking, the initial thread frame).
+// BASEPRI kernel lock, PendSV, SysTick, FPU stacking (not lazy here: erratum 776924), the initial thread frame).
 // Differences to the Cortex-M33 port:
 // * No stack limit register (PSPLIM is ARMv8-M): a thread stack overflow is not caught by the
 //   hardware. The kernel checks the saved SP against the stack's lower end at every context
@@ -40,7 +40,9 @@ namespace rtos::port::cm4 {
 // The core registers and the cycle counter of the Cortex-M family (cm4::nvic, cm4::CycleCounter, ...).
 using namespace cortex_m;
 
-using Core = cortex_m::CoreServices<RTOS_CM4_PRIO_BITS, RTOS_CM4_KERNEL_PRIORITY>;
+/// No lazy FP stacking: Arm erratum 776924 (ES0431 2.1.2, VDIV/VSQRT and very short ISRs), see
+/// cortex_m/core.hpp.
+using Core = cortex_m::CoreServices<RTOS_CM4_PRIO_BITS, RTOS_CM4_KERNEL_PRIORITY, /*LazyFpStacking*/ false>;
 inline constexpr std::uint32_t kernel_basepri = Core::kernel_basepri;
 inline constexpr std::uint32_t lowest_priority = Core::lowest_priority;
 

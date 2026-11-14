@@ -37,6 +37,24 @@ inline constexpr std::size_t sdmmc_buffer_bytes = 32 * 1024;
 /// 96-bit unique device ID (stm32h743xx.h UID_BASE).
 inline constexpr std::uintptr_t uid_base = 0x1FF1'E800;
 
+/// Silicon revision: DBGMCU_IDC.REV_ID (SVD: DBGMCU 0x5C00'1000, IDC bits 31:16). ES0392 table 2:
+/// 0x1003 = revision Y/W, 0x2001 = X, 0x2003 = V, 0x2007 = T/4/5/6.
+inline constexpr std::uintptr_t dbgmcu_idc = 0x5C00'1000;
+inline constexpr std::uint16_t rev_id_y = 0x1003;
+[[nodiscard]] inline std::uint16_t revision_id() noexcept { return static_cast<std::uint16_t>(Reg<dbgmcu_idc>::read() >> 16); }
+
+/// Silicon errata that need a register setting at start-up (board::init(), first), per revision.
+/// ES0392 2.2.10 "Reading from AXI SRAM may lead to data read corruption" (revision Y only): set
+/// AXI_TARG7_FN_MOD.READ_ISS_OVERRIDE (SVD: AXI 0x5100'0000 + 0x8108, bit 0) - one read issued at
+/// a time to the AXI SRAM, as ST's SystemInit does on that revision. Revision Y also cannot run
+/// VOS0 (2.2.21); the ports clock the H743 at VOS1, 400 MHz, on every revision anyway.
+inline void apply_errata() noexcept {
+    if (revision_id() == rev_id_y) {
+        using AXI_TARG7_FN_MOD = Reg<0x5100'8108>;
+        AXI_TARG7_FN_MOD::write(AXI_TARG7_FN_MOD::read() | 1u);
+    }
+}
+
 /// NVIC interrupt numbers used by the kernel ports/boards (full list: vectors.cpp).
 enum class Irq : std::uint8_t {
     TIM2 = 28,
