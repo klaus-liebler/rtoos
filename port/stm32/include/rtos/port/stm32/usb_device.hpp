@@ -27,6 +27,18 @@
 // (address in bits 15:0, count in 31:16; RX: count 25:16, NUM_BLOCK 30:26, BLSIZE 31), the
 // packet buffers follow.
 //
+// Late buffer descriptor (H5 erratum ES0565 2.20.1, also ES0561/ES0587 for the same IP: "Buffer
+// description table update completes after CTR interrupt triggers"): the controller raises CTR
+// for an OUT/SETUP packet before its last packet memory writes are done - the data's end and, as
+// the very last, COUNT_RX. ST's HAL and TinyUSB wait a fixed 800 ns before every packet. This
+// driver waits for the write itself instead: whenever the RX buffer holds no unread packet, its
+// COUNT_RX holds `rx_count_pending` (0x3FF, more than any buffer here); the controller replaces it
+// with the packet's count as its last write. The interrupt handler reads COUNT_RX first: a real
+// count (the usual case - the interrupt entry took longer than the write) means count and data
+// are complete, and the data is copied right away; the pending value means the write is still on
+// its way, and only then the handler polls that one word (bounded, UsbDeviceStats counts it).
+// The packet is read, then COUNT_RX is set back to pending, then the endpoint re-armed.
+//
 // The interrupt handler moves packets between the PMA and the transfer buffers and re-arms the
 // endpoint; it queues an event (SPSC ring) for every SETUP, completed transfer, bus reset,
 // suspend and resume. The stack's thread takes them with poll(). EP0 OUT stays ready while
@@ -71,6 +83,11 @@ inline constexpr std::uint32_t daddr_ef = 1u << 7;
 inline constexpr std::uint32_t bcdr_dppu = 1u << 15;
 inline constexpr std::size_t endpoints = 8;
 inline constexpr std::uint32_t rx_blsize = 1u << 31;
+/// COUNT_RX while the RX buffer holds no unread packet (10-bit field; buffers are at most 64 bytes).
+inline constexpr std::uint16_t rx_count_pending = 0x3FF;
+/// Reads of COUNT_RX before a pending count is given up: every read takes at least one CPU cycle
+/// (at most 250 MHz: 4 ns), 256 of them at least 1 us - longer than the erratum's 800 ns.
+inline constexpr unsigned rx_count_polls = 256;
 
 /// RXBD count field for a buffer of `bytes` (ST's USB_DRD_SET_CHEP_CNT_RX_REG).
 [[nodiscard]] constexpr std::uint32_t rx_count_field(std::uint32_t bytes) noexcept {
@@ -88,6 +105,9 @@ inline constexpr std::uint32_t rx_blsize = 1u << 31;
 struct UsbDeviceStats {
     std::uint32_t events_dropped = 0;  ///< event ring full: the stack's thread is too slow
     std::uint32_t ep0_kept = 0;        ///< EP0 OUT packets kept until the stack asked for them
+    std::uint32_t rx_late = 0;          ///< packets whose COUNT_RX was still pending at CTR
+    std::uint32_t rx_late_max_polls = 0;  ///< the most COUNT_RX reads one of them needed
+    std::uint32_t rx_late_lost = 0;     ///< still pending after rx_count_polls reads: taken as empty
 };
 
 /// `Regs`: the chip's register access - irq, pma_bytes, Masked (interrupts off), the endpoint
@@ -183,7 +203,11 @@ public:
             [[maybe_unused]] const Masked masked;
             if (n == 0 && ep0_kept_) {  // the packet came before the stack asked for it
                 ep0_kept_ = false;
-                take_packet(0, ep0_kept_length_, ep0_kept_data_.data());
+                const std::uint16_t take = room(d, ep0_kept_length_);
+                for (std::uint16_t i = 0; i < take; ++i) {
+                    d.buffer[i] = ep0_kept_data_[i];
+                }
+                took_packet(0, ep0_kept_length_, take);
             } else {
                 set_stat(n, false, stat_valid);
             }
@@ -232,13 +256,12 @@ public:
             const unsigned n = istr & istr_idn;
             const std::uint32_t chep = regs_.chep(n);
             if ((chep & vtrx) != 0) {
-                // the packet's count and data in the PMA may still be on their way (Regs::settle_rx)
-                regs_.settle_rx();
+                const std::uint16_t count = received_count(n);  // late descriptor: see the header
                 clear_ctr(n, vtrx);
                 if ((chep & setup) != 0) {
                     on_setup();
                 } else {
-                    on_out(n);
+                    on_out(n, count);
                 }
             }
             if ((chep & vttx) != 0) {
@@ -339,11 +362,34 @@ private:
     void set_tx_count(unsigned n, std::uint16_t count) noexcept {
         regs_.pma_write(8 * n, (regs_.pma_read(8 * n) & 0x0000'FFFFu) | (std::uint32_t{count} << 16));
     }
+    /// RXBD of endpoint n: buffer address and size, COUNT_RX pending (no unread packet).
     void set_rx_buffer(unsigned n, std::uint16_t pma, std::uint16_t bytes) noexcept {
-        regs_.pma_write(8 * n + 4, usb_detail::rx_count_field(bytes) | pma);
+        regs_.pma_write(8 * n + 4, usb_detail::rx_count_field(bytes) | (std::uint32_t{usb_detail::rx_count_pending} << 16) | pma);
     }
+    /// The RX buffer's packet is read: COUNT_RX back to pending (one write, before the re-arm).
+    void release_rx(unsigned n) noexcept { set_rx_buffer(n, out_[n].pma, out_[n].mps); }
     std::uint16_t rx_count(unsigned n) noexcept {
         return static_cast<std::uint16_t>((regs_.pma_read(8 * n + 4) >> 16) & 0x3FFu);
+    }
+    /// COUNT_RX of the packet that raised CTR, once the controller has written it (see the header).
+    std::uint16_t received_count(unsigned n) noexcept {
+        using namespace usb_detail;
+        std::uint16_t count = rx_count(n);
+        if (count != rx_count_pending) {
+            return count;
+        }
+        ++stats_.rx_late;
+        for (unsigned polls = 1; polls <= rx_count_polls; ++polls) {
+            count = rx_count(n);
+            if (count != rx_count_pending) {
+                if (polls > stats_.rx_late_max_polls) {
+                    stats_.rx_late_max_polls = polls;
+                }
+                return count;
+            }
+        }
+        ++stats_.rx_late_lost;  // never seen: no data handed on rather than wrong data
+        return 0;
     }
 
     void copy_to_pma(std::uint16_t pma, const std::byte* src, std::size_t length) noexcept {
@@ -393,32 +439,38 @@ private:
         push({.type = usb::EventType::TransferComplete, .endpoint = static_cast<std::uint8_t>(0x80 | n), .length = d.done});
     }
 
-    void on_out(unsigned n) noexcept {
+    void on_out(unsigned n, std::uint16_t count) noexcept {
         Direction& d = out_[n];
-        const std::uint16_t count = rx_count(n);
+        if (count > d.mps) {
+            count = d.mps;
+        }
         if (!d.busy) {
             if (n == 0) {  // keep it until the stack asks (EP0 stays ready while idle)
-                ep0_kept_length_ = count > ep0_packet ? ep0_packet : count;
-                copy_from_pma(d.pma, ep0_kept_data_.data(), ep0_kept_length_);
+                ep0_kept_length_ = count;
+                copy_from_pma(d.pma, ep0_kept_data_.data(), count);
                 ep0_kept_ = true;
                 ++stats_.ep0_kept;
             }
+            release_rx(n);
             return;
         }
-        std::array<std::byte, 64> packet;
-        const std::uint16_t take = count > d.mps ? d.mps : count;
-        copy_from_pma(d.pma, packet.data(), take);
-        take_packet(n, take, packet.data());
+        // straight into the transfer buffer
+        const std::uint16_t take = room(d, count);
+        copy_from_pma(d.pma, d.buffer + d.done, take);
+        release_rx(n);
+        took_packet(n, count, take);
     }
 
-    /// One received packet into the transfer of OUT endpoint `n`.
-    void take_packet(unsigned n, std::uint16_t count, const std::byte* data) noexcept {
+    /// What of a packet of `count` bytes still fits into the transfer.
+    static std::uint16_t room(const Direction& d, std::uint16_t count) noexcept {
+        const std::uint16_t left = static_cast<std::uint16_t>(d.size - d.done);
+        return count < left ? count : left;
+    }
+
+    /// A packet of `count` bytes, `take` of them now in the transfer buffer of OUT endpoint `n`:
+    /// the transfer ends (short packet, buffer full) or the endpoint is re-armed.
+    void took_packet(unsigned n, std::uint16_t count, std::uint16_t take) noexcept {
         Direction& d = out_[n];
-        const std::uint16_t room = static_cast<std::uint16_t>(d.size - d.done);
-        const std::uint16_t take = count < room ? count : room;
-        for (std::uint16_t i = 0; i < take; ++i) {
-            d.buffer[d.done + i] = data[i];
-        }
         d.done = static_cast<std::uint16_t>(d.done + take);
         if (count < d.mps || d.done >= d.size) {
             d.busy = false;
@@ -434,6 +486,7 @@ private:
     void on_setup() noexcept {
         usb::Event e{.type = usb::EventType::Setup};
         copy_from_pma(ep0_out_pma, e.setup.data(), 8);
+        release_rx(0);
         in_[0].busy = out_[0].busy = false;  // a SETUP ends whatever control transfer ran
         ep0_kept_ = false;
         set_stat(0, true, usb_detail::stat_nak);  // the stack answers with a transfer

@@ -35,13 +35,16 @@ struct SimulatedUsb {
     std::uint32_t cntr = 3, flags = 0, daddr = 0, bcdr = 0;  // flags: ISTR without CTR/IDN
     std::array<std::uint32_t, 512> pma{};
     bool setup_needs_valid = false;  ///< variant: SETUP only accepted with STAT_RX = VALID
-    /// Variant, the H5 erratum (ES0561/ES0587: "buffer description table update completes after
-    /// CTR interrupt triggers"): an OUT packet's count and data reach the PMA only when the driver
-    /// has waited (settle_rx()); before, the previous packet's are there.
+    /// Variant, the H5 erratum (ES0565 2.20.1, ES0561/ES0587: "buffer description table update
+    /// completes after CTR interrupt triggers"): an OUT/SETUP packet's data and, as the last write,
+    /// its COUNT_RX reach the PMA only `late_reads` PMA reads after CTR; until then the buffer and
+    /// the descriptor hold what was there before.
     bool late_buffer_table = false;
+    unsigned late_reads = 3;
     struct Late {
         unsigned ep;
         Bytes data;
+        unsigned reads_left;
     };
     std::optional<Late> late;
     void settle() {
@@ -51,6 +54,19 @@ struct SimulatedUsb {
             late.reset();
         }
     }
+    /// The controller's late writes go on while the driver reads the PMA.
+    void on_pma_read() {
+        if (late && late->reads_left-- == 0) {
+            settle();
+        }
+    }
+    void receive(unsigned ep, const Bytes& data) {
+        late = Late{ep, data, late_reads};
+        if (!late_buffer_table) {
+            settle();
+        }
+    }
+    std::uint16_t rx_count(unsigned n) const { return static_cast<std::uint16_t>((pma[(8 * n + 4) / 4] >> 16) & 0x3FFu); }
 
     static constexpr std::uint32_t toggles = (3u << 4) | (1u << 6) | (3u << 12) | (1u << 14);
     static constexpr std::uint32_t vtrx = 1u << 15, vttx = 1u << 7, setup = 1u << 11;
@@ -121,9 +137,11 @@ struct SimRegs {
     void set_daddr(std::uint32_t v) noexcept { s->daddr = v; }
     std::uint32_t bcdr() noexcept { return s->bcdr; }
     void set_bcdr(std::uint32_t v) noexcept { s->bcdr = v; }
-    std::uint32_t pma_read(std::size_t offset) noexcept { return s->pma[offset / 4]; }
+    std::uint32_t pma_read(std::size_t offset) noexcept {
+        s->on_pma_read();
+        return s->pma[offset / 4];
+    }
     void pma_write(std::size_t offset, std::uint32_t v) noexcept { s->pma[offset / 4] = v; }
-    void settle_rx() noexcept { s->settle(); }
 };
 
 using Driver = h5::UsbDrdFs<SimRegs>;
@@ -144,8 +162,7 @@ struct Host {
         if (s.setup_needs_valid && s.stat_rx(0) != stat_valid) {
             return Handshake::Nak;
         }
-        s.write_bytes(s.rx_buffer(0), packet);
-        s.pma[1] = (s.pma[1] & 0xFC00'FFFFu) | (8u << 16);
+        s.receive(0, packet);
         s.chep[0] |= SimulatedUsb::setup | SimulatedUsb::vtrx | (1u << 14) | (1u << 6);  // both toggles DATA1
         s.set_field(0, 12, stat_nak);
         d.on_irq();
@@ -159,10 +176,7 @@ struct Host {
             default: break;
         }
         EXPECT_LE(data.size(), s.rx_capacity(ep));
-        s.late = SimulatedUsb::Late{ep, data};
-        if (!s.late_buffer_table) {
-            s.settle();
-        }
+        s.receive(ep, data);
         s.chep[ep] |= SimulatedUsb::vtrx;
         s.chep[ep] ^= 1u << 14;
         s.set_field(ep, 12, stat_nak);
@@ -289,21 +303,25 @@ TEST_F(UsbDrdFsTest, BulkOutEndsWithAShortPacketAndNaksWhileIdle) {
 
 // FCU revision 1 (STM32H563, real board): USB networking (CDC-NCM) received the first few blocks,
 // then nearly every NTB was rejected - 2048-byte transfers with garbage headers. The controller
-// raises CTR before the packet's count and data are in the PMA (erratum, see SimulatedUsb::
-// late_buffer_table); the driver read COUNT_RX at once and got the previous packet's: a full packet
-// after a short one ended the transfer early, a short one after full ones did not end it, and the
-// transfers lost the block boundaries. Neither emulator nor the plain register model shows it.
-TEST_F(UsbDrdFsTest, OutCountIsReadOnlyAfterTheBufferTableSettled) {
+// raises CTR before the packet's last PMA writes, COUNT_RX the very last (erratum, see
+// SimulatedUsb::late_buffer_table); the driver read COUNT_RX at once and got the previous packet's:
+// a full packet after a short one ended the transfer early, a short one after full ones did not end
+// it, and the transfers lost the block boundaries. Neither emulator nor the plain register model
+// shows it. The driver now leaves COUNT_RX pending after each packet and waits for the controller
+// to overwrite it - instead of a fixed delay before every packet.
+TEST_F(UsbDrdFsTest, OutCountIsReadOnlyOnceTheControllerWroteIt) {
     sim.late_buffer_table = true;
     ASSERT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
-    // a first transfer that ends with a short packet: the PMA's count is then 30
+    // a first transfer that ends with a short packet
     std::vector<std::byte> first(200);
     ASSERT_TRUE(drv.transfer(0x01, as_span(first), false));
     ASSERT_EQ(host.out(1, Bytes(30, 9)), Handshake::Ack);
     auto ev = drain(drv);
     ASSERT_EQ(ev.size(), 1u);
     EXPECT_EQ(ev[0].length, 30);
-    // the next block: two full packets and a short one - not ended by the stale count of 30
+    EXPECT_EQ(first[29], std::byte{9});
+    EXPECT_EQ(sim.rx_count(1), 0x3FFu) << "read: COUNT_RX pending again";
+    // the next block: two full packets and a short one - not ended by a stale count
     std::vector<std::byte> second(200);
     ASSERT_TRUE(drv.transfer(0x01, as_span(second), false));
     EXPECT_EQ(host.out(1, Bytes(64, 1)), Handshake::Ack);
@@ -314,8 +332,51 @@ TEST_F(UsbDrdFsTest, OutCountIsReadOnlyAfterTheBufferTableSettled) {
     ASSERT_EQ(ev.size(), 1u);
     EXPECT_EQ(ev[0].length, 138);
     EXPECT_EQ(second[0], std::byte{1});
+    EXPECT_EQ(second[63], std::byte{1});
     EXPECT_EQ(second[64], std::byte{2});
     EXPECT_EQ(second[137], std::byte{3});
+    EXPECT_EQ(drv.stats().rx_late, 4u);
+    EXPECT_EQ(drv.stats().rx_late_max_polls, sim.late_reads);
+    EXPECT_EQ(drv.stats().rx_late_lost, 0u);
+}
+
+// The same erratum on a SETUP packet: its eight bytes are read once COUNT_RX is written.
+TEST_F(UsbDrdFsTest, SetupIsReadOnlyOnceTheControllerWroteIt) {
+    sim.late_buffer_table = true;
+    ASSERT_EQ(host.setup({0x80, 6, 0, 1, 0, 0, 18, 0}), Handshake::Ack);
+    const auto ev = drain(drv);
+    ASSERT_EQ(ev.size(), 1u);
+    ASSERT_EQ(ev[0].type, usb::EventType::Setup);
+    EXPECT_EQ(ev[0].setup[1], std::byte{6});
+    EXPECT_EQ(ev[0].setup[6], std::byte{18});
+    EXPECT_EQ(drv.stats().rx_late, 1u);
+}
+
+// Efficiency: when the controller has written COUNT_RX by the time the handler looks (the usual
+// case), the driver does not wait at all.
+TEST_F(UsbDrdFsTest, NoWaitWhenTheCountIsThere) {
+    ASSERT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
+    std::vector<std::byte> buffer(200);
+    ASSERT_TRUE(drv.transfer(0x01, as_span(buffer), false));
+    EXPECT_EQ(host.out(1, Bytes(64, 1)), Handshake::Ack);
+    EXPECT_EQ(host.out(1, Bytes(5, 2)), Handshake::Ack);
+    EXPECT_EQ(drain(drv).size(), 1u);
+    EXPECT_EQ(drv.stats().rx_late, 0u);
+}
+
+// A count that never comes (more than rx_count_polls reads): the packet is taken as empty - the
+// transfer ends without data that may be wrong, and the driver does not hang in the interrupt.
+TEST_F(UsbDrdFsTest, CountThatNeverComesEndsTheTransferEmpty) {
+    sim.late_buffer_table = true;
+    sim.late_reads = 100'000;
+    ASSERT_TRUE(drv.open({0x01, usb::TransferType::Bulk, 64}));
+    std::vector<std::byte> buffer(200);
+    ASSERT_TRUE(drv.transfer(0x01, as_span(buffer), false));
+    EXPECT_EQ(host.out(1, Bytes(64, 1)), Handshake::Ack);
+    const auto ev = drain(drv);
+    ASSERT_EQ(ev.size(), 1u);
+    EXPECT_EQ(ev[0].length, 0);
+    EXPECT_EQ(drv.stats().rx_late_lost, 1u);
 }
 
 TEST_F(UsbDrdFsTest, OutTransferEndsWhenTheBufferIsFull) {
@@ -439,9 +500,10 @@ constexpr auto config_desc = usb::configuration_descriptor(
 constexpr std::string_view strings[] = {"rtoos", "FCU", "0001"};
 
 TEST(UsbDrdFsStack, EnumeratesAndEchoesOverTheRegisterModel) {
-    for (const bool needs_valid : {false, true}) {
+    for (const unsigned variant : {0u, 1u, 2u, 3u}) {
         SimulatedUsb sim;
-        sim.setup_needs_valid = needs_valid;  // both controller behaviours
+        sim.setup_needs_valid = (variant & 1) != 0;  // both controller behaviours
+        sim.late_buffer_table = (variant & 2) != 0;  // and the H5 erratum
         Driver drv{SimRegs{&sim}};
         Loopback fn;
         std::array<usb::Function*, 1> functions{&fn};
