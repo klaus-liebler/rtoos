@@ -1,3 +1,7 @@
 build/
 certs/
 __pycache__/
+
+# ST errata sheets and their text extracts: local reference only (docs/errata.md)
+/es*-errata-stmicroelectronics.pdf
+/h*_errata.txt
