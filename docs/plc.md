@@ -1,7 +1,7 @@
 # PLC: bytecode VM for IEC 61131-3 programs
 
 rtoos runs IEC 61131-3 programs (ST, FBD, SFC) as **bytecode**. The compiler is not part of rtoos:
-it runs in the browser (TypeScript, in the Factory Control Unit's web UI, `web/src/plc/`) and
+it runs in the browser (TypeScript, in the Factory Control Unit's web UI, `web_packages/plc/src/`) and
 produces an **image**, which the device stores and runs without a browser. The design and its
 reasons are in the FCU specification `docs/plc-iec61131.md` of the firmware repository; this page
 is the contract between the compiler and the VM.
@@ -387,7 +387,7 @@ ISA version 1, hash `0xE6361F83`, 155 opcodes.
 
 ## Differential tests
 
-The firmware repository's corpus (`web/src/plc/corpus/*.st`) is compiled by the TypeScript compiler
+The firmware repository's corpus (`web_packages/plc/src/corpus/*.st`) is compiled by the TypeScript compiler
 and run in the TypeScript VM; `npm run plc:corpus` writes each image and the trace of its variables per
 cycle to `tests/plc_corpus/`. [plc_corpus_test.cpp](../tests/plc_corpus_test.cpp) runs the same images
 in the C++ VM and requires byte-identical traces. A vitest test fails when the files in `tests/plc_corpus/`

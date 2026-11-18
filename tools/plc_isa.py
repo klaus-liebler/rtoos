@@ -4,7 +4,7 @@
 VM/compiler and the opcode tables in the documentation.
 
     python tools/plc_isa.py --hpp include/rtos/plc/isa.hpp --md docs/plc.md
-    python tools/plc_isa.py --ts <firmware>/web/src/plc/generated/isa.ts
+    python tools/plc_isa.py --ts <firmware>/web_packages/plc/src/generated/isa.ts
 
 --md replaces the text between the markers "<!-- plc_isa:begin -->" and "<!-- plc_isa:end -->".
 
