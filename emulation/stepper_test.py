@@ -110,6 +110,9 @@ def run_renode(exe: Path, elf: Path, tmp: Path, timeout: float) -> str:
                     raise RuntimeError("Renode did not open the console socket")
                 time.sleep(0.2)
         sock.settimeout(1)
+        # The deadline counts from the firmware's last output, not from the start: the Python hook
+        # on every edge makes a run take ~50 s on an idle PC and several times that while other
+        # emulators run (ctest presets in parallel) - a fixed limit cut the last moves off there.
         deadline = time.monotonic() + timeout
         while DONE.encode() not in console and time.monotonic() < deadline:
             try:
@@ -119,6 +122,7 @@ def run_renode(exe: Path, elf: Path, tmp: Path, timeout: float) -> str:
             if not chunk:
                 break
             console += chunk
+            deadline = time.monotonic() + timeout
             sys.stdout.write(chunk.decode("utf-8", "replace").replace("\r", ""))
             sys.stdout.flush()
     finally:
@@ -140,7 +144,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("elf", type=Path)
     ap.add_argument("--exe", type=Path, default=DEFAULT_RENODE)
-    ap.add_argument("--timeout", type=float, default=120.0, help="seconds")
+    ap.add_argument("--timeout", type=float, default=120.0, help="seconds without console output")
     args = ap.parse_args()
     if not args.exe.exists():
         print(f"error: {args.exe} not found", file=sys.stderr)
@@ -152,8 +156,10 @@ def main() -> int:
 
     check = Check()
     m = PARAMS.search(console)
-    check(m is not None and DONE in console, "firmware reported its ramp and finished both moves")
-    if m is None:
+    check(m is not None and DONE in console, "firmware reported its ramp and finished all moves")
+    if m is None or DONE not in console:
+        # the edges of an unfinished run say nothing about the firmware
+        print(f"STEPPER TEST FAIL (no {DONE!r} within {args.timeout:g} s of the last console output)")
         return 1
     tick_hz, start, cruise, ramp_us, k, ramp_steps = (int(g) for g in m.groups())
 

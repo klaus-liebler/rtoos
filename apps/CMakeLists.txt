@@ -34,7 +34,7 @@ if(EXISTS "${RTOS_RENODE}")
     add_test(NAME stepper_renode
              COMMAND Python3::Interpreter -I ${PROJECT_SOURCE_DIR}/emulation/stepper_test.py
                      $<TARGET_FILE:fcu_stepper> --exe ${RTOS_RENODE})
-    set_tests_properties(stepper_renode PROPERTIES TIMEOUT 180)
+    set_tests_properties(stepper_renode PROPERTIES TIMEOUT 600)
     # SD card: driver and protocol against the SDMMC + card model (SDHC and SDSC images).
     add_test(NAME sdcard_renode
              COMMAND Python3::Interpreter -I ${PROJECT_SOURCE_DIR}/emulation/sdcard_test.py
