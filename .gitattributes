@@ -6,3 +6,6 @@
 tests/plc_corpus/*.img binary
 tests/plc_corpus/*.trace binary
 task.md -text
+# fuzzing inputs are bytes, line endings included (HTTP seeds need CRLF)
+tests/fuzz/corpus/** -text
+tests/fuzz/regressions/** -text
