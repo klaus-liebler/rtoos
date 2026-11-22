@@ -169,6 +169,40 @@ TEST(WebSocket, ProtocolErrors) {
     EXPECT_EQ(big.close_code(), 1009);
 }
 
+// Combination: a fragmented message (message_size_ > 0) and a continuation frame with a 64-bit
+// length close to 2^64. The size check added both, the sum wrapped to a small number, passed, and
+// the decoder wrote the peer's bytes past the end of its message buffer (found by AFL++,
+// tests/fuzz/websocket.cpp) - before any authentication, from any client that reaches port 443.
+TEST(WebSocket, ContinuationLengthCannotWrapTheSizeCheck) {
+    Decoder d;
+    Decoder::Event e;
+    d.feed(client_frame(0x02, bytes({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})), e);  // binary, FIN = 0: 10 bytes
+    ASSERT_EQ(e, Decoder::Event::None);
+    // continuation, length 2^64 - 8 (10 + it wraps to 2); the MSB is set as well
+    std::vector<std::byte> f = bytes({0x80, 0x80 | 127, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 1, 2, 3, 4});
+    f.resize(f.size() + 600, std::byte{0x55});
+    const std::size_t used = d.feed(f, e);
+    EXPECT_EQ(e, Decoder::Event::Error);
+    EXPECT_LE(used, 14u) << "no payload byte accepted";
+
+    // the same without the MSB: 2^63 - 8, still far beyond the limit
+    Decoder d2;
+    d2.feed(client_frame(0x02, bytes({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})), e);
+    f[2] = std::byte{0x7F};
+    d2.feed(f, e);
+    EXPECT_EQ(e, Decoder::Event::Error);
+    EXPECT_EQ(d2.close_code(), 1009);
+}
+
+// RFC 6455 5.2: the most significant bit of a 64-bit payload length must be 0.
+TEST(WebSocket, SixtyFourBitLengthWithTheTopBitIsAProtocolError) {
+    Decoder d;
+    Decoder::Event e;
+    d.feed(bytes({0x82, 0x80 | 127, 0x80, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 4}), e);
+    EXPECT_EQ(e, Decoder::Event::Error);
+    EXPECT_EQ(d.close_code(), 1002);
+}
+
 TEST(WebSocket, ServerFrameHeader) {
     std::array<std::byte, 4> h{};
     EXPECT_EQ(websocket_frame_header(h.data(), ws_opcode::binary, 100), 2u);

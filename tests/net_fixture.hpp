@@ -171,7 +171,7 @@ protected:
             t[21] = std::byte{4};
             store_be16(t.data() + 22, *mss);
         }
-        std::memcpy(t.data() + hlen, payload.data(), payload.size());
+        if (!payload.empty()) std::memcpy(t.data() + hlen, payload.data(), payload.size());
         store_be16(t.data() + 16,
                    checksum_finish(checksum_add(t, TestStack::pseudo_sum(src, dst, ip_proto_tcp, t.size()))));
         return ipv4(ip_proto_tcp, t, dst, src);

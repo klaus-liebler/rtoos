@@ -27,6 +27,18 @@ if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSIO
     message(FATAL_ERROR "rtoos requires GCC 16 or newer (found ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
+# Host builds only. trap: UBSan in trap mode (no runtime library: the MinGW host tests);
+# address: AddressSanitizer + UBSan with reports, for every library of the build - Linux only
+# (MinGW has no ASan), the presets linux-asan and linux-afl (docs/fuzzing.md).
+set(RTOS_HOST_SANITIZERS "trap" CACHE STRING "Host sanitizers: trap | address")
+set_property(CACHE RTOS_HOST_SANITIZERS PROPERTY STRINGS trap address)
+if(NOT CMAKE_CROSSCOMPILING AND RTOS_HOST_SANITIZERS STREQUAL "address")
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+# AFL++ harnesses for the parsers (tests/fuzz, preset linux-afl)
+option(RTOS_FUZZ "Build the AFL++ fuzzing harnesses (tests/fuzz)" OFF)
+
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -117,7 +129,9 @@ target_link_libraries(rtos_plc PUBLIC rtos_kernel)
 
 # the example device of the rtoos examples and tests: fcu.local
 if(RTOS_BUILD_EXAMPLES)
-    set(RTOS_CERT_DIR ${PROJECT_SOURCE_DIR}/certs)
+    # the Linux presets (no rtoosCA there) keep their own test CA in the build tree, so they never
+    # re-issue the rtoosCA-signed certificates of certs/
+    set(RTOS_CERT_DIR ${PROJECT_SOURCE_DIR}/certs CACHE PATH "Certificate directory of the example device")
     rtos_certificates(rtos_certs DIR ${RTOS_CERT_DIR})
 endif()
 
@@ -155,4 +169,7 @@ if(CMAKE_CROSSCOMPILING)
 elseif(RTOS_BUILD_EXAMPLES)
     enable_testing()
     add_subdirectory(tests)
+    if(RTOS_FUZZ)
+        add_subdirectory(tests/fuzz)
+    endif()
 endif()

@@ -17,7 +17,10 @@
 
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <optional>
 #include <random>
@@ -291,6 +294,7 @@ public:
     bool closed = false;
 
     void connect() {
+        save_corpus();
         ++client_port;
         snd = 9000;
         received = 0;
@@ -308,7 +312,30 @@ public:
     /// Not null: send() collects the messages here instead (several requests in one segment).
     UaBytes* hold = nullptr;
 
+    // ---- seeds for the AFL++ harness tests/fuzz/opcua.cpp ----------------------------------
+    // RTOS_FUZZ_CORPUS=<dir>: every connection's client byte stream becomes one file there.
+    UaBytes corpus_stream;
+
+    void save_corpus() {
+        const char* dir = std::getenv("RTOS_FUZZ_CORPUS");
+        if (dir != nullptr && !corpus_stream.empty()) {
+            const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+            const auto path = std::filesystem::path(dir) /
+                              (std::string(info->name()) + "_" + std::to_string(client_port) + ".bin");
+            std::ofstream(path, std::ios::binary)
+                .write(reinterpret_cast<const char*>(corpus_stream.data()), static_cast<std::streamsize>(corpus_stream.size()));
+        }
+        corpus_stream.clear();
+    }
+    void TearDown() override {
+        save_corpus();
+        NetTest::TearDown();
+    }
+
     void send(std::span<const Byte> data, bool mutate = true) {
+        if (hold == nullptr && (!fuzz || !mutate)) {
+            corpus_stream.insert(corpus_stream.end(), data.begin(), data.end());
+        }
         if (hold != nullptr) {
             hold->insert(hold->end(), data.begin(), data.end());
             return;
@@ -1207,6 +1234,45 @@ TEST_F(OpcUaTest, TamperedSignedMessageClosesTheChannel) {
     EXPECT_FALSE(r.has_value()) << "no answer to a message with a wrong signature";
     (void)receive();
     EXPECT_TRUE(closed);
+}
+
+// Combination: wolfSSL 5.9.4 with WOLFSSL_SMALL_STACK + WOLFSSL_NO_MALLOC + WOLFSSL_STATIC_MEMORY
+// (this project's user_settings.h). RsaPad_OAEP and RsaUnPad_OAEP keep their temporaries on the stack
+// under that combination but still hand them to XFREE (WC_FREE_VAR_EX only looks at SMALL_STACK):
+// wolfSSL_Free took the bytes before a stack array as a block header, counted a free and could link
+// the stack address into the pool's free list. The server runs both for every secured
+// OpenSecureChannel (decrypting the request, encrypting the response) - any client could trigger it.
+// cmake/wolfssl.cmake patches rsa.c; every free must match an allocation of the pool.
+TEST_F(OpcUaTest, OaepFreesOnlyWhatItAllocated) {
+    auto& cc = ClientCrypto::instance();
+    RsaKey pub{}, priv{};
+    ASSERT_TRUE(cc.public_key(std::span<const Byte>(server_cert, sizeof server_cert), pub));
+    ASSERT_TRUE(cc.private_key(std::span<const Byte>(server_key, sizeof server_key), priv));
+    // frees minus allocations of the pool since the last call
+    WOLFSSL_MEM_STATS last{};
+    ASSERT_EQ(wolfSSL_GetMemStats(cc.heap->memory, &last), 1);
+    const auto excess_frees = [&] {
+        WOLFSSL_MEM_STATS now{};
+        EXPECT_EQ(wolfSSL_GetMemStats(cc.heap->memory, &now), 1);
+        const auto excess = static_cast<std::int64_t>(now.totalFr - last.totalFr) -
+                            static_cast<std::int64_t>(now.totalAlloc - last.totalAlloc);
+        last = now;
+        return excess;
+    };
+    const std::array<Byte, 32> plain{1, 2, 3, 4, 5, 6, 7, 8};
+    std::array<Byte, 256> cipher{};
+    std::array<Byte, 256> back{};
+    ASSERT_EQ(wc_RsaPublicEncrypt_ex(plain.data(), plain.size(), cipher.data(), cipher.size(), &pub, &cc.rng,
+                                     WC_RSA_OAEP_PAD, WC_HASH_TYPE_SHA, WC_MGF1SHA1, nullptr, 0),
+              256);
+    EXPECT_EQ(excess_frees(), 0) << "encrypt (RsaPad_OAEP): stack buffers went to wolfSSL_Free";
+    ASSERT_EQ(wc_RsaPrivateDecrypt_ex(cipher.data(), cipher.size(), back.data(), back.size(), &priv, WC_RSA_OAEP_PAD,
+                                      WC_HASH_TYPE_SHA, WC_MGF1SHA1, nullptr, 0),
+              static_cast<int>(plain.size()));
+    EXPECT_EQ(excess_frees(), 0) << "decrypt (RsaUnPad_OAEP): stack buffers went to wolfSSL_Free";
+    EXPECT_TRUE(std::equal(plain.begin(), plain.end(), back.begin()));
+    wc_FreeRsaKey(&pub);
+    wc_FreeRsaKey(&priv);
 }
 
 TEST_F(OpcUaTest, MessageLargerThanTheBufferClosesTheConnection) {

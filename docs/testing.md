@@ -31,7 +31,7 @@ Fixtures: [net_fixture.hpp](../tests/net_fixture.hpp) connects stacks and simula
 
 ### Fuzzing
 
-[fuzz_test.cpp](../tests/fuzz_test.cpp) and [usb_fuzz_test.cpp](../tests/usb_fuzz_test.cpp) are mutation fuzzers for the receive path with all services, and for the parsers (HTTP, WebSocket, DNS names, DHCP options, Modbus, OPC UA, USB SETUP, NTB). They run deterministically with a fixed seed: GCC has no libFuzzer, and MinGW has no AddressSanitizer. They find contract violations, crashes and UBSan errors, hangs, lost packet buffers, and a stack that no longer answers afterwards. They do not find reads past the end of a buffer.
+[fuzz_test.cpp](../tests/fuzz_test.cpp) and [usb_fuzz_test.cpp](../tests/usb_fuzz_test.cpp) are mutation fuzzers for the receive path with all services, and for the parsers (HTTP, WebSocket, DNS names, DHCP options, Modbus, OPC UA, USB SETUP, NTB). They run deterministically with a fixed seed: GCC has no libFuzzer, and MinGW has no AddressSanitizer. They find contract violations, crashes and UBSan errors, hangs, lost packet buffers, and a stack that no longer answers afterwards. They do not find reads past the end of a buffer: that is what the Linux presets `linux-asan` (all host tests under ASan + UBSan) and `linux-afl` (AFL++ harnesses for the parsers, the OPC UA server, the EtherCAT slave and the PLC verifier) are for, see [fuzzing.md](fuzzing.md).
 
 A longer run:
 

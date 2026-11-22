@@ -27,6 +27,7 @@ A workaround is allowed only when it
 - Renode: `C:\opt\renode`
 - Build only through `CMakePresets.json` (`cmake --preset host|arm|board`, `cmake --build --preset ...`, `ctest --preset host|arm`); the presets put the toolchain on the PATH (`cmake --build build/host` fails silently: missing GCC DLLs).
 - `arm` = firmware for the emulators (emulation network settings, emulator tests), `board` = firmware for the real FCU, `arm-g431` = STM32G431 firmware and its emulator tests, `arm-h743` = STM32H743 firmware and its emulator tests (the FCU revision 3 board package `boards/fcu_rev3` included; its emulation network settings mirror `arm`'s). One chip per build tree (`RTOS_CHIP` selects the CPU flags). Emulation-only values belong in the `arm` preset's cache variables (e.g. `RTOS_NET_*`), never as constants in firmware code.
+- Linux (AddressSanitizer, AFL++; MinGW has neither): Docker image `rtoos-fuzz` from `tools/fuzz/Dockerfile` (GCC 16 + AFL++), presets `linux-asan` (all host tests + `fuzz_replay_*`) and `linux-afl` (harnesses in `tests/fuzz`), campaigns with `tools/fuzz/run.sh` - see `docs/fuzzing.md`. They keep their own test CA in the build tree: never point them at `certs/`.
 - Version control: git, branch `main`. Commit finished, tested steps; end messages with the Co-Authored-By line.
 - Text files use LF (`.gitattributes`); keep the user's `task.md` as is.
 

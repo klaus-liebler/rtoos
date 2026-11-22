@@ -222,7 +222,7 @@ protected:
             t[21] = std::byte{4};
             store_be16(t + 22, 1460);
         }
-        std::memcpy(t + hlen, data.data(), data.size());
+        if (!data.empty()) std::memcpy(t + hlen, data.data(), data.size());
         const std::size_t tlen = hlen + data.size();
         store_be16(t + 16, checksum_finish(checksum_add({t, tlen}, FStack::pseudo_sum(peer_ip, device_ip, ip_proto_tcp, tlen))));
         ip[0] = std::byte{0x45};

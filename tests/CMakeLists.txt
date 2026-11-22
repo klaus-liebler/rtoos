@@ -62,11 +62,13 @@ target_include_directories(rtos_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_compile_definitions(rtos_tests PRIVATE RTOS_STM32G431_PACKAGE=UFQFPN48)
 # the differential tests' images and traces (docs/plc.md)
 target_compile_definitions(rtos_tests PRIVATE PLC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/plc_corpus")
-# UBSan in trap mode needs no runtime library; static linking makes the test
-# executable independent of the toolchain's DLLs.
-target_compile_options(rtos_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
-                                          -fsanitize=undefined -fsanitize-trap=undefined)
-target_link_options(rtos_tests PRIVATE -static)
+target_compile_options(rtos_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+if(RTOS_HOST_SANITIZERS STREQUAL "trap")
+    # UBSan in trap mode needs no runtime library; static linking makes the test
+    # executable independent of the toolchain's DLLs.
+    target_compile_options(rtos_tests PRIVATE -fsanitize=undefined -fsanitize-trap=undefined)
+    target_link_options(rtos_tests PRIVATE -static)
+endif()  # address: set for the whole build (CMakeLists.txt)
 
 include(GoogleTest)
 gtest_discover_tests(rtos_tests)

@@ -28,6 +28,8 @@ namespace rtos::plc {
 inline constexpr std::size_t operand_stack_slots = 64;
 inline constexpr std::size_t call_depth = 32;
 inline constexpr std::size_t max_tasks = 8;
+/// Vm's default limit of a task's instruction budget: 8 times the compiler's default of 2,000,000.
+inline constexpr std::uint32_t default_max_budget = 1u << 24;
 
 /// The execution state of one task (docs/plc.md "Machine model").
 struct Context {
@@ -77,7 +79,11 @@ struct RunResult {
 
 class Vm {
 public:
-    Vm(std::span<std::uint8_t> data, std::span<Context> contexts) noexcept : data_(data), contexts_(contexts) {}
+    /// `max_budget`: the largest instruction budget per cycle an image may give a task. The budget
+    /// is the deterministic watchdog of a runaway program, so it must not come from the image alone:
+    /// an uploaded image with 2^32 would hold the VM's thread for minutes (load(): task_range).
+    Vm(std::span<std::uint8_t> data, std::span<Context> contexts, std::uint32_t max_budget = default_max_budget) noexcept
+        : data_(data), contexts_(contexts), max_budget_(max_budget) {}
     Vm(const Vm&) = delete;
     Vm& operator=(const Vm&) = delete;
 
@@ -124,6 +130,7 @@ private:
 
     std::span<std::uint8_t> data_;
     std::span<Context> contexts_;
+    std::uint32_t max_budget_;
     std::span<const std::uint8_t> image_;
     std::span<const std::uint8_t> code_;
     std::uint32_t data_size_ = 0;

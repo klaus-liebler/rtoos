@@ -131,7 +131,8 @@ places a single step halts at (see Debugging); the IDE's debug information maps 
 the data segment starts as 0.
 
 **Task** (32 bytes): `interval: u16` (in I/O cycles), `priority: u8`, `max_overruns: u8`, `budget: u32`
-(instructions per cycle), `frame_base: u32`, `frame_size: u32` (the task's frame area), `programs: u32`
+(instructions per cycle, 1 to the VM's `max_budget`, default 2^24: the image must not be able to switch
+the runaway watchdog off), `frame_base: u32`, `frame_size: u32` (the task's frame area), `programs: u32`
 (offset of the program list), `program_count: u32`, `io_first: u32`, `io_count: u32` (the task's
 I/O bindings, a range of the I/O table). Program list entry (8 bytes): `entry: u32` (code offset of an
 `ENTER`), `instance: u32` (data address).

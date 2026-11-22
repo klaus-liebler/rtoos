@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: fcu.local
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Origin: https://fcu.local
+

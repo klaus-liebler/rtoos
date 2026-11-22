@@ -159,7 +159,8 @@ public:
 
     bool WriteRaw(const void *src, size_t n) {
         if(!CheckRemaining(n)) return Fail();
-        std::memcpy(data_.data() + pos_, src, n);
+        // an empty String/ByteString has no data pointer: memcpy(_, nullptr, 0) is undefined
+        if(n != 0) std::memcpy(data_.data() + pos_, src, n);
         pos_ += n;
         return true;
     }

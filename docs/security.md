@@ -76,4 +76,8 @@ The real protection still comes from the network and the protocols: Dynamic ARP 
 
 ## Robustness
 
-Every parser that sees network or USB input is fuzzed (see [Testing](testing.md#fuzzing)): Ethernet/IP/TCP/UDP receive path with all services, HTTP, WebSocket, DNS names, DHCP options, Modbus PDU/RTU/TCP, OPC UA messages, USB SETUP packets and NTBs.
+Every parser that sees network or USB input is fuzzed (see [Testing](testing.md#fuzzing)): Ethernet/IP/TCP/UDP receive path with all services, HTTP, WebSocket, DNS names, DHCP options, Modbus PDU/RTU/TCP, OPC UA messages, USB SETUP packets and NTBs. On Linux the host tests also run under AddressSanitizer, and AFL++ fuzzes the parsers, the OPC UA server (secured channels included), the EtherCAT slave against a hostile master and the PLC image verifier ([fuzzing.md](fuzzing.md), with the findings so far).
+
+A PLC image cannot switch off the runaway watchdog: its tasks' instruction budgets must stay within the VM's `max_budget` (default 2^24), or `load()` refuses the image.
+
+EtherCAT has no authentication by design (ETG): whoever is the master on the segment may write every output and configuration object through CoE and the process data, exactly as Modbus TCP and the web UI may on the IP side. The slave's own memory stays safe against any SyncManager configuration: the mailbox and process data buffers have the sizes of the application's layout, not the master's.

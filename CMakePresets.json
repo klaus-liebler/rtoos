@@ -25,6 +25,41 @@
       }
     },
     {
+      "name": "linux",
+      "hidden": true,
+      "generator": "Ninja",
+      "description": "Linux host (tools/fuzz/Dockerfile: GCC 16 + AFL++), see docs/fuzzing.md",
+      "cacheVariables": {
+        "RTOS_GCC_ROOT": "/usr",
+        "RTOS_CERT_DIR": "${sourceDir}/build/${presetName}/certs",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "RTOS_HOST_SANITIZERS": "address"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "inherits": "linux",
+      "displayName": "Host unit tests under ASan + UBSan (Linux, GCC 16)",
+      "binaryDir": "${sourceDir}/build/linux-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RTOS_FUZZ": "ON"
+      }
+    },
+    {
+      "name": "linux-afl",
+      "inherits": "linux",
+      "displayName": "AFL++ fuzzing harnesses with ASan + UBSan (Linux, GCC 16)",
+      "binaryDir": "${sourceDir}/build/linux-afl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "afl-gcc-fast",
+        "CMAKE_CXX_COMPILER": "afl-g++-fast",
+        "RTOS_FUZZ": "ON"
+      }
+    },
+    {
       "name": "arm-base",
       "hidden": true,
       "inherits": "gcc16",
@@ -84,6 +119,14 @@
   ],
   "buildPresets": [
     {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan"
+    },
+    {
+      "name": "linux-afl",
+      "configurePreset": "linux-afl"
+    },
+    {
       "name": "host",
       "configurePreset": "host"
     },
@@ -106,6 +149,13 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "host",
       "configurePreset": "host",

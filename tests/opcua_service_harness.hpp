@@ -415,9 +415,12 @@ public:
         for (ua::Int32 i = 0; i < count; i++) out.push_back(decode_data_value(r));
         return out;
     }
+    /// The responses of read(): the strings of a returned DataValue (NodeId, QualifiedName, ...)
+    /// point into their bytes, so they stay for the whole test (moving a Response keeps its buffer).
+    std::vector<Response> reads;
     DataValue read(const ReadValueId& id, ua::Int32 timestamps = 3) {
-        Response resp = read_request({id}, timestamps);
-        auto all = values(resp);
+        reads.push_back(read_request({id}, timestamps));
+        auto all = values(reads.back());
         EXPECT_EQ(all.size(), 1u);
         return all.empty() ? DataValue{} : all.front();
     }

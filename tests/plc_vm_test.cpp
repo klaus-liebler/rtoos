@@ -505,6 +505,32 @@ TEST(PlcVm, EndlessLoopStopsAtTheBudget) {
     EXPECT_EQ(r.instructions, 1000u);
 }
 
+// The budget is the watchdog of a runaway program, so the image must not set it at will: an uploaded
+// image with 2^32 held the VM's thread for minutes (found by the AFL++ harness tests/fuzz/plc.cpp).
+TEST(PlcVm, BudgetAboveTheVmsLimitIsRefused) {
+    Asm a;
+    a.enter(0).op(Op::RET);
+    Builder b;
+    b.code = a.code;
+    b.tasks[0].budget = 0xFFFF'FFFF;
+    Machine m;
+    EXPECT_EQ(m.load(b), LoadError::task_range);
+    b.tasks[0].budget = rtos::plc::default_max_budget + 1;
+    EXPECT_EQ(m.load(b), LoadError::task_range);
+    b.tasks[0].budget = rtos::plc::default_max_budget;
+    EXPECT_EQ(m.load(b), LoadError::none);
+
+    std::array<std::uint8_t, 1024> data{};
+    std::array<Context, 1> contexts{};
+    Vm strict{data, contexts, 500};  // the application's own limit
+    b.tasks[0].budget = 501;
+    std::vector<std::uint8_t> image = b.build();
+    EXPECT_EQ(strict.load(image), LoadError::task_range);
+    b.tasks[0].budget = 500;
+    image = b.build();
+    EXPECT_EQ(strict.load(image), LoadError::none);
+}
+
 TEST(PlcVm, BudgetIsSharedByThePrograms) {
     Asm a;
     a.enter(0).op(Op::NOP).op(Op::NOP).op(Op::RET);  // 4 instructions

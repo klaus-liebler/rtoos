@@ -131,7 +131,7 @@ LoadError Vm::load(std::span<const std::uint8_t> image) noexcept {
     if (task_count == 0 || task_count > max_tasks || task_count > contexts_.size()) return LoadError::task_range;
     for (std::size_t i = 0; i < task_count; ++i) {
         const TaskInfo t = task(i);
-        if (t.budget == 0 || t.interval == 0 || !inside(t.frame_base, t.frame_size, data_size)) {
+        if (t.budget == 0 || t.budget > max_budget_ || t.interval == 0 || !inside(t.frame_base, t.frame_size, data_size)) {
             return LoadError::task_range;
         }
         for (std::size_t j = 0; j < i; ++j) {

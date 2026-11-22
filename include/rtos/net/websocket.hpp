@@ -96,6 +96,9 @@ public:
                     stage_ = length_bytes_ != 0 ? Stage::Length : Stage::Mask;
                     break;
                 case Stage::Length:
+                    if (length_bytes_ == 8 && (v & 0x80) != 0) {
+                        return fail(used, event, 1002);  // RFC 6455 5.2: the top bit of a 64-bit length is 0
+                    }
                     length_ = (length_ << 8) | v;
                     if (--length_bytes_ == 0) {
                         stage_ = Stage::Mask;
@@ -151,7 +154,9 @@ private:
                 message_opcode_ = opcode_;
                 message_size_ = 0;
             }
-            if (message_size_ + length_ > MaxMessage) {
+            // Not message_size_ + length_ > MaxMessage: with a 64-bit length that sum can wrap to a
+            // small value and pass (WebSocket.ContinuationLengthCannotWrapTheSizeCheck).
+            if (length_ > MaxMessage - message_size_) {
                 fail(used, event, 1009);  // message too big
                 return false;
             }
