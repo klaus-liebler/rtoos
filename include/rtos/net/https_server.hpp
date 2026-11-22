@@ -57,6 +57,10 @@ struct HttpResource {
 
 struct HttpsServerConfig {
     std::uint32_t handshake_timeout_ms = 10'000;
+    /// A TLS handshake older than this may be dropped for a new connection when every session is
+    /// taken: a browser finishes far sooner, so it is a client that holds a session without using it
+    /// (slowloris: a few idle TCP connections would otherwise lock everyone else out).
+    std::uint32_t handshake_evict_ms = 2'000;
     std::uint32_t keep_alive_timeout_ms = 10'000;  ///< for the next request
     std::uint32_t ws_ping_interval_ms = 20'000;    ///< peer silent this long: ping
     std::uint32_t ws_pong_timeout_ms = 10'000;     ///< no data after the ping: close
@@ -135,6 +139,8 @@ public:
     [[nodiscard]] std::uint32_t requests() const noexcept { return requests_; }
     [[nodiscard]] std::uint32_t handshake_failures() const noexcept { return handshake_failures_; }
     [[nodiscard]] std::uint32_t evictions() const noexcept { return tcp_.stats().evictions; }
+    /// Handshakes older than handshake_evict_ms that gave up their turn to another one.
+    [[nodiscard]] std::uint32_t stale_handshakes() const noexcept { return stale_handshakes_; }
     [[nodiscard]] std::uint32_t timeouts() const noexcept { return timeouts_; }
     [[nodiscard]] std::uint32_t dead_websockets() const noexcept { return dead_websockets_; }
     /// Open sessions reset because TLS failed (and the wolfSSL error of the last one).
@@ -150,6 +156,28 @@ private:
     enum class Phase : std::uint8_t { Free, Handshake, Request, Response, WebSocket };
 
     /// A handshake turn became free: let the sessions waiting for one try again.
+    /// Every handshake turn is taken and session `except` wants one: the oldest handshake past
+    /// handshake_evict_ms gives up its connection (a client that holds a turn without finishing its
+    /// handshake - slowloris with a partial ClientHello). True when a turn is free now.
+    bool drop_stale_handshake(SessionId except) noexcept {
+        const std::uint32_t now = stack_.now_ms();
+        std::size_t victim = MaxSessions;
+        for (std::size_t i = 0; i < MaxSessions; ++i) {
+            const auto id = static_cast<SessionId>(i);
+            if (id != except && tcp_.active(id) && tcp_.session(id).stale_handshake(now) &&
+                (victim == MaxSessions ||
+                 rtos::earlier(tcp_.session(id).handshake_start_ms(), tcp_.session(static_cast<SessionId>(victim)).handshake_start_ms()))) {
+                victim = i;
+            }
+        }
+        if (victim == MaxSessions) {
+            return false;
+        }
+        ++stale_handshakes_;
+        tcp_.session(static_cast<SessionId>(victim)).abort();
+        return handshakes_ < config_.max_handshakes;
+    }
+
     void wake_handshake_waiters(SessionId except) noexcept {
         for (std::size_t i = 0; i < MaxSessions; ++i) {
             const auto id = static_cast<SessionId>(i);
@@ -171,7 +199,7 @@ private:
         bool open(Connection& c, std::uint32_t now) noexcept {
             conn_ = &c;
             phase_ = Phase::Handshake;
-            last_event_ms_ = now;
+            last_event_ms_ = handshake_start_ms_ = now;
             io_.template emplace<Http>();
             closing_ = upgrade_ = finishing_ = finished_ = false;
             tx_head_ = tx_count_ = tx_sent_ = 0;
@@ -268,8 +296,22 @@ private:
 
         [[nodiscard]] bool finished() const noexcept { return finished_; }
 
-        /// Keep-alive connection waiting for its next request (nothing received yet).
+        /// Holds a handshake turn, but its handshake is older than handshake_evict_ms.
+        [[nodiscard]] bool stale_handshake(std::uint32_t now) const noexcept {
+            return handshake_turn_ && phase_ == Phase::Handshake &&
+                   rtos::reached(now, handshake_start_ms_ + owner_->config_.handshake_evict_ms);
+        }
+        [[nodiscard]] std::uint32_t handshake_start_ms() const noexcept { return handshake_start_ms_; }
+        void abort() noexcept {
+            if (conn_ != nullptr) conn_->abort();  // -> closed(): the turn and the session are free
+        }
+
+        /// Keep-alive connection waiting for its next request (nothing received yet), or a TLS
+        /// handshake older than handshake_evict_ms (HttpsServerConfig).
         [[nodiscard]] bool evictable() const noexcept {
+            if (phase_ == Phase::Handshake) {
+                return rtos::reached(owner_->stack_.now_ms(), handshake_start_ms_ + owner_->config_.handshake_evict_ms);
+            }
             return phase_ == Phase::Request && !finishing_ && request().empty() && conn_ != nullptr &&
                    conn_->readable() == 0;
         }
@@ -330,7 +372,7 @@ private:
         /// True if this session may run its handshake now (max_handshakes).
         bool take_handshake_turn() noexcept {
             if (!handshake_turn_) {
-                if (owner_->handshakes_ >= owner_->config_.max_handshakes) {
+                if (owner_->handshakes_ >= owner_->config_.max_handshakes && !owner_->drop_stale_handshake(id_)) {
                     return false;  // end_handshake_turn() of another session wakes us
                 }
                 handshake_turn_ = true;
@@ -704,6 +746,7 @@ private:
         Http& request() noexcept { return std::get<Http>(io_); }
         const Http& request() const noexcept { return std::get<Http>(io_); }
         std::uint32_t last_event_ms_ = 0;
+        std::uint32_t handshake_start_ms_ = 0;  ///< open(): the handshake's age decides evictable()
         // response
         std::array<char, 384> header_{};
         std::size_t header_size_ = 0;
@@ -742,6 +785,7 @@ private:
     std::uint32_t tls_failures_ = 0;
     int last_tls_error_ = 0;
     std::uint8_t handshakes_ = 0;  ///< handshakes running (max_handshakes)
+    std::uint32_t stale_handshakes_ = 0;  ///< handshakes dropped for holding a turn too long
 };
 
 }  // namespace rtos::net

@@ -380,6 +380,15 @@ protected:
         return c;
     }
 
+    /// A client that connects and never sends a byte (no TLS object: the client pool is small).
+    Client& add_silent_client() {
+        clients.push_back(std::make_unique<Client>());
+        Client& c = *clients.back();
+        c.state = Client::State::Failed;  // drive_clients() leaves it alone
+        connect(c.peer, https_port);
+        return c;
+    }
+
     bool all_done() const {
         for (const auto& c : clients) {
             if (c->state != Client::State::Done) {
@@ -563,6 +572,50 @@ TEST_F(HttpsFairness, RequestIsAnsweredBeforePendingHandshakes) {
         pass();
     }
     expect_downloads_complete();
+}
+
+// Slowloris (found by the FCU's black-box pentest): clients that connect and never finish the TLS
+// handshake. Each holds a session for the handshake timeout (10 s), the first max_handshakes ones also
+// a handshake turn - a client that reconnects every 10 s locked everyone else out of the web UI.
+// A handshake older than handshake_evict_ms now gives way: its session to a new connection when all
+// are taken (evictable()), its turn to a handshake that waits for one (drop_stale_handshake()).
+TEST_F(HttpsFairness, SilentConnectionsGiveWayToANewClientWhenAllSessionsAreTaken) {
+    for (int i = 0; i < 6; ++i) {
+        add_silent_client();
+    }
+    for (int i = 0; i < 10; ++i) {
+        pass();
+    }
+    Client& early = add_silent_client();  // all six sessions taken by young handshakes: refused
+    for (int i = 0; i < 10; ++i) {
+        pass();
+    }
+    EXPECT_TRUE(early.peer.reset) << "a handshake younger than handshake_evict_ms was evicted";
+
+    now += 2'500;  // the silent ones are now older than handshake_evict_ms (2 s)
+    Client& late = add_client();
+    for (int i = 0; i < 3'000 && late.state != Client::State::Done; ++i) {
+        pass();
+    }
+    EXPECT_EQ(late.state, Client::State::Done) << "the new client did not get a session";
+    EXPECT_GE(server.evictions(), 1u);
+}
+
+TEST_F(HttpsFairness, SilentConnectionsGiveUpTheirHandshakeTurn) {
+    for (int i = 0; i < 2; ++i) {  // max_handshakes = 2: both turns, sessions are still free
+        add_silent_client();
+    }
+    for (int i = 0; i < 10; ++i) {
+        pass();
+    }
+    now += 2'500;
+    Client& c = add_client();
+    for (int i = 0; i < 3'000 && c.state != Client::State::Done; ++i) {  // 3 s, the holders' timeout is 10 s
+        pass();
+    }
+    EXPECT_EQ(c.state, Client::State::Done) << "the new handshake waited for the silent ones' timeout";
+    EXPECT_GE(server.stale_handshakes(), 1u);
+    EXPECT_EQ(server.evictions(), 0u);
 }
 
 TEST_F(HttpsFairness, RuntimeMeasuresStepsAndSleepsOnlyWhenIdle) {

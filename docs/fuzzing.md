@@ -59,11 +59,19 @@ instance and `jobs`-1 secondaries each). A second call resumes the campaign. Fin
 the replay build (`build/linux-asan/tests/fuzz/fuzz_<harness> <file>`). Once it is fixed, the
 input goes to `tests/fuzz/regressions/<harness>/`, where `fuzz_replay_<harness>` keeps it.
 
+Campaigns so far (3 instances per harness, 28 cores):
+
+| Date | Length | Executions | Result |
+|---|---|---|---|
+| 2026-11-22 | 30 min | ~220 M | WebSocket: 11 crashes, one cause (length wrap); PLC: 74 hangs (budget) |
+| 2026-11-22, after the fixes | 1 h | ~437 M | no crash, no hang; edges: OPC UA 5371, PLC 1446, EtherCAT 1001 |
+
 ## Findings
 
 | Where | What | Fix |
 |---|---|---|
 | `WebSocketDecoder` | A fragmented message, then a continuation frame with a 64-bit length near 2^64: `message_size_ + length_` wrapped to a small value, passed the size check, and the decoder wrote the peer's bytes past its message buffer - from any client that reaches port 443, before anything else (AFL++, 11 crashes, one cause) | `length_ > MaxMessage - message_size_`; a 64-bit length with the top bit set is a protocol error (RFC 6455 5.2); `WebSocket.ContinuationLengthCannotWrapTheSizeCheck`, `regressions/websocket` |
+| `HttpsServer` (the FCU's black-box test `tools/pentest-renode.py`, "slowloris") | Clients that connect and never finish the TLS handshake held a session for the handshake timeout (10 s) and the first two also the handshake turns; on the FCU (two sessions) two idle TCP connections, renewed every 10 s, kept the web UI away | a handshake older than `handshake_evict_ms` (2 s) gives way: its session to a new connection when all are taken, its turn to a handshake that waits; `HttpsFairness.SilentConnectionsGiveWayToANewClientWhenAllSessionsAreTaken`, `HttpsFairness.SilentConnectionsGiveUpTheirHandshakeTurn` |
 | wolfSSL 5.9.4 `RsaPad_OAEP`, `RsaUnPad_OAEP` | With `WOLFSSL_SMALL_STACK` + `WOLFSSL_NO_MALLOC` (this project's settings) the temporaries are stack arrays, but they are freed under the weaker `SMALL_STACK` condition: `wolfSSL_Free` of a stack address. In the static pool that counts a free and, on a size match, links the stack address into the free list. It ran for every secured OPC UA OpenSecureChannel and could be triggered by any client. | patched copy of `rsa.c` ([cmake/wolfssl.cmake](../cmake/wolfssl.cmake)); `OpcUaTest.OaepFreesOnlyWhatItAllocated` checks the pool's alloc/free counts (also on MinGW and the target) |
 | wolfSSL 5.9.4 `RsaPrivateDecryptEx` | `WOLFSSL_NO_MALLOC`: decrypts in place and moves the message to the front with `memcpy`, an overlapping copy | `XMEMMOVE` in the same patched `rsa.c`; ASan in every OPC UA test with a secured channel |
 | `plc::Vm::load` | A task's instruction budget - the watchdog of a runaway program - came from the image unchecked: images with budgets up to 2^32 held the VM for minutes (AFL++ hangs) | `Vm(data, contexts, max_budget)`, default 2^24; `PlcVm.BudgetAboveTheVmsLimitIsRefused` |
@@ -71,9 +79,5 @@ input goes to `tests/fuzz/regressions/<harness>/`, where `fuzz_replay_<harness>`
 | tests: `net_fixture.hpp`, `https_fairness_test.cpp`, `opcua_service_harness.hpp` | the same `memcpy`; `read()` returned strings pointing into a freed response | fixed in the tests |
 | wolfSSL `sp_c32.c`, `aes.c` (64-bit `GMULT`) | signed overflow, misaligned 64-bit load - only in the C paths of a 64-bit host; the firmware links `sp_cortexm.c` and the Thumb-2 `GCM_gmult_len` (map file) | UBSan's two checks off for wolfSSL in the Linux presets ([cmake/wolfssl.cmake](../cmake/wolfssl.cmake)) |
 
-### Open
-
-- **HTTPS slots** (the FCU's black-box test `tools/pentest-renode.py`, "slowloris"): the FCU has two HTTPS
-  sessions. Two TCP connections that send nothing hold both for the handshake timeout (10 s) and are not
-  evicted (only an idle keep-alive connection is); a client that reconnects every 10 s keeps the web UI
-  away. Without authentication two open WebSockets hold them for good. Modbus and OPC UA are not affected.
+Not covered by a fix: without authentication any client may complete the handshake and keep the
+sessions as WebSockets (the FCU web UI's authentication is still to come).
