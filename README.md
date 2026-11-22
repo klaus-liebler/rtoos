@@ -57,7 +57,7 @@ cmake --preset arm-h743 && cmake --build --preset arm-h743 && ctest --preset arm
 | [External chips](docs/devices.md) | INA226, VL53L0X, TCS34725, HX711, TMC2209, Feetech servos, WS2812 |
 | [Networking](docs/networking.md) | IP stack, interfaces, services, HTTPS and WebSocket, SSH log terminal, fairness |
 | [Modbus](docs/modbus.md) | Modbus TCP and RTU, register bank |
-| [EtherCAT](docs/ethercat.md) | slave stack: ESC access, SII, AL state machine; LAN9253 driver |
+| [EtherCAT](docs/ethercat.md) | slave stack: ESC access, SII, AL state machine, mailbox, CoE (SDO, SDO information, PDO assignment); LAN9253 driver |
 | [Command terminal](docs/terminal.md) | text commands from a generated catalog: handlers, compile-time completeness check, helpers |
 | [OPC UA](docs/opcua.md) | server, security, address space, subscriptions, tests ported from open62541 |
 | [PLC](docs/plc.md) | bytecode VM for IEC 61131-3 programs: instruction set, image format, verifier |

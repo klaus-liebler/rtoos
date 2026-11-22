@@ -11,6 +11,10 @@
 //                     (PRE-OP), the process data SyncManagers as the application's PDOs (SAFE-OP);
 //                     a refused request sets the error flag and an AL status code, which the master
 //                     acknowledges
+//   mailbox           SM0 (master -> slave) read when full, the response into SM1 when it is empty;
+//                     CoE (coe.hpp) answered, any other protocol with a mailbox error; the repeat
+//                     request (SM1 activate bit 1) answered with the last response; duplicates (the
+//                     same counter again) dropped
 //   diagnostics       every register a status page can show (read_diagnostics(): on request)
 //
 // Driven by poll(), from one thread: after the ESC's interrupt (AL event request), or periodically
@@ -22,12 +26,16 @@
 #pragma once
 
 #include <algorithm>
+#include <contracts>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
+#include "rtos/ethercat/coe.hpp"
 #include "rtos/ethercat/esc.hpp"
+#include "rtos/ethercat/object_dictionary.hpp"
+#include "rtos/modbus/modbus.hpp"
 
 namespace rtos::ethercat {
 
@@ -44,7 +52,17 @@ struct SlaveCounters {
     std::uint32_t al_transitions = 0, al_refused = 0;
     std::uint16_t last_refused_code = 0;
     std::uint8_t last_refused_from = 0, last_refused_to = 0;
+    std::uint32_t mailbox_requests = 0, mailbox_responses = 0, mailbox_errors = 0, mailbox_repeats = 0,
+                  mailbox_duplicates = 0, mailbox_overwritten = 0;
 };
+
+/// Mailbox types (header byte 5, bits 3:0) and the mailbox error details (ETG.1000.4 table 30).
+namespace mailbox {
+inline constexpr std::size_t header = 6;
+inline constexpr std::uint8_t type_error = 0, type_coe = 3;
+inline constexpr std::uint16_t error_syntax = 0x0001, error_unsupported_protocol = 0x0002, error_invalid_header = 0x0005,
+                               error_size_too_short = 0x0006, error_invalid_size = 0x0008;
+}  // namespace mailbox
 
 /// The ESC's registers for a status page (read_diagnostics()).
 struct PortCounters {
@@ -82,8 +100,6 @@ concept SlaveApp = requires(A& a, std::uint8_t from, std::uint8_t to, std::uint1
     { a.al_changed(from, to) } noexcept;            ///< after the AL status was written
     { a.al_refused(from, to, code) } noexcept;      ///< a request refused with an AL status code
     { a.eeprom_command(cmd, word) } noexcept;       ///< an EEPROM command served (log, rate-limited)
-    { a.outputs_size() } noexcept -> std::convertible_to<std::uint16_t>;  ///< RxPDO bytes (0: none)
-    { a.inputs_size() } noexcept -> std::convertible_to<std::uint16_t>;   ///< TxPDO bytes (0: none)
 };
 
 /// Whether an AL transition is allowed at all (ETG.1000.6 table 9): 0 or the AL status code.
@@ -116,9 +132,15 @@ template <EscPort Esc, SlaveApp App, std::size_t SiiWords>
 class Slave {
 public:
     using Sii = std::array<std::uint16_t, SiiWords>;
+    static constexpr std::size_t max_mailbox = 256;
 
-    Slave(Esc& esc, const Sii& sii, const SlaveLayout& layout, App& app) noexcept
-        : esc_(esc), sii_(sii), layout_(layout), app_(app) {}
+    /// `od`: the object dictionary (sorted, valid_dictionary()); `map`: the registers it refers to.
+    Slave(Esc& esc, const Sii& sii, const SlaveLayout& layout, std::span<const OdObject> od, modbus::RegisterMap& map,
+          App& app) noexcept
+        : esc_(esc), sii_(sii), layout_(layout), app_(app), coe_(od, map) {
+        contract_assert(layout.mailbox_out_size <= max_mailbox && layout.mailbox_in_size <= max_mailbox);
+        contract_assert(layout.mailbox_out_size == 0 || layout.mailbox_in_size >= 16);
+    }
 
     /// One pass. `ready`: the ESC has loaded its configuration (before, only the EEPROM emulation
     /// may touch the ESC - LAN9253 HW_CFG READY).
@@ -129,11 +151,15 @@ public:
         if (!ready) return;
         const std::uint32_t events = read32(esc_, reg::al_event_request);
         if ((events & al_event::al_control) != 0) serve_al_control();
+        if (state_ >= 2 && layout_.mailbox_out_size != 0) serve_mailbox();
     }
 
     /// The AL state the slave last wrote (1 INIT, 2 PRE-OP, 4 SAFE-OP, 8 OP).
     [[nodiscard]] std::uint8_t state() const noexcept { return state_; }
     [[nodiscard]] const SlaveCounters& counters() const noexcept { return counters_; }
+    [[nodiscard]] const CoeCounters& coe_counters() const noexcept { return coe_.counters(); }
+    /// The CoE server: the PDO assignment and the process data sizes.
+    [[nodiscard]] const CoeServer<>& coe() const noexcept { return coe_; }
 
     /// The ESC's registers now (about 150 bytes over the PDI). Not the watchdog status 0440h: reading
     /// it clears the watchdog event, which the process data handling takes.
@@ -174,7 +200,10 @@ public:
 
     /// Back to INIT from the application (e.g. the ESC was reset): state and counters stay coherent
     /// with the ESC, which starts in INIT.
-    void reset() noexcept { state_ = 1; }
+    void reset() noexcept {
+        state_ = 1;
+        reset_mailbox();
+    }
 
 private:
     // ---- EEPROM emulation (ESC 0502h-050Fh) -----------------------------------------------------
@@ -225,6 +254,7 @@ private:
         write16(esc_, reg::al_status, to);
         if (to != from) ++counters_.al_transitions;
         state_ = to;
+        if (to == 1) reset_mailbox();  // the mailbox SyncManagers are gone; the assignment back to the default
         app_.al_changed(from, to);
     }
 
@@ -236,13 +266,96 @@ private:
     }
 
     [[nodiscard]] std::uint16_t check_process_data() noexcept {
-        if (!process_sm_ok(read_sm_config(2), layout_.outputs_start, app_.outputs_size(), sm_control::write)) {
+        if (!process_sm_ok(read_sm_config(2), layout_.outputs_start, coe_.process_data_bytes(false), sm_control::write)) {
             return al_code::invalid_output_config;
         }
-        if (!process_sm_ok(read_sm_config(3), layout_.inputs_start, app_.inputs_size(), sm_control::read)) {
+        if (!process_sm_ok(read_sm_config(3), layout_.inputs_start, coe_.process_data_bytes(true), sm_control::read)) {
             return al_code::invalid_input_config;
         }
         return al_code::none;
+    }
+
+    // ---- mailbox (ETG.1000.4 5.6, ETG.1000.6 5.2) ------------------------------------------------------
+    void serve_mailbox() noexcept {
+        const SyncManager sm1 = read_sm_config(1);
+        if (((sm1.activate ^ sm1.pdi_control) & 0x02) != 0) {  // repeat request toggled: the last response again
+            if (last_len_ > 0 && (sm1.status & sm_status::mailbox_full) == 0) write_mailbox(last_);
+            write8(esc_, static_cast<std::uint16_t>(reg::sm_base + reg::sm_size + 7),
+                   static_cast<std::uint8_t>((sm1.pdi_control & ~0x02) | (sm1.activate & 0x02)));  // repeat ack
+            ++counters_.mailbox_repeats;
+        }
+        const std::uint8_t sm0_status = read8(esc_, static_cast<std::uint16_t>(reg::sm_base + 5));
+        if ((sm0_status & sm_status::mailbox_full) != 0) {
+            std::span<std::byte> in(in_.data(), layout_.mailbox_out_size);
+            esc_.read(layout_.mailbox_out_start, in);  // the whole buffer: reading its last byte frees it
+            handle_request(in);
+        }
+        if (pending_len_ == 0 && coe_.fragments_pending()) {
+            const std::size_t n = coe_.next_fragment(payload());
+            if (n > 0) queue(mailbox::type_coe, n);
+        }
+        if (pending_len_ > 0 &&
+            (read8(esc_, static_cast<std::uint16_t>(reg::sm_base + reg::sm_size + 5)) & sm_status::mailbox_full) == 0) {
+            write_mailbox(pending_);
+            last_ = pending_;
+            last_len_ = pending_len_;
+            pending_len_ = 0;
+            ++counters_.mailbox_responses;
+        }
+    }
+
+    void handle_request(std::span<const std::byte> in) noexcept {
+        ++counters_.mailbox_requests;
+        const std::size_t length = std::to_integer<std::size_t>(in[0]) | (std::to_integer<std::size_t>(in[1]) << 8);
+        const std::uint8_t type = std::to_integer<std::uint8_t>(in[5]) & 0x0F;
+        const std::uint8_t counter = (std::to_integer<std::uint8_t>(in[5]) >> 4) & 0x07;
+        if (length > in.size() - mailbox::header) return mailbox_error(mailbox::error_invalid_size);
+        if (length < 2) return mailbox_error(mailbox::error_size_too_short);
+        if (counter != 0 && counter == last_counter_) {  // a repeated request (a retry of the master): done already
+            ++counters_.mailbox_duplicates;
+            return;
+        }
+        last_counter_ = counter;
+        if (type != mailbox::type_coe) return mailbox_error(mailbox::error_unsupported_protocol);
+        const std::size_t n = coe_.request(in.subspan(mailbox::header, length), payload(), state_);
+        if (n > 0) queue(mailbox::type_coe, n);
+    }
+
+    void mailbox_error(std::uint16_t detail) noexcept {
+        ++counters_.mailbox_errors;
+        const std::span<std::byte> p = payload();
+        p[0] = std::byte{0x01}, p[1] = std::byte{0x00};  // type: mailbox error service
+        p[2] = std::byte(detail & 0xFF), p[3] = std::byte(detail >> 8);
+        queue(mailbox::type_error, 4);
+    }
+
+    /// The response data area (after the header) in the pending buffer.
+    std::span<std::byte> payload() noexcept {
+        return std::span(pending_).subspan(mailbox::header, layout_.mailbox_in_size - mailbox::header);
+    }
+
+    /// The pending response: header (length, address 0, channel/priority 0, type and counter 1..7).
+    void queue(std::uint8_t type, std::size_t n) noexcept {
+        if (pending_len_ > 0) ++counters_.mailbox_overwritten;  // the master did not read the previous one
+        counter_ = static_cast<std::uint8_t>(counter_ % 7 + 1);
+        pending_[0] = std::byte(n & 0xFF), pending_[1] = std::byte(n >> 8);
+        pending_[2] = pending_[3] = pending_[4] = std::byte{0};
+        pending_[5] = std::byte(type | (counter_ << 4));
+        std::fill(pending_.begin() + static_cast<std::ptrdiff_t>(mailbox::header + n),
+                  pending_.begin() + static_cast<std::ptrdiff_t>(layout_.mailbox_in_size), std::byte{0});
+        pending_len_ = mailbox::header + n;
+    }
+
+    /// The whole SM1 buffer: writing its last byte marks the mailbox full.
+    void write_mailbox(const std::array<std::byte, max_mailbox>& b) noexcept {
+        esc_.write(layout_.mailbox_in_start, std::span(b).first(layout_.mailbox_in_size));
+    }
+
+    void reset_mailbox() noexcept {
+        pending_len_ = last_len_ = 0;
+        last_counter_ = 0;
+        counter_ = 0;
+        coe_.reset_assignment();
     }
 
     /// A SyncManager's registers; reading the activate byte also clears the "activation changed"
@@ -255,6 +368,10 @@ private:
     App& app_;
     SlaveCounters counters_{};
     std::uint8_t state_ = 1;
+    CoeServer<> coe_;
+    std::array<std::byte, max_mailbox> in_{}, pending_{}, last_{};
+    std::size_t pending_len_ = 0, last_len_ = 0;
+    std::uint8_t counter_ = 0, last_counter_ = 0;
 };
 
 }  // namespace rtos::ethercat

@@ -7,8 +7,10 @@
 //   AL control      a master write sets AL event 0; a PDI read of 0120h clears it
 //   EEPROM          a master command sets busy, the command and AL event 5 (emulation); the PDI's
 //                   acknowledge (write of 0502h) clears busy and the event
-//
-// Mailbox and buffered SyncManagers are added with the stack's mailbox and process data.
+//   mailbox         SM0: the master's write of the whole buffer sets "full" and AL event 8; the PDI's
+//                   read of its last byte clears it. SM1: the PDI's write of its last byte sets
+//                   "full" (AL event 9 cleared); the master's read clears it. The repeat request is
+//                   SM1 activate bit 1, toggled by the master
 #pragma once
 
 #include <algorithm>
@@ -38,10 +40,18 @@ public:
         for (std::size_t i = 0; i < out.size(); ++i) out[i] = mem_[(address + i) & mask];
         ++pdi_reads;
         if (overlaps(address, out.size(), ec::reg::al_control, 2)) clear_event(ec::al_event::al_control);
+        if (const auto sm0 = sm_config(0); mailbox_enabled(sm0) && overlaps(address, out.size(), sm0.start + sm0.length - 1, 1)) {
+            set8(ec::reg::sm_base + 5, get8(ec::reg::sm_base + 5) & ~ec::sm_status::mailbox_full);
+            clear_event(ec::al_event::sm(0));
+        }
     }
     void write(std::uint16_t address, std::span<const std::byte> in) noexcept {
         for (std::size_t i = 0; i < in.size(); ++i) mem_[(address + i) & mask] = in[i];
         ++pdi_writes;
+        if (const auto sm1 = sm_config(1); mailbox_enabled(sm1) && overlaps(address, in.size(), sm1.start + sm1.length - 1, 1)) {
+            set8(ec::reg::sm_base + ec::reg::sm_size + 5, get8(ec::reg::sm_base + ec::reg::sm_size + 5) | ec::sm_status::mailbox_full);
+            ++sm1_writes;
+        }
         if (overlaps(address, in.size(), ec::reg::eeprom_status, 2)) {  // the PDI acknowledges a command
             set16(ec::reg::eeprom_status, static_cast<std::uint16_t>(get16(ec::reg::eeprom_status) & ~ec::eeprom::busy) |
                                               ec::eeprom::emulation);
@@ -85,7 +95,37 @@ public:
 
     [[nodiscard]] std::uint32_t events() const { return get32(ec::reg::al_event_request); }
 
-    std::size_t pdi_reads = 0, pdi_writes = 0;
+    // ---- mailbox, the master's side ----------------------------------------------------------------
+    /// A mailbox message into SM0: header (length, address 0, channel 0, type, counter) and `data`.
+    /// false: the mailbox is still full (the slave has not read the last one).
+    bool mailbox_write(std::uint8_t type, std::uint8_t counter, std::span<const std::byte> data) {
+        const auto sm0 = sm_config(0);
+        if ((get8(ec::reg::sm_base + 5) & ec::sm_status::mailbox_full) != 0) return false;
+        std::vector<std::byte> b(sm0.length, std::byte{0});
+        b[0] = std::byte(data.size() & 0xFF), b[1] = std::byte(data.size() >> 8);
+        b[5] = std::byte(type | (counter << 4));
+        std::copy(data.begin(), data.end(), b.begin() + 6);
+        master_write(sm0.start, b);
+        set8(ec::reg::sm_base + 5, get8(ec::reg::sm_base + 5) | ec::sm_status::mailbox_full);
+        set_event(ec::al_event::sm(0));
+        return true;
+    }
+    /// The SM1 buffer if full (then empty again), else empty.
+    std::vector<std::byte> mailbox_read() {
+        const auto sm1 = sm_config(1);
+        if ((get8(ec::reg::sm_base + ec::reg::sm_size + 5) & ec::sm_status::mailbox_full) == 0) return {};
+        std::vector<std::byte> b(sm1.length);
+        for (std::size_t i = 0; i < b.size(); ++i) b[i] = mem_[(sm1.start + i) & mask];
+        set8(ec::reg::sm_base + ec::reg::sm_size + 5, get8(ec::reg::sm_base + ec::reg::sm_size + 5) & ~ec::sm_status::mailbox_full);
+        return b;
+    }
+    /// The master asks for the last response again: SM1 activate bit 1 toggled.
+    void toggle_repeat_request() { set8(ec::reg::sm_base + ec::reg::sm_size + 6, get8(ec::reg::sm_base + ec::reg::sm_size + 6) ^ 0x02); }
+    [[nodiscard]] bool repeat_acknowledged() const {
+        return ((get8(ec::reg::sm_base + ec::reg::sm_size + 6) ^ get8(ec::reg::sm_base + ec::reg::sm_size + 7)) & 0x02) == 0;
+    }
+
+    std::size_t pdi_reads = 0, pdi_writes = 0, sm1_writes = 0;
 
     void set8(std::uint16_t a, std::uint8_t v) { mem_[a & mask] = std::byte{v}; }
     void set16(std::uint16_t a, std::uint16_t v) { set8(a, static_cast<std::uint8_t>(v)), set8(a + 1, static_cast<std::uint8_t>(v >> 8)); }
@@ -96,6 +136,12 @@ public:
 
 private:
     static constexpr std::size_t size = 0x4000, mask = size - 1;
+    [[nodiscard]] ec::SyncManager sm_config(unsigned n) const {
+        const auto base = static_cast<std::uint16_t>(ec::reg::sm_base + ec::reg::sm_size * n);
+        return {.start = get16(base), .length = get16(base + 2), .control = get8(base + 4), .status = get8(base + 5),
+                .activate = get8(base + 6), .pdi_control = get8(base + 7)};
+    }
+    static bool mailbox_enabled(const ec::SyncManager& sm) { return sm.enabled() && sm.length > 0 && (sm.control & 0x03) == 0x02; }
     static bool overlaps(std::uint16_t a, std::size_t n, std::uint16_t r, std::size_t rn) { return a < r + rn && r < a + n; }
     void set_event(std::uint32_t bit) { set32(ec::reg::al_event_request, get32(ec::reg::al_event_request) | bit); }
     void clear_event(std::uint32_t bit) { set32(ec::reg::al_event_request, get32(ec::reg::al_event_request) & ~bit); }
