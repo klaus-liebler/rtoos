@@ -37,6 +37,7 @@ add_executable(rtos_tests
     fuzz_test.cpp
     https_fairness_test.cpp
     modbus_test.cpp
+    ethercat_test.cpp
     usb_device_test.cpp
     usb_cdc_test.cpp
     usb_ncm_test.cpp

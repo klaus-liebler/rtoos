@@ -5,10 +5,12 @@
 // even before an application uses them. Not linked into any firmware.
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 #include "board/fcu.hpp"
 #include "rtos/devices/hx711.hpp"
 #include "rtos/devices/ina226.hpp"
+#include "rtos/devices/lan9253.hpp"
 #include "rtos/devices/tcs34725.hpp"
 #include "rtos/devices/vl53l0x.hpp"
 #include "rtos/motion/timer_stepper.hpp"
@@ -199,3 +201,11 @@ void drivers_check() noexcept {
 
 // the PLC's program slots in the FCU's flash: the last 256 KB of bank 2 (docs/plc.md)
 template class rtos::plc::SlotStore<h5::flash::Region<0x081C'0000, 256 * 1024, board::sysclk_hz>>;
+
+// the LAN9253 EtherCAT slave controller on a bus of the application's (the FCU: SPI by GPIO)
+struct EscBus {
+    static void select(bool) noexcept {}
+    static std::uint8_t transfer(std::uint8_t b) noexcept { return b; }
+    static void wait_ns(std::uint32_t) noexcept {}
+};
+template class rtos::devices::Lan9253<EscBus>;
