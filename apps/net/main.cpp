@@ -71,6 +71,7 @@
 #include "rtos/opcua/registers.hpp"
 #include "board/chip.hpp"
 #include "rtos/rtos.hpp"
+#include "rtos/time.hpp"
 
 namespace {
 
@@ -602,11 +603,11 @@ struct AppTasks {
 
     void service() noexcept {
         const rtos::Tick now = stack.now_ms();
-        if (static_cast<std::int32_t>(now - next_latency_report) >= 0) {
+        if (rtos::reached(now, next_latency_report)) {
             next_latency_report = now + latency_report_ms;
             report_latency();
         }
-        if (static_cast<std::int32_t>(now - next_link_poll) >= 0) {
+        if (rtos::reached(now, next_link_poll)) {
             next_link_poll = now + link_poll_ms;
             if (ethernet.poll_link() != link) {  // the stack sees it at its next poll
                 link = !link;
@@ -617,7 +618,7 @@ struct AppTasks {
                 }
             }
         }
-        if (fallback_at != 0 && static_cast<std::int32_t>(now - fallback_at) >= 0) {
+        if (fallback_at != 0 && rtos::reached(now, fallback_at)) {
             fallback_at = 0;
             using DhcpState = net::DhcpClient<Stack>::State;
             if (dhcp.state() == DhcpState::Requesting || dhcp.state() == DhcpState::Checking) {
@@ -633,7 +634,7 @@ struct AppTasks {
                 sntp.set_server(fcu_net_config::fallback.gateway, sntp_port);
             }
         }
-        if (static_cast<std::int32_t>(now - next_status) >= 0) {
+        if (rtos::reached(now, next_status)) {
             next_status = now + status_period_ms;
             update_input_registers();
             if (server.websocket_clients() != 0) {

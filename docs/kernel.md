@@ -24,6 +24,7 @@ The `KernelConfig` concept rejects invalid values at compile time ([config.hpp](
 - **Preemption threshold:** a thread can run with a threshold above its priority. Threads that share data get the same threshold (a ceiling). They never preempt each other and need no mutex, while more urgent threads still preempt them.
 - **Run statistics** for task monitors: every thread counts how often it was switched in (`run_count`) and, with a port that has `cycle_count()` (Cortex-M33: DWT_CYCCNT, after `CycleCounter::enable()`), the CPU cycles it ran (`run_cycles`).
 - **Timeouts** are kept in a timer wheel. `Tick` is 32 bits (1 ms); `Kernel::now64()` extends it to 64 bits for clocks that must never wrap (OPC UA).
+- **Comparing times:** 32-bit points in time (ticks, ms) are compared with `rtos::reached(now, deadline)` and `rtos::earlier(a, b)` ([time.hpp](../include/rtos/time.hpp)), never with `<`/`>=`: after the wrap a deadline ahead would look long past.
 
 ## Services and execution contexts
 
@@ -37,7 +38,7 @@ The `KernelConfig` concept rejects invalid values at compile time ([config.hpp](
 | `ObjectPool::make(timeout)` | ✓ (blocking) | – | – |
 | `ObjectPool::try_make`, `try_allocate` | ✓ | ✓ | ✓ (lock-free) |
 | `ObjectPool::destroy` / `destroy_from_isr` | ✓ | ✓ (direct hand-over) | ✓ (lock-free, wake-up deferred) |
-| `BlockPool` | ✓ | ✓ | ✓ (lock-free) |
+| `BlockPool` (`available()`, low-water mark `min_available()`) | ✓ | ✓ | ✓ (lock-free) |
 | `SpscRing` | one producer, one consumer, any context | | |
 
 - **Contracts check the context:** every `*_from_isr` service checks that it runs in an ISR; the normal services check the opposite. Services that take the kernel lock also check `Port::may_lock()` (the ISR priority is not above the kernel mask).

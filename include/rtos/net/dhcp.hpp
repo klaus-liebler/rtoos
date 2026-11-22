@@ -34,6 +34,7 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/time.hpp"
 #include "rtos/net/stack.hpp"
 
 namespace rtos::net {
@@ -246,7 +247,7 @@ private:
     static constexpr std::uint32_t max_lease_ms = 24u * 24 * 3600 * 1000;
 
     [[nodiscard]] bool reached(std::uint32_t t) const noexcept {
-        return static_cast<std::int32_t>(stack_.now_ms() - t) >= 0;
+        return rtos::reached(stack_.now_ms(), t);
     }
 
     void restart(std::uint32_t delay_ms) noexcept {
@@ -290,7 +291,7 @@ private:
             return;
         }
         const std::uint32_t until = state_ == State::Renewing ? t2_ms_ : expiry_ms_;
-        const std::uint32_t remaining = static_cast<std::int32_t>(until - now) > 0 ? until - now : 0;
+        const std::uint32_t remaining = rtos::earlier(now, until) ? until - now : 0;
         next_ms_ = now + std::min(remaining, std::max<std::uint32_t>(remaining / 2, 60'000));
     }
 

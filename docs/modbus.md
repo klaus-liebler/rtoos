@@ -30,6 +30,16 @@ runtime.add(rtu, "rtu");
 
 Application threads read and write with `registers.holding(i)`, `set_holding(i, v)` and `set_inputs(first, values)`. The write hook `on_written(context, start, count)` runs after a Modbus (or OPC UA) client has written holding registers, e.g. to switch an output.
 
+Three ways to write holding registers, each for one kind of writer:
+
+| Writer | Call | Write filter | Write hook |
+|---|---|---|---|
+| protocols and other outside writers (Modbus, OPC UA, EtherCAT, a web UI, a console) | `write(start, values)` | yes, under the lock | yes |
+| an application writer whose writes are commands like a protocol's (a PLC program) | `set_holdings_notified(start, values)` | no | yes |
+| the application's own state (measurements, answers to commands) | `set_holding(s)` | no | no |
+
+No writer checks the filter's rule itself or calls the hook by hand.
+
 Registers can be shared with OPC UA or kept separate. In the Factory Control Unit they are shared: OPC UA variables are bound to registers with `rtos::opcua::registers` (see [OPC UA](opcua.md#address-space)). The tests cover both arrangements.
 
 ## Tests

@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/net/service.hpp"
 #include "rtos/net/tcp.hpp"
 
@@ -105,7 +106,7 @@ public:
             }
             if (in_background(slot)) {
                 const std::uint32_t d = slot.session.deadline();
-                if (d == 0 || static_cast<std::int32_t>(now - d) < 0) {
+                if (d == 0 || !rtos::reached(now, d)) {
                     continue;
                 }
             }
@@ -244,7 +245,7 @@ private:
             // All busy: evict the session that has been idle longest.
             for (auto& s : server.slots_) {
                 if (s.session.evictable() &&
-                    (slot == nullptr || static_cast<std::int32_t>(s.last_event_ms - slot->last_event_ms) < 0)) {
+                    (slot == nullptr || rtos::earlier(s.last_event_ms, slot->last_event_ms))) {
                     slot = &s;
                 }
             }

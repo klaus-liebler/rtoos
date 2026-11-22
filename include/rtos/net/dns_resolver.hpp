@@ -24,6 +24,7 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/time.hpp"
 #include "rtos/net/dns.hpp"
 #include "rtos/net/stack.hpp"
 
@@ -100,7 +101,7 @@ public:
 
     void service() noexcept {
         for (auto& q : queries_) {
-            if (q.active && static_cast<std::int32_t>(stack_.now_ms() - q.deadline_ms) >= 0) {
+            if (q.active && rtos::reached(stack_.now_ms(), q.deadline_ms)) {
                 if (q.attempt >= attempts_per_server * server_count_) {
                     finish(q, std::nullopt, 0);
                 } else {
@@ -113,7 +114,7 @@ public:
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
         std::uint32_t best = 0;
         for (const auto& q : queries_) {
-            if (q.active && (best == 0 || static_cast<std::int32_t>(q.deadline_ms - best) < 0)) {
+            if (q.active && (best == 0 || rtos::earlier(q.deadline_ms, best))) {
                 best = q.deadline_ms;
             }
         }
@@ -161,7 +162,7 @@ private:
 
     const CacheEntry* find(std::string_view name) const noexcept {
         for (const auto& e : cache_) {
-            if (e.valid && static_cast<std::int32_t>(e.expires_ms - stack_.now_ms()) > 0 &&
+            if (e.valid && rtos::earlier(stack_.now_ms(), e.expires_ms) &&
                 same_name({e.name.data(), e.name_len}, name)) {
                 return &e;
             }
@@ -176,7 +177,7 @@ private:
                 slot = &e;
                 break;
             }
-            if (static_cast<std::int32_t>(e.expires_ms - slot->expires_ms) < 0) {
+            if (rtos::earlier(e.expires_ms, slot->expires_ms)) {
                 slot = &e;  // evict the entry that expires first
             }
         }

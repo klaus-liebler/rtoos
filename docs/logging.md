@@ -5,6 +5,7 @@
 ```cpp
 RTOS_LOG_INFO("dhcp: bound %u.%u.%u.%u", a, b, c, d);
 RTOS_LOG_WARN("supply: only %ld mV", mv);
+RTOS_LOG_INFO("mdns: now %.*s", RTOS_SV(name));  // a std::string_view (rtos/printf.hpp)
 
 auto banner = RTOS_LOG_BLOCK(Info);      // lines that stay together
 banner.add("=== Factory Control Unit ===");

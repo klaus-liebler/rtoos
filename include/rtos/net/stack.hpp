@@ -57,6 +57,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/net/address.hpp"
 #include "rtos/net/bytes.hpp"
 #include "rtos/net/checksum.hpp"
@@ -202,7 +203,7 @@ public:
     [[nodiscard]] std::uint32_t next_deadline() const noexcept {
         std::uint32_t best = tcp_.next_deadline();
         const auto take = [&best](std::uint32_t t) noexcept {
-            if (best == 0 || static_cast<std::int32_t>(t - best) < 0) {
+            if (best == 0 || rtos::earlier(t, best)) {
                 best = t;
             }
         };
@@ -763,7 +764,7 @@ private:
                 victim = &e;
                 break;
             }
-            if (static_cast<std::int32_t>(e.updated_ms - victim->updated_ms) < 0) {
+            if (rtos::earlier(e.updated_ms, victim->updated_ms)) {
                 victim = &e;
             }
         }
@@ -813,7 +814,7 @@ private:
 
     void service_arp(InterfaceId id) noexcept {
         for (auto& e : at(id).arp) {
-            if (e.pending && static_cast<std::int32_t>(now_ms_ - (e.requested_ms + arp_retry_ms)) >= 0) {
+            if (e.pending && rtos::reached(now_ms_, e.requested_ms + arp_retry_ms)) {
                 if (e.attempts >= 3) {
                     e.parked.reset();
                     e = ArpEntry{};
@@ -831,7 +832,7 @@ private:
     void service_claim(InterfaceId id) noexcept {
         Claim& c = at(id).claim;
         if ((c.phase != ClaimPhase::Probing && c.phase != ClaimPhase::Announcing) ||
-            static_cast<std::int32_t>(now_ms_ - c.next_ms) < 0) {
+            !rtos::reached(now_ms_, c.next_ms)) {
             return;
         }
         if (c.phase == ClaimPhase::Probing) {

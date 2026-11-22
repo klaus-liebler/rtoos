@@ -184,6 +184,8 @@ public:
     }
 
     [[nodiscard]] std::size_t available() const noexcept { return blocks_.available(); }
+    /// The fewest free buffers there ever were (low-water mark).
+    [[nodiscard]] std::size_t min_available() const noexcept { return blocks_.min_available(); }
     [[nodiscard]] static constexpr std::size_t capacity() noexcept { return N; }
 
 private:

@@ -30,6 +30,7 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/time.hpp"
 #include "rtos/net/interface.hpp"
 #include "rtos/net/tcp_server.hpp"
 #include "rtos/opcua/clock.hpp"
@@ -193,7 +194,7 @@ private:
             }
             const std::uint32_t idle = owner->config_.idle_timeout_ms;
             if ((close_requested && pending.empty()) || conn->eof() ||
-                (idle != 0 && static_cast<std::int32_t>(now - (last_ms + idle)) >= 0)) {
+                (idle != 0 && rtos::reached(now, last_ms + idle))) {
                 conn->close();
                 done = true;
             }
@@ -213,7 +214,7 @@ private:
                 const opcua::DateTime now = opcua::NowMonotonic();
                 const opcua::DateTime ms = next > now ? (next - now + 9'999) / 10'000 : 0;
                 const std::uint32_t at = owner->stack_.now_ms() + static_cast<std::uint32_t>(std::min<opcua::DateTime>(ms, 3'600'000));
-                if (best == 0 || static_cast<std::int32_t>(at - best) < 0) {
+                if (best == 0 || rtos::earlier(at, best)) {
                     best = at;
                 }
             }

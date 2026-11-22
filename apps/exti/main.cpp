@@ -27,6 +27,7 @@
 #include "rtos/port/stm32h5/gpio.hpp"
 #include "rtos/port/stm32h5/i2c.hpp"
 #include "rtos/rtos.hpp"
+#include "rtos/time.hpp"
 
 namespace {
 
@@ -128,7 +129,7 @@ void main_thread(void*) {
     Alert::enable();
     std::uint32_t conversions = 0;
     const rtos::Tick end = kernel.now() + 1000;
-    while (static_cast<std::int32_t>(end - kernel.now()) > 0) {
+    while (rtos::earlier(kernel.now(), end)) {
         if (!conversion.take(100)) {
             finish("no ALERT within 100 ms", falling + rising, sampled, conversions);
         }

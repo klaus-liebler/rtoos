@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rtos/time.hpp"
 #include "rtos/net/stack.hpp"
 
 namespace rtos::net {
@@ -43,7 +44,7 @@ public:
     }
 
     void service() noexcept {
-        if (!active() || static_cast<std::int32_t>(stack_.now_ms() - next_ms_) < 0) {
+        if (!active() || !rtos::reached(stack_.now_ms(), next_ms_)) {
             return;
         }
         if (awaiting_ && retries_ >= max_retries) {

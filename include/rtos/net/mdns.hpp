@@ -26,6 +26,7 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/time.hpp"
 #include "rtos/net/dns.hpp"
 #include "rtos/net/stack.hpp"
 
@@ -81,7 +82,7 @@ public:
             const auto id = static_cast<InterfaceId>(n);
             State& s = states_[n];
             if ((s.phase != Phase::Probing && s.phase != Phase::Announcing) ||
-                static_cast<std::int32_t>(now - s.next_ms) < 0) {
+                !rtos::reached(now, s.next_ms)) {
                 continue;
             }
             if (s.phase == Phase::Probing) {
@@ -107,7 +108,7 @@ public:
         for (std::size_t n = 0; n < stack_.interface_count(); ++n) {
             const State& s = states_[n];
             if ((s.phase == Phase::Probing || s.phase == Phase::Announcing) &&
-                (best == 0 || static_cast<std::int32_t>(s.next_ms - best) < 0)) {
+                (best == 0 || rtos::earlier(s.next_ms, best))) {
                 best = s.next_ms;
             }
         }

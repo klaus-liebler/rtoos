@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/log/log.hpp"
 #include "rtos/net/ssh.hpp"
 #include "rtos/net/tcp_server.hpp"
@@ -119,7 +120,7 @@ private:
             if (!greeted) {
                 greeted = true;
                 ++owner->stats_.sessions;
-                RTOS_LOG_INFO("log terminal: %.*s connected", static_cast<int>(ssh.user().size()), ssh.user().data());
+                RTOS_LOG_INFO("log terminal: %.*s connected", RTOS_SV(ssh.user()));
             }
             std::array<std::byte, 16> keys{};
             for (std::size_t n = ssh.read(keys); n != 0; n = ssh.read(keys)) {
@@ -132,7 +133,7 @@ private:
                     }
                 }
             }
-            if (static_cast<std::int32_t>(now - next_poll) < 0 && line_size == 0) {
+            if (!rtos::reached(now, next_poll) && line_size == 0) {
                 return;
             }
             next_poll = now + poll_ms;

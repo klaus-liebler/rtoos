@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/usb_pd/message.hpp"
 #include "rtos/usb_pd/source_capability.hpp"
 
@@ -219,7 +220,7 @@ public:
         const std::uint32_t now = timer_.now();
         std::uint8_t due = 0;
         for (unsigned d = 0; d < deadline_count; ++d) {
-            if ((armed_ & (1u << d)) != 0 && static_cast<std::int32_t>(now - due_[d]) >= 0) {
+            if ((armed_ & (1u << d)) != 0 && rtos::reached(now, due_[d])) {
                 due |= static_cast<std::uint8_t>(1u << d);
             }
         }

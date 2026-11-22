@@ -220,6 +220,35 @@ TEST(RegisterBank, ApplicationBlocksOnBothTablesWithoutHook) {
     EXPECT_EQ(hooks, 0) << "the hook is for protocol writes";
 }
 
+TEST(RegisterBank, NotifiedApplicationWritesRunTheHookButNotTheFilter) {
+    // the PLC's writes: commands like a protocol's (the hook acts on them), but the program owns
+    // the registers the filter closes for everyone else
+    struct State {
+        int hooks = 0, filtered = 0;
+        std::uint16_t start = 0, count = 0;
+    } st;
+    RegisterBank<8, 0> bank{WriteHook{&st, [](void* s, std::uint16_t start, std::uint16_t count) noexcept {
+                                          auto& x = *static_cast<State*>(s);
+                                          ++x.hooks;
+                                          x.start = start;
+                                          x.count = count;
+                                      }}};
+    bank.set_write_filter({&st, [](void* s, std::uint16_t, std::uint16_t) noexcept {
+                               ++static_cast<State*>(s)->filtered;
+                               return false;
+                           }});
+    const std::array<std::uint16_t, 2> value{0xABCD, 0x1234};
+    bank.set_holdings_notified(4, value);
+    EXPECT_EQ(bank.holding(4), 0xABCD);
+    EXPECT_EQ(bank.holding(5), 0x1234);
+    EXPECT_EQ(st.hooks, 1);
+    EXPECT_EQ(st.start, 4);
+    EXPECT_EQ(st.count, 2);
+    EXPECT_EQ(st.filtered, 0);
+    EXPECT_EQ(bank.write(4, value), Exception::IllegalDataAddress) << "a protocol is still refused";
+    EXPECT_EQ(st.hooks, 1);
+}
+
 // ---------------------------------------------------------------------------
 // RTU
 // ---------------------------------------------------------------------------

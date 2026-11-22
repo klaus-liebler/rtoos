@@ -49,6 +49,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "rtos/time.hpp"
+
 namespace rtos::net {
 
 template <class S>
@@ -80,7 +82,7 @@ struct ServiceStats {
     if (b == 0) {
         return a;
     }
-    return static_cast<std::int32_t>(a - b) < 0 ? a : b;
+    return rtos::earlier(a, b) ? a : b;
 }
 
 template <class Stack, std::size_t MaxServices = 16>

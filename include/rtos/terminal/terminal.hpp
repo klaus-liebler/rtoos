@@ -39,6 +39,8 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/printf.hpp"
+
 namespace rtos::terminal {
 
 /// The output of a command: lines of text, cut at `Capacity` characters.
@@ -130,11 +132,11 @@ bool execute(std::string_view line, const std::array<Info, N>& commands,
     const auto c = std::ranges::find(commands, words[0], &Info::name);
     const auto h = c == commands.end() ? handlers.end() : std::ranges::find(handlers, c->id, &Handler<Id, Out>::id);
     if (h == handlers.end()) {
-        out.line("unknown command '%.*s' - try help", static_cast<int>(words[0].size()), words[0].data());
+        out.line("unknown command '%.*s' - try help", RTOS_SV(words[0]));
         return false;
     }
     if (n > words.size() || !h->run(std::span(words).subspan(1, n - 1), out)) {
-        out.line("usage: %.*s", static_cast<int>(c->usage.size()), c->usage.data());
+        out.line("usage: %.*s", RTOS_SV(c->usage));
         return false;
     }
     return true;

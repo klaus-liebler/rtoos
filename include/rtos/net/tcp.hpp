@@ -38,6 +38,7 @@
 #include <cstring>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/net/address.hpp"
 #include "rtos/net/bytes.hpp"
 #include "rtos/net/checksum.hpp"
@@ -439,13 +440,13 @@ public:
                 (c.state_ == TcpState::Established || c.state_ == TcpState::CloseWait)) {
                 send_fin(c);
             }
-            if (c.deadline_ms_ != 0 && static_cast<std::int32_t>(now - c.deadline_ms_) >= 0) {
+            if (c.deadline_ms_ != 0 && rtos::reached(now, c.deadline_ms_)) {
                 expire(c);
                 if (c.state_ == TcpState::Closed) {
                     continue;
                 }
             }
-            if (c.persist_ms_ != 0 && static_cast<std::int32_t>(now - c.persist_ms_) >= 0) {
+            if (c.persist_ms_ != 0 && rtos::reached(now, c.persist_ms_)) {
                 probe_window(c, now);
             }
             if (c.ack_pending_ || c.window_update_pending_) {
@@ -459,7 +460,7 @@ public:
         std::uint32_t best = 0;
         for (const auto& c : connections_) {
             for (const std::uint32_t t : {c.deadline_ms_, c.persist_ms_}) {
-                if (t != 0 && (best == 0 || static_cast<std::int32_t>(t - best) < 0)) {
+                if (t != 0 && (best == 0 || rtos::earlier(t, best))) {
                     best = t;
                 }
             }
@@ -570,7 +571,7 @@ private:
                 return &c;
             }
             if (c.state_ == TcpState::SynReceived &&
-                (oldest == nullptr || static_cast<std::int32_t>(c.opened_ms_ - oldest->opened_ms_) < 0)) {
+                (oldest == nullptr || rtos::earlier(c.opened_ms_, oldest->opened_ms_))) {
                 oldest = &c;
             }
         }

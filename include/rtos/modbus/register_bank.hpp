@@ -21,6 +21,12 @@
 // IllegalDataAddress (Modbus exception 0x02, OPC UA Bad_NotWritable). The filter
 // runs with the guard held (BASEPRI on the target): short, no kernel calls. The
 // application side (set_holding, ...) is never filtered.
+//
+// Writers and what they pass (one place decides, no writer re-implements it):
+//   write()                  protocols and other outside writers: filter, then hook
+//   set_holdings_notified()  an application writer whose writes are commands like a
+//                            protocol's (a PLC program): hook, no filter
+//   set_holding(s)()         the application's own state (measurements, answers): neither
 #pragma once
 
 #include <algorithm>
@@ -95,6 +101,15 @@ public:
         contract_assert(start + values.size() <= Holding);
         [[maybe_unused]] const Guard guard{};
         std::ranges::copy(values, holding_.begin() + start);
+    }
+    /// Like set_holdings(), then the write hook - outside the guard, as after a protocol write.
+    /// Never filtered: for an application writer that owns the registers (a PLC program).
+    void set_holdings_notified(std::uint16_t start, std::span<const std::uint16_t> values) noexcept {
+        contract_assert(start + values.size() <= Holding);
+        set_holdings(start, values);
+        if (hook_.written != nullptr) {
+            hook_.written(hook_.context, start, static_cast<std::uint16_t>(values.size()));
+        }
     }
     void read_holdings(std::uint16_t start, std::span<std::uint16_t> out) const noexcept {
         contract_assert(start + out.size() <= Holding);

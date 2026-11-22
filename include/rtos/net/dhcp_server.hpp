@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rtos/time.hpp"
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/stack.hpp"
 
@@ -91,7 +92,7 @@ private:
         return d < config_.count ? static_cast<int>(d) : -1;
     }
     [[nodiscard]] bool expired(const Lease& l) const noexcept {
-        return l.state != LeaseState::Free && static_cast<std::int32_t>(stack_.now_ms() - l.until_ms) >= 0;
+        return l.state != LeaseState::Free && rtos::reached(stack_.now_ms(), l.until_ms);
     }
     /// Lease of `mac` (any non-free state), else -1.
     [[nodiscard]] int find(const MacAddress& mac) const noexcept {

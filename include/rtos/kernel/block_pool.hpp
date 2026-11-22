@@ -36,6 +36,7 @@ public:
         }
         head_.store(pack(0, 0), std::memory_order_relaxed);
         free_.store(BlockCount, std::memory_order_relaxed);
+        min_free_.store(BlockCount, std::memory_order_relaxed);
     }
 
     BlockPool(const BlockPool&) = delete;
@@ -52,7 +53,10 @@ public:
             const std::uint16_t next = next_[index].load(std::memory_order_relaxed);
             if (head_.compare_exchange_weak(head, pack(tag_of(head) + 1, next),
                                             std::memory_order_acq_rel, std::memory_order_acquire)) {
-                free_.fetch_sub(1, std::memory_order_relaxed);
+                const std::size_t left = free_.fetch_sub(1, std::memory_order_relaxed) - 1;
+                std::size_t low = min_free_.load(std::memory_order_relaxed);
+                while (left < low && !min_free_.compare_exchange_weak(low, left, std::memory_order_relaxed)) {
+                }
                 return block(index);
             }
         }
@@ -82,6 +86,8 @@ public:
     }
 
     [[nodiscard]] std::size_t available() const noexcept { return free_.load(std::memory_order_relaxed); }
+    /// The fewest free blocks there ever were (low-water mark: sizes the pool from real use).
+    [[nodiscard]] std::size_t min_available() const noexcept { return min_free_.load(std::memory_order_relaxed); }
 
 private:
     static constexpr std::uint16_t nil = 0xFFFF;
@@ -98,6 +104,7 @@ private:
     std::array<std::atomic<std::uint16_t>, BlockCount> next_{};
     std::atomic<std::uint32_t> head_{};
     std::atomic<std::size_t> free_{};
+    std::atomic<std::size_t> min_free_{};
 };
 
 }  // namespace rtos

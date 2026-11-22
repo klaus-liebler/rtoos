@@ -38,6 +38,7 @@
 #include <string_view>
 #include <variant>
 
+#include "rtos/time.hpp"
 #include "rtos/net/http.hpp"
 #include "rtos/net/tcp.hpp"
 #include "rtos/net/tcp_server.hpp"
@@ -323,7 +324,7 @@ private:
 
         [[nodiscard]] bool expired(std::uint32_t now) const noexcept {
             const std::uint32_t d = deadline();
-            return d != 0 && static_cast<std::int32_t>(now - d) >= 0;
+            return d != 0 && rtos::reached(now, d);
         }
 
         /// True if this session may run its handshake now (max_handshakes).

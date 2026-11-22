@@ -30,6 +30,23 @@ TEST(BlockPool, HandsOutEveryBlockExactlyOnceThenReportsExhaustion) {
     EXPECT_EQ(pool.allocate(), *blocks.begin());  // LIFO: hot block reused
 }
 
+TEST(BlockPool, LowWaterMarkKeepsTheFewestFreeBlocks) {
+    rtos::BlockPool<16, 5> pool;
+    EXPECT_EQ(pool.min_available(), 5u);
+    void* a = pool.allocate();
+    void* b = pool.allocate();
+    void* c = pool.allocate();
+    EXPECT_EQ(pool.min_available(), 2u);
+    pool.deallocate(c);
+    pool.deallocate(b);
+    pool.deallocate(a);
+    EXPECT_EQ(pool.available(), 5u);
+    EXPECT_EQ(pool.min_available(), 2u) << "freeing does not raise it";
+    void* d = pool.allocate();
+    EXPECT_EQ(pool.min_available(), 2u);
+    pool.deallocate(d);
+}
+
 TEST(BlockPool, StrideRoundsUpToAlignment) {
     static_assert(rtos::BlockPool<10, 2, 32>::stride == 32);
 }

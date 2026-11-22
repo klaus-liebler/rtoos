@@ -7,6 +7,7 @@
 #include "rtos/opcua/node_ids.hpp"
 #include "rtos/opcua/services.hpp"
 #include "rtos/opcua/tcp_message.hpp"
+#include "rtos/printf.hpp"
 #include "rtos/opcua/log.hpp"
 
 namespace rtos::opcua {
@@ -54,8 +55,8 @@ DateTime Connection::NextDeadline() const {
 }
 
 void Connection::SendErrorAndClose(StatusCode error, std::string_view reason) {
-    log_debug("OPC UA: slot %u closing: %.*s (0x%08X)", connectionSlot_,
-             static_cast<int>(reason.size()), reason.data(), static_cast<unsigned>(error));
+    log_debug("OPC UA: slot %u closing: %.*s (0x%08X)", connectionSlot_, RTOS_SV(reason),
+             static_cast<unsigned>(error));
     ByteWriter w(sendBuffer_);
     if(EncodeErrorMessage(w, error, reason) && w.Ok())
         transport_->Send(w.Written());

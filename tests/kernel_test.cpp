@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "kernel_fixture.hpp"
+#include "rtos/time.hpp"
 
 namespace {
 
@@ -442,6 +443,18 @@ TEST_F(KernelWrapTest, SleepAcrossTheWrapWakesOnTime) {
     tick(1);
     EXPECT_EQ(k.current(), &a.tcb);
     EXPECT_EQ(k.now(), 4u);
+}
+
+TEST(Time, ReachedAndEarlierAcrossTheWrap) {
+    EXPECT_TRUE(rtos::reached(100, 100));
+    EXPECT_TRUE(rtos::reached(101, 100));
+    EXPECT_FALSE(rtos::reached(99, 100));
+    // a deadline just after the wrap is still ahead of a time just before it
+    EXPECT_FALSE(rtos::reached(0xFFFF'FFF0u, 0x10));
+    EXPECT_TRUE(rtos::reached(0x10, 0xFFFF'FFF0u));
+    EXPECT_TRUE(rtos::earlier(0xFFFF'FFF0u, 0x10));
+    EXPECT_FALSE(rtos::earlier(0x10, 0xFFFF'FFF0u));
+    EXPECT_FALSE(rtos::earlier(5, 5));
 }
 
 }  // namespace

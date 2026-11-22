@@ -29,6 +29,8 @@
 #include <span>
 #include <string_view>
 
+#include "rtos/printf.hpp"
+
 namespace rtos::log {
 
 enum class Level : std::uint8_t { Trace, Debug, Info, Warn, Error, Fatal, Off };
@@ -258,15 +260,14 @@ inline std::size_t format_line(const Record& r, std::span<char> out, bool colour
                                                         "\x1b[33m", "\x1b[31m", "\x1b[35m"};
     int n = 0;
     if (r.continuation) {
-        n = std::snprintf(out.data(), out.size(), "%*s%.*s\r\n", static_cast<int>(prefix_width), "",
-                          static_cast<int>(r.text.size()), r.text.data());
+        n = std::snprintf(out.data(), out.size(), "%*s%.*s\r\n", static_cast<int>(prefix_width), "", RTOS_SV(r.text));
     } else {
         const auto level = static_cast<std::size_t>(r.level) < level_names.size() ? static_cast<std::size_t>(r.level) : 5;
         const unsigned long time = r.time_ms > 99'999 ? r.time_ms / 1000 : r.time_ms;
         n = std::snprintf(out.data(), out.size(), colour ? "%6lu %s%s\x1b[0m \x1b[90m%-8.8s:%03u:\x1b[0m %.*s\r\n"
                                                          : "%6lu %s%s %-8.8s:%03u: %.*s\r\n",
                           time, colour ? colours[level] : "", level_names[level].data(), r.file,
-                          static_cast<unsigned>(r.line), static_cast<int>(r.text.size()), r.text.data());
+                          static_cast<unsigned>(r.line), RTOS_SV(r.text));
     }
     return n < 0 ? 0 : std::min(static_cast<std::size_t>(n), out.size() - 1);
 }

@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/modbus/modbus.hpp"
 #include "rtos/net/interface.hpp"
 #include "rtos/net/tcp_server.hpp"
@@ -122,7 +123,7 @@ private:
                 rx_size -= total;
             }
             const std::uint32_t idle = owner->config_.idle_timeout_ms;
-            if (tx_size == 0 && (c.eof() || (idle != 0 && static_cast<std::int32_t>(now - (last_ms + idle)) >= 0))) {
+            if (tx_size == 0 && (c.eof() || (idle != 0 && rtos::reached(now, last_ms + idle)))) {
                 close(c);
             }
         }

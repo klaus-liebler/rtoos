@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <span>
 
+#include "rtos/time.hpp"
 #include "rtos/modbus/rtu.hpp"
 
 namespace rtos::modbus {
@@ -60,7 +61,7 @@ public:
                 return;
             }
         }
-        if (rtu_.buffered() != 0 && static_cast<std::int32_t>(now - (last_rx_ms_ + silence_ms_)) >= 0) {
+        if (rtu_.buffered() != 0 && rtos::reached(now, last_rx_ms_ + silence_ms_)) {
             reply(rtu_.silence());
         }
     }
