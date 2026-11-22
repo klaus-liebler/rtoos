@@ -15,6 +15,10 @@
 //                     CoE (coe.hpp) answered, any other protocol with a mailbox error; the repeat
 //                     request (SM1 activate bit 1) answered with the last response; duplicates (the
 //                     same counter again) dropped
+//   process data      SAFE-OP and OP: the TxPDO image into SM3 whenever the master has read the last
+//                     one; OP: a new SM2 image applied to the register map, only the entries that
+//                     changed (the first one in OP: all). Leaving OP - by request or the SyncManager
+//                     watchdog (then SAFE-OP with error 0x001B) - puts the mapped outputs to 0
 //   diagnostics       every register a status page can show (read_diagnostics(): on request)
 //
 // Driven by poll(), from one thread: after the ESC's interrupt (AL event request), or periodically
@@ -54,6 +58,7 @@ struct SlaveCounters {
     std::uint8_t last_refused_from = 0, last_refused_to = 0;
     std::uint32_t mailbox_requests = 0, mailbox_responses = 0, mailbox_errors = 0, mailbox_repeats = 0,
                   mailbox_duplicates = 0, mailbox_overwritten = 0;
+    std::uint32_t outputs_received = 0, inputs_written = 0, watchdog_expired = 0, safe_states = 0;
 };
 
 /// Mailbox types (header byte 5, bits 3:0) and the mailbox error details (ETG.1000.4 table 30).
@@ -99,6 +104,7 @@ template <class A>
 concept SlaveApp = requires(A& a, std::uint8_t from, std::uint8_t to, std::uint16_t code, unsigned cmd, std::uint32_t word) {
     { a.al_changed(from, to) } noexcept;            ///< after the AL status was written
     { a.al_refused(from, to, code) } noexcept;      ///< a request refused with an AL status code
+    { a.al_error(from, to, code) } noexcept;        ///< the slave left a state by itself (the watchdog)
     { a.eeprom_command(cmd, word) } noexcept;       ///< an EEPROM command served (log, rate-limited)
 };
 
@@ -133,6 +139,7 @@ class Slave {
 public:
     using Sii = std::array<std::uint16_t, SiiWords>;
     static constexpr std::size_t max_mailbox = 256;
+    static constexpr std::size_t max_process_data = 1024;  ///< bytes per direction
 
     /// `od`: the object dictionary (sorted, valid_dictionary()); `map`: the registers it refers to.
     Slave(Esc& esc, const Sii& sii, const SlaveLayout& layout, std::span<const OdObject> od, modbus::RegisterMap& map,
@@ -152,6 +159,7 @@ public:
         const std::uint32_t events = read32(esc_, reg::al_event_request);
         if ((events & al_event::al_control) != 0) serve_al_control();
         if (state_ >= 2 && layout_.mailbox_out_size != 0) serve_mailbox();
+        if (state_ >= 4) serve_process_data(events);
     }
 
     /// The AL state the slave last wrote (1 INIT, 2 PRE-OP, 4 SAFE-OP, 8 OP).
@@ -250,10 +258,13 @@ private:
             app_.al_refused(from, to, code);
             return;
         }
+        if (from == 8 && to != 8) safe_outputs();
         write16(esc_, reg::al_status_code, al_code::none);
         write16(esc_, reg::al_status, to);
         if (to != from) ++counters_.al_transitions;
         state_ = to;
+        if (from < 4 && to >= 4) start_process_data();
+        if (to == 8 && from != 8) first_outputs_ = true;
         if (to == 1) reset_mailbox();  // the mailbox SyncManagers are gone; the assignment back to the default
         app_.al_changed(from, to);
     }
@@ -273,6 +284,52 @@ private:
             return al_code::invalid_input_config;
         }
         return al_code::none;
+    }
+
+    // ---- process data (ETG.1000.4 5.5: 3-buffer SyncManagers) ------------------------------------------
+    void start_process_data() noexcept {
+        out_bytes_ = std::min<std::size_t>(coe_.process_data_bytes(false), max_process_data);
+        in_bytes_ = std::min<std::size_t>(coe_.process_data_bytes(true), max_process_data);
+        inputs_due_ = true;  // the first image right away: valid inputs in SAFE-OP
+        std::fill(rx_last_.begin(), rx_last_.end(), std::byte{0});
+    }
+
+    void serve_process_data(std::uint32_t events) noexcept {
+        if ((events & al_event::watchdog) != 0) {
+            const std::uint16_t wd = read16(esc_, reg::watchdog_status_process_data);  // the read clears the event
+            if ((wd & 1) == 0 && state_ == 8) return watchdog_expired();
+        }
+        if (out_bytes_ > 0 && (events & al_event::sm(2)) != 0) {
+            const std::span<std::byte> rx(rx_.data(), out_bytes_);
+            esc_.read(layout_.outputs_start, rx);  // the whole buffer: the ESC hands over the newest one
+            ++counters_.outputs_received;
+            if (state_ == 8) {  // SAFE-OP: outputs stay in the safe state (ETG.1000.6 6.4)
+                coe_.apply_outputs(rx, std::span(rx_last_.data(), out_bytes_), first_outputs_);
+                first_outputs_ = false;
+            }
+        }
+        if (in_bytes_ > 0 && (inputs_due_ || (events & al_event::sm(3)) != 0)) {
+            const std::span<std::byte> tx(tx_.data(), in_bytes_);
+            (void)coe_.pack_inputs(tx);
+            esc_.write(layout_.inputs_start, tx);  // the whole buffer: writing its last byte hands it over
+            inputs_due_ = false;
+            ++counters_.inputs_written;
+        }
+    }
+
+    /// No new outputs within the watchdog time (0420h): the safe state, SAFE-OP with error 0x001B.
+    void watchdog_expired() noexcept {
+        ++counters_.watchdog_expired;
+        safe_outputs();
+        write16(esc_, reg::al_status_code, al_code::sm_watchdog);
+        write16(esc_, reg::al_status, static_cast<std::uint16_t>(4 | al_error_flag));
+        state_ = 4;
+        app_.al_error(8, 4, al_code::sm_watchdog);
+    }
+
+    void safe_outputs() noexcept {
+        coe_.zero_outputs();
+        ++counters_.safe_states;
     }
 
     // ---- mailbox (ETG.1000.4 5.6, ETG.1000.6 5.2) ------------------------------------------------------
@@ -372,6 +429,9 @@ private:
     std::array<std::byte, max_mailbox> in_{}, pending_{}, last_{};
     std::size_t pending_len_ = 0, last_len_ = 0;
     std::uint8_t counter_ = 0, last_counter_ = 0;
+    std::array<std::byte, max_process_data> rx_{}, rx_last_{}, tx_{};
+    std::size_t out_bytes_ = 0, in_bytes_ = 0;
+    bool inputs_due_ = false, first_outputs_ = false;
 };
 
 }  // namespace rtos::ethercat

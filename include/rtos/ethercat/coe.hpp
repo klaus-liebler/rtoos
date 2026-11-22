@@ -11,6 +11,9 @@
 //                           one mailbox goes out in fragments (next_fragment())
 //   PDO assignment          1C12h/1C13h, writable in PRE-OP: subindex 0 to 0, the PDO indexes, then
 //                           subindex 0 to their count (ETG.1000.6 5.6.7.4)
+//   process data            the TxPDO image packed from the assigned PDOs' entries (pack_inputs()), an
+//                           RxPDO image applied entry by entry - only what changed since the last
+//                           image (apply_outputs()), zero_outputs() for the safe state
 //
 // Register values go through the application's rtos::modbus::RegisterMap: reads and writes exactly as
 // Modbus and OPC UA do them, the write filter (e.g. a PLC that owns the outputs) and write hook included.
@@ -50,6 +53,7 @@ inline constexpr std::uint8_t od_list_request = 1, od_list_response = 2, object_
 
 struct CoeCounters {
     std::uint32_t uploads = 0, downloads = 0, aborts = 0, info_requests = 0;
+    std::uint32_t output_writes = 0, output_refused = 0;  ///< RxPDO entries written into the map / refused by it
     std::uint32_t last_abort = 0;
     std::uint16_t last_abort_index = 0;
     std::uint8_t last_abort_subindex = 0;
@@ -114,7 +118,62 @@ public:
         return static_cast<std::uint16_t>((bits + 7) / 8);
     }
 
+    // ---- process data --------------------------------------------------------------------------------
+    /// The TxPDO image (the assigned PDOs' entries in order, little endian as over SDO) into `out`;
+    /// its length.
+    std::size_t pack_inputs(std::span<std::byte> out) noexcept {
+        std::size_t pos = 0;
+        for_each_mapped(tx_assigned(), [&](const OdEntry& e, std::size_t bytes) {
+            std::array<std::byte, 64> v{};
+            const std::size_t n = read_value(e, v);
+            if (pos + bytes <= out.size()) std::copy_n(v.begin(), std::min(n, bytes), out.begin() + static_cast<std::ptrdiff_t>(pos));
+            pos += bytes;
+        });
+        return std::min(pos, out.size());
+    }
+
+    /// An RxPDO image: every entry whose bytes differ from `last` (or all, `all`) written into the map
+    /// - outputs that Modbus/OPC UA/web wrote meanwhile stay until the master changes its value.
+    /// `last` becomes `in`.
+    void apply_outputs(std::span<const std::byte> in, std::span<std::byte> last, bool all) noexcept {
+        std::size_t pos = 0;
+        for_each_mapped(rx_assigned(), [&](const OdEntry& e, std::size_t bytes) {
+            if (pos + bytes > in.size() || pos + bytes > last.size()) return;
+            const auto now = in.subspan(pos, bytes);
+            if (all || !std::ranges::equal(now, last.subspan(pos, bytes))) {
+                ++(write_value(e, now) == 0 ? counters_.output_writes : counters_.output_refused);
+            }
+            pos += bytes;
+        });
+        std::copy_n(in.begin(), std::min(in.size(), last.size()), last.begin());
+    }
+
+    /// The safe state: every entry of the assigned RxPDOs to 0.
+    void zero_outputs() noexcept {
+        const std::array<std::byte, 64> zero{};
+        for_each_mapped(rx_assigned(), [&](const OdEntry& e, std::size_t bytes) {
+            if (bytes <= zero.size()) (void)write_value(e, std::span(zero).first(bytes));
+        });
+    }
+
 private:
+    /// Every mapping entry of `pdos` with its object entry and byte length (byte-aligned mappings only:
+    /// the dictionary's entries are whole registers).
+    template <class F>
+    void for_each_mapped(std::span<const std::uint16_t> pdos, F&& f) noexcept {
+        for (const std::uint16_t index : pdos) {
+            const OdObject* pdo = find(index);
+            if (pdo == nullptr) continue;
+            for (const OdEntry& m : pdo->entries) {
+                if (m.subindex == 0) continue;
+                const OdObject* o = find(static_cast<std::uint16_t>(m.value >> 16));
+                const OdEntry* e = o != nullptr ? o->entry(static_cast<std::uint8_t>(m.value >> 8)) : nullptr;
+                const std::size_t bytes = (m.value & 0xFF) / 8;
+                if (e != nullptr) f(*e, bytes);
+            }
+        }
+    }
+
     static constexpr bool is_rx_pdo(std::uint16_t i) noexcept { return i >= 0x1600 && i < 0x1800; }
     static constexpr bool is_tx_pdo(std::uint16_t i) noexcept { return i >= 0x1A00 && i < 0x1C00; }
 

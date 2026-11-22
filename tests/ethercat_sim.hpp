@@ -11,6 +11,10 @@
 //                   read of its last byte clears it. SM1: the PDI's write of its last byte sets
 //                   "full" (AL event 9 cleared); the master's read clears it. The repeat request is
 //                   SM1 activate bit 1, toggled by the master
+//   process data    SM2 (outputs): the master's write sets AL event 10, the PDI's read clears it.
+//                   SM3 (inputs): the master's read sets AL event 11 (the PDI may write the next
+//                   image), the PDI's write clears it. The watchdog: 0440h bit 0 = 0 and AL event 6
+//                   (expired), cleared by the PDI's read of 0440h
 #pragma once
 
 #include <algorithm>
@@ -40,6 +44,10 @@ public:
         for (std::size_t i = 0; i < out.size(); ++i) out[i] = mem_[(address + i) & mask];
         ++pdi_reads;
         if (overlaps(address, out.size(), ec::reg::al_control, 2)) clear_event(ec::al_event::al_control);
+        if (overlaps(address, out.size(), ec::reg::watchdog_status_process_data, 2)) clear_event(ec::al_event::watchdog);
+        if (const auto sm2 = sm_config(2); sm2.enabled() && overlaps(address, out.size(), sm2.start, sm2.length)) {
+            clear_event(ec::al_event::sm(2));
+        }
         if (const auto sm0 = sm_config(0); mailbox_enabled(sm0) && overlaps(address, out.size(), sm0.start + sm0.length - 1, 1)) {
             set8(ec::reg::sm_base + 5, get8(ec::reg::sm_base + 5) & ~ec::sm_status::mailbox_full);
             clear_event(ec::al_event::sm(0));
@@ -51,6 +59,10 @@ public:
         if (const auto sm1 = sm_config(1); mailbox_enabled(sm1) && overlaps(address, in.size(), sm1.start + sm1.length - 1, 1)) {
             set8(ec::reg::sm_base + ec::reg::sm_size + 5, get8(ec::reg::sm_base + ec::reg::sm_size + 5) | ec::sm_status::mailbox_full);
             ++sm1_writes;
+        }
+        if (const auto sm3 = sm_config(3); sm3.enabled() && sm3.length > 0 && overlaps(address, in.size(), sm3.start + sm3.length - 1, 1)) {
+            clear_event(ec::al_event::sm(3));
+            ++sm3_writes;
         }
         if (overlaps(address, in.size(), ec::reg::eeprom_status, 2)) {  // the PDI acknowledges a command
             set16(ec::reg::eeprom_status, static_cast<std::uint16_t>(get16(ec::reg::eeprom_status) & ~ec::eeprom::busy) |
@@ -125,7 +137,24 @@ public:
         return ((get8(ec::reg::sm_base + ec::reg::sm_size + 6) ^ get8(ec::reg::sm_base + ec::reg::sm_size + 7)) & 0x02) == 0;
     }
 
-    std::size_t pdi_reads = 0, pdi_writes = 0, sm1_writes = 0;
+    // ---- process data, the master's side ------------------------------------------------------------
+    void write_outputs(std::span<const std::byte> image) {
+        master_write(sm_config(2).start, image);
+        set_event(ec::al_event::sm(2));
+    }
+    std::vector<std::byte> read_inputs() {
+        const auto sm3 = sm_config(3);
+        std::vector<std::byte> b(sm3.length);
+        for (std::size_t i = 0; i < b.size(); ++i) b[i] = mem_[(sm3.start + i) & mask];
+        set_event(ec::al_event::sm(3));
+        return b;
+    }
+    void expire_watchdog() {
+        set16(ec::reg::watchdog_status_process_data, 0);
+        set_event(ec::al_event::watchdog);
+    }
+
+    std::size_t pdi_reads = 0, pdi_writes = 0, sm1_writes = 0, sm3_writes = 0;
 
     void set8(std::uint16_t a, std::uint8_t v) { mem_[a & mask] = std::byte{v}; }
     void set16(std::uint16_t a, std::uint16_t v) { set8(a, static_cast<std::uint8_t>(v)), set8(a + 1, static_cast<std::uint8_t>(v >> 8)); }

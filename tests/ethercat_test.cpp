@@ -49,10 +49,11 @@ std::uint8_t byte_of(const std::array<std::uint16_t, 256>& w, std::size_t i) { r
 
 struct App {
     std::vector<std::pair<int, int>> changes;
-    std::vector<std::uint16_t> refused;
+    std::vector<std::uint16_t> refused, errors;
     std::size_t eeprom = 0;
     void al_changed(std::uint8_t from, std::uint8_t to) noexcept { changes.emplace_back(from, to); }
     void al_refused(std::uint8_t, std::uint8_t, std::uint16_t code) noexcept { refused.push_back(code); }
+    void al_error(std::uint8_t, std::uint8_t, std::uint16_t code) noexcept { errors.push_back(code); }
     void eeprom_command(unsigned, std::uint32_t) noexcept { ++eeprom; }
 };
 static_assert(ec::SlaveApp<App>);
@@ -614,6 +615,116 @@ TEST_F(EthercatMailbox, BackToInitResetsTheAssignment) {
     esc.request(1);
     slave.poll(true);
     EXPECT_EQ(slave.coe().process_data_bytes(true), 6);
+}
+
+// ---- process data -----------------------------------------------------------------------------------
+struct EthercatProcessData : EthercatSlave {
+    void SetUp() override {
+        mailbox_sms();
+        process_sms();
+        esc.request(2);
+        slave.poll(true);
+        bank.set_input(0, 0x1111);
+        bank.set_input(1, 0x0001), bank.set_input(2, 0x0002);
+        esc.request(4);
+        slave.poll(true);
+        ASSERT_EQ(esc.al_status(), 4);
+    }
+    void op() {
+        esc.request(8);
+        slave.poll(true);
+        ASSERT_EQ(esc.al_status(), 8);
+    }
+    void outputs(std::uint16_t v) {
+        const std::array<std::byte, 2> b{std::byte(v & 0xFF), std::byte(v >> 8)};
+        esc.write_outputs(b);
+        slave.poll(true);
+    }
+};
+
+TEST_F(EthercatProcessData, InputsAtOnceInSafeOpThenWhenTheMasterHasReadThem) {
+    EXPECT_EQ(esc.sm3_writes, 1u);  // entering SAFE-OP: valid inputs at once
+    Bytes in = esc.read_inputs();
+    ASSERT_EQ(in.size(), 6u);
+    EXPECT_EQ(at16(in, 0), 0x1111);
+    EXPECT_EQ(at32(in, 2), 0x0001'0002u);  // the 32-bit value as one DINT, little endian
+    bank.set_input(0, 0x2222);
+    slave.poll(true);
+    EXPECT_EQ(esc.sm3_writes, 2u);  // the read above made room for the next image
+    slave.poll(true);
+    EXPECT_EQ(esc.sm3_writes, 2u);  // nothing new until the master has read it
+    EXPECT_EQ(at16(esc.read_inputs(), 0), 0x2222);
+    EXPECT_EQ(slave.counters().inputs_written, 2u);
+}
+
+TEST_F(EthercatProcessData, OutputsOnlyInOpAndOnlyWhenChanged) {
+    outputs(5);  // SAFE-OP: received, not applied
+    EXPECT_EQ(bank.holding(0), 0);
+    op();
+    outputs(5);  // the first image in OP: all of it
+    EXPECT_EQ(bank.holding(0), 5);
+    bank.set_holding(0, 9);  // Modbus (or the web UI) writes the same output
+    outputs(5);              // the master's value has not changed: Modbus' value stays
+    EXPECT_EQ(bank.holding(0), 9);
+    outputs(6);
+    EXPECT_EQ(bank.holding(0), 6);
+    EXPECT_EQ(slave.coe_counters().output_writes, 2u);
+    EXPECT_EQ(slave.counters().outputs_received, 4u);
+}
+
+TEST_F(EthercatProcessData, LeavingOpPutsTheOutputsToZero) {
+    op();
+    outputs(7);
+    ASSERT_EQ(bank.holding(0), 7);
+    esc.request(4);
+    slave.poll(true);
+    EXPECT_EQ(esc.al_status(), 4);
+    EXPECT_EQ(bank.holding(0), 0);
+}
+
+TEST_F(EthercatProcessData, WatchdogSafeStateAndSafeOpWithError) {
+    op();
+    outputs(3);
+    esc.expire_watchdog();
+    slave.poll(true);
+    EXPECT_EQ(bank.holding(0), 0);
+    EXPECT_EQ(esc.al_status(), 4 | ec::al_error_flag);
+    EXPECT_EQ(esc.al_code(), ec::al_code::sm_watchdog);
+    EXPECT_EQ(app.errors, (std::vector<std::uint16_t>{ec::al_code::sm_watchdog}));
+    EXPECT_EQ(slave.counters().watchdog_expired, 1u);
+    EXPECT_EQ(esc.events() & ec::al_event::watchdog, 0u);
+    // the master acknowledges and goes to OP again
+    esc.request(4, true);
+    slave.poll(true);
+    EXPECT_EQ(esc.al_status(), 4);
+    op();
+}
+
+TEST_F(EthercatProcessData, RefusedByTheWriteFilterIsCounted) {
+    op();
+    bank.set_write_filter({nullptr, [](void*, std::uint16_t, std::uint16_t) noexcept { return false; }});
+    outputs(4);
+    EXPECT_EQ(bank.holding(0), 0);
+    EXPECT_EQ(slave.coe_counters().output_refused, 1u);
+}
+
+TEST_F(EthercatProcessData, AnotherAssignmentChangesTheImage) {
+    esc.request(2);
+    slave.poll(true);
+    // TxPDO assignment empty: no inputs, SM3 must be disabled for SAFE-OP
+    ASSERT_TRUE(esc.mailbox_write(ec::mailbox::type_coe, 1, sdo(0x2F, 0x1C13, 0, 0)));
+    slave.poll(true);
+    (void)esc.mailbox_read();
+    esc.request(4);
+    slave.poll(true);
+    EXPECT_EQ(esc.al_code(), ec::al_code::invalid_input_config);  // SM3 still configured for 6 bytes
+    esc.configure_sm(3, 0x1400, 0, 0x20, false);
+    esc.request(4, true);
+    slave.poll(true);
+    EXPECT_EQ(esc.al_status(), 4);
+    const std::size_t writes = esc.sm3_writes;
+    slave.poll(true);
+    EXPECT_EQ(esc.sm3_writes, writes);  // no inputs at all
 }
 
 }  // namespace

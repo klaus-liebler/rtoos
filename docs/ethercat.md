@@ -5,7 +5,9 @@ no heap, testable on the host against a simulated ESC. The ESC hardware is behin
 first driver is the Microchip LAN9253 on SPI (`include/rtos/devices/lan9253.hpp`).
 
 Status: EEPROM emulation, AL state machine with checks, diagnostics (step E1); mailbox with CoE - SDO,
-SDO information, PDO assignment - over a constexpr object dictionary (E2). Process data (E3) follows.
+SDO information, PDO assignment - over a constexpr object dictionary (E2); process data with the
+SyncManager watchdog (E3). Not offered: EoE, FoE, distributed clocks (SYNC0/1), complete access,
+segmented SDO.
 
 ## Parts
 
@@ -57,9 +59,26 @@ LEDs and puts its outputs into the safe state; rtoos itself does not log.
   master writes subindex 0 = 0, the PDO indexes, then the count. Its sizes are what PRE-OP -> SAFE-OP
   checks SM2/SM3 against.
 
+## Process data
+
+- Entering SAFE-OP the sizes come from the PDO assignment; the TxPDO image (inputs) goes into SM3 at
+  once and then whenever the master has read the last one (AL event of SM3) - the master's cycle paces
+  it. The entries are packed as over SDO (little endian, a 32-bit register value as one DINT/UDINT).
+- In OP a new SM2 image (AL event of SM2) is applied entry by entry - only the entries whose bytes
+  changed since the last image (the first image in OP: all). Outputs that another protocol (Modbus,
+  OPC UA, a web UI) wrote meanwhile stay until the master changes its value. In SAFE-OP the images are
+  read but not applied (ETG.1000.6: outputs in the safe state).
+- Leaving OP - a master request, or the SyncManager watchdog (no SM2 image within the watchdog time
+  0420h; the slave then goes to SAFE-OP with error 0x001B) - writes 0 into every mapped output entry.
+- Writes go through the `RegisterMap`: a refused one (the application's write filter) is counted, not
+  retried.
+- Struct registers (octet strings) are SDO-only: no PDO entry.
+
 ## Tests
 
 `tests/ethercat_test.cpp` against `tests/ethercat_sim.hpp` (the ESC as the PDI sees it, with the side effects
 the slave relies on: AL control event set by the master's write and cleared by the PDI's read, the EEPROM
-command handshake, the mailbox full/empty semantics of SM0/SM1 and the repeat request), the CoE server
-alone (SDO, aborts, information, assignment), and the LAN9253 SPI framing against a recording bus.
+command handshake, the mailbox full/empty semantics of SM0/SM1 and the repeat request, the 3-buffer
+events of SM2/SM3 and the watchdog), the CoE server alone (SDO, aborts, information, assignment), process
+data (inputs paced by the master, outputs only in OP and only when changed, the safe state when leaving
+OP and on the watchdog), and the LAN9253 SPI framing against a recording bus.
