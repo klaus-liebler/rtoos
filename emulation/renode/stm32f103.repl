@@ -6,7 +6,8 @@
 // Modelled: core (NVIC with 4 priority bits, SysTick, DWT cycle counter), flash, SRAM, system
 // memory (UID, flash size; zero-filled), RCC (register file with ready/status flags), FLASH_ACR,
 // GPIOA..E and AFIO (Renode's F1 models), USART1..3, I2C1/2 (Renode's STM32F1_I2C), TIM1-4 (time
-// base and update interrupt; TIM1's update also requests DMA1 channel 5), DMA1.
+// base and update interrupt), TIM1 with compare outputs and DMA requests (own model), DMA1 (own
+// model).
 // Tagged (reads 0, writes logged): bxCAN, IWDG, EXTI, DBGMCU.
 //
 // Clock: the self-test runs SYSCLK = HCLK = 64 MHz from the HSI PLL (APB1 32 MHz, timers
@@ -56,11 +57,15 @@ i2c2: I2C.STM32F1_I2C @ sysbus 0x40005800
 
 // Timers: Renode's STM32 timer model (PSC, ARR, CNT, update event and interrupt, CEN, UG);
 // compare outputs and the encoder interface are not modelled. Timer clock 64 MHz.
-tim1: Timers.STM32_Timer @ sysbus 0x40012C00
+// TIM1: rtoos' own timer model (STM32H5_TIM.cs, the F1 has the same registers for what it models):
+// compare outputs and DMA requests - Renode's STM32 timer model has neither. The update event is
+// TIM1_UP's DMA request (RM0008 table 78: DMA1 channel 5).
+tim1: Timers.STM32H5_TIM @ sysbus 0x40012C00
     frequency: 64000000
-    initialLimit: 0xFFFF
-    // the update event is also TIM1_UP's DMA request (RM0008 table 78: DMA1 channel 5)
-    UpdateInterrupt -> nvic@25 | dma1@5
+    counterWidth: 16
+    channels: 4
+    IRQ -> nvic@25
+    DmaUpdate -> dma1@5
 
 tim2: Timers.STM32_Timer @ sysbus 0x40000000
     frequency: 64000000
@@ -92,10 +97,9 @@ gpioPortF: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011C00, +0x400>
 
 gpioPortG: GPIOPort.STM32F1GPIOPort @ sysbus <0x40012000, +0x400>
 
-// DMA1: Renode's STM32G0 DMA (the F1's register layout: ISR, IFCR, CCR/CNDTR/CPAR/CMAR per
-// channel); request inputs = channel numbers, as Renode's own stm32f103.repl wires them
-dma1: DMA.STM32G0DMA @ sysbus 0x40020000
-    numberOfChannels: 7
+// DMA1: rtoos' own model (STM32F1_DMA.cs: one data item per request; Renode's STM32G0DMA moves
+// the whole block at once); request inputs = channel numbers
+dma1: DMA.STM32F1_DMA @ sysbus 0x40020000
     [0-6] -> nvic@[11-17]
 
 afio: GPIOPort.STM32F1AFIO @ sysbus 0x40010000

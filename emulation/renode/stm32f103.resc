@@ -5,6 +5,8 @@ $name?="stm32f103"
 $bin?=@build/arm-f103/apps/stm32f103/f103_selftest.elf
 
 using sysbus
+include $ORIGIN/STM32H5_TIM.cs
+include $ORIGIN/STM32F1_DMA.cs
 mach create $name
 machine LoadPlatformDescription $ORIGIN/stm32f103.repl
 

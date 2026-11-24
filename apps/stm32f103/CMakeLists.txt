@@ -12,9 +12,10 @@ target_link_libraries(rtos_f103_drivers_check PRIVATE rtos_stm32f103)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(RTOS_RUNNER ${PROJECT_SOURCE_DIR}/emulation/run.py)
 if(EXISTS "${RTOS_QEMU}")
+    # QEMU's stm32f103 machine has no TIM1 and DMA models (unimplemented devices)
     add_test(NAME f103_selftest_qemu
              COMMAND Python3::Interpreter ${RTOS_RUNNER} qemu $<TARGET_FILE:f103_selftest> --platform stm32f103
-                     --exe ${RTOS_QEMU})
+                     --exe ${RTOS_QEMU} --allow-unsupported "WS2812")
 endif()
 if(EXISTS "${RTOS_RENODE}")
     add_test(NAME f103_selftest_renode

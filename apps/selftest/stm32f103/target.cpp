@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 //
 // Self-test, the STM32F103's part: kernel binding, clock and console, interrupt vectors, fault
-// handlers. No tests of its own: the Cortex-M3 has no stack limit register, and the chip drivers
-// the self-test could check are covered by the host tests and drivers_check.
+// handlers, and the one chip mechanism the host tests cannot cover: a WS2812 bit stream on TIM1_CH1
+// fed item by item by DMA1 channel 5 on the update event (timer + DMA request pacing). The Cortex-M3
+// has no stack limit register; the other drivers are covered by the host tests and drivers_check.
 #include <array>
 #include <cstdint>
 
+#include "rtos/devices/ws2812.hpp"
 #include "rtos/port/cm3/port.hpp"
+#include "rtos/port/cortex_m/cycle_counter.hpp"
+#include "rtos/port/stm32f1/dma.hpp"
+#include "rtos/port/stm32f1/timer.hpp"
 #include "rtos/port/stm32f1/gpio.hpp"
 #include "rtos/port/stm32f1/usart.hpp"
 #include "selftest.hpp"
@@ -57,7 +62,44 @@ void flush() noexcept { Console::flush(); }
 
 }  // namespace target
 
-void selftest::target_tests() {}
+namespace {
+using LedTimer = f1::Timer<f1::TimerId::Tim1, {.kernel_hz = target::clocks.timer2_hz(), .update_hz = 800'000}>;
+using LedDma = f1::DmaChannel<{.request = f1::DmaRequest::Tim1Up, .direction = f1::DmaDirection::MemoryToPeripheral,
+                               .memory_bytes = 2, .peripheral_bytes = 2, .priority = 2}>;
+std::array<std::uint16_t, rtos::devices::ws2812_slots(5)> slots{};
+
+// The bits leave one per timer period (1.25 us): right after the start nearly all are still to go,
+// after 121 periods none; the last slot (0) leaves CCR1 at 0, the line low (WS2812 reset).
+void test_ws2812_dma() {
+    constexpr auto timing = rtos::devices::ws2812_timing(target::clocks.timer2_hz());
+    const std::array<std::uint32_t, 5> colours{0xFF0000, 0x00FF00, 0x0000FF, 0x123456, 0xFFFFFF};
+    rtos::devices::ws2812_encode(colours, slots, timing);
+    LedTimer::init();
+    LedTimer::configure_pwm<1>();
+    LedTimer::set_compare<1>(0);
+    LedDma::init();
+    LedTimer::enable_update_dma();
+    LedTimer::start();
+    (void)LedDma::start(LedTimer::compare_address<1>(), slots.data(), slots.size());
+    const std::size_t right_after = LedDma::remaining();
+    const std::uint32_t t0 = rtos::port::cortex_m::CycleCounter::now();
+    while (!LedDma::done() && rtos::port::cortex_m::CycleCounter::now() - t0 < target::sysclk_hz / 100) {
+    }
+    const bool done = LedDma::done();
+    const std::size_t left = LedDma::remaining();
+    const auto ccr1 = *reinterpret_cast<volatile std::uint32_t*>(LedTimer::compare_address<1>());
+    LedDma::stop();
+    LedTimer::stop();
+    // no TIM1/DMA model: nothing moves (the counter keeps its value), or the registers read 0 (QEMU)
+    if (!done && (left == slots.size() || right_after == 0)) {
+        selftest::report_unsupported("WS2812 over TIM1/DMA (no TIM1/DMA model)");
+        return;
+    }
+    selftest::report("WS2812 over TIM1/DMA: paced by the update event", done && left == 0 && right_after > slots.size() / 2 && ccr1 == 0);
+}
+}  // namespace
+
+void selftest::target_tests() { test_ws2812_dma(); }
 
 extern "C" {
 void TIM2_IRQHandler() noexcept { selftest::spare_irq(0); }
