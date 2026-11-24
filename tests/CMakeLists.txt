@@ -31,6 +31,7 @@ add_executable(rtos_tests
     tcp_server_test.cpp
     dhcp_server_test.cpp
     tls_test.cpp
+    auth_test.cpp
     ssh_test.cpp
     devices_test.cpp
     http_ws_test.cpp

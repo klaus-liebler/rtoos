@@ -108,6 +108,9 @@ public:
     [[nodiscard]] Ipv4Address local_address() const noexcept { return local_ip_; }
     [[nodiscard]] std::uint16_t remote_port() const noexcept { return remote_port_; }
     [[nodiscard]] std::uint16_t local_port() const noexcept { return local_port_; }
+    /// The interface the connection's SYN arrived on (e.g. to tell a USB host from the LAN:
+    /// a policy that trusts one interface must not go by the addresses alone).
+    [[nodiscard]] InterfaceId arrival_interface() const noexcept { return interface_; }
     [[nodiscard]] std::uint16_t mss() const noexcept { return mss_; }
 
     /// Bytes received and not yet read.
@@ -187,6 +190,7 @@ protected:
     std::uint16_t remote_port_ = 0;
     std::uint16_t local_port_ = 0;
     std::uint16_t mss_ = 536;
+    InterfaceId interface_ = any_interface;
 
     // send sequence space
     std::uint32_t iss_ = 0;
@@ -591,6 +595,7 @@ private:
         c.local_ip_ = seg.dst;
         c.remote_port_ = seg.src_port;
         c.local_port_ = seg.dst_port;
+        c.interface_ = seg.interface;
         c.mss_ = std::clamp(seg.mss, min_peer_mss, local_mss);
         c.tx_window_limit_ = static_cast<std::uint32_t>(tx_segments) * c.mss_;
         c.rcv_nxt_ = seg.seq + 1;

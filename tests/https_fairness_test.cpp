@@ -80,6 +80,7 @@ struct TcpPeer {
 struct Client {
     TcpPeer peer;
     std::string path = "/blob";
+    std::string request;  ///< the whole request instead of GET <path> (API tests)
     WOLFSSL* ssl = nullptr;
     std::deque<std::byte> out;  ///< TLS bytes waiting to be sent
     enum class State { Connecting, Request, Reading, Done, Failed } state = State::Connecting;
@@ -312,7 +313,7 @@ protected:
     void drive_clients() {
         for (auto& cp : clients) {
             Client& c = *cp;
-            const std::string request =
+            const std::string request = !c.request.empty() ? c.request :
                 "GET " + c.path + " HTTP/1.1\r\nHost: fcu.local\r\nConnection: close\r\n\r\n";
             if (!c.peer.established || c.peer.reset) {
                 continue;
@@ -642,6 +643,116 @@ TEST_F(HttpsFairness, RuntimeMeasuresStepsAndSleepsOnlyWhenIdle) {
     }
     EXPECT_FALSE(runtime.busy());
     EXPECT_GT(runtime.sleep_ms(0, now), 0u);
+}
+
+// ---- API hook (login, sessions) ------------------------------------------------------------------
+
+/// A fake login: POST /api/login takes three background steps; the upgrade needs cookie s=ok.
+struct FakeApi {
+    int begins = 0, steps = 0, cancels = 0;
+    std::string body, method, cookie;
+    InterfaceId interface = any_interface;
+    Ipv4Address peer{};
+
+    static Server::ApiResult begin(void* ctx, const Server::ApiRequest& r, Server::ApiResponse& out) noexcept {
+        auto& self = *static_cast<FakeApi*>(ctx);
+        ++self.begins;
+        self.body = std::string(r.body);
+        self.method = std::string(r.method);
+        self.interface = r.interface;
+        self.peer = r.peer;
+        if (r.path == "/api/login") {
+            return Server::ApiResult::Pending;
+        }
+        out.status = "404 Not Found";
+        out.write("{}");
+        return Server::ApiResult::Done;
+    }
+    static Server::ApiResult step(void* ctx, Server::SessionId, Server::ApiResponse& out) noexcept {
+        auto& self = *static_cast<FakeApi*>(ctx);
+        if (++self.steps < 3) {
+            return Server::ApiResult::Pending;
+        }
+        out.set_cookie("s=ok; HttpOnly; Secure; SameSite=Strict; Path=/");
+        out.write(R"({"role":"admin"})");
+        return Server::ApiResult::Done;
+    }
+    static void cancel(void* ctx, Server::SessionId) noexcept { ++static_cast<FakeApi*>(ctx)->cancels; }
+    static bool authorize(void* ctx, const Server::ApiRequest& r) noexcept {
+        const auto c = r.header("Cookie");
+        static_cast<FakeApi*>(ctx)->cookie = c ? std::string(*c) : "";
+        return c && *c == "s=ok";
+    }
+};
+
+class HttpsApi : public HttpsFairness {
+protected:
+    void SetUp() override {
+        HttpsFairness::SetUp();
+        server.set_api({.context = &api, .prefix = "/api/", .begin = &FakeApi::begin, .step = &FakeApi::step,
+                        .cancel = &FakeApi::cancel, .authorize_upgrade = &FakeApi::authorize});
+    }
+    std::string run(const std::string& request) {
+        Client& c = add_client();
+        c.request = request;
+        for (int i = 0; i < 5'000 && c.state != Client::State::Done && !c.peer.reset; ++i) {
+            pass();
+        }
+        return c.response;
+    }
+    static std::string upgrade(std::string_view extra) {
+        return "GET /ws HTTP/1.1\r\nHost: fcu.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+               std::string(extra) + "\r\n";
+    }
+    FakeApi api;
+};
+
+TEST_F(HttpsApi, PostWithBodyRunsAsBackgroundStepsAndSetsTheCookie) {
+    const std::string body = R"({"user":"admin","password":"secret"})";
+    const std::string r = run("POST /api/login HTTP/1.1\r\nHost: fcu.local\r\nOrigin: https://fcu.local\r\n"
+                              "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                              "\r\nConnection: close\r\n\r\n" + body);
+    EXPECT_EQ(r.rfind("HTTP/1.1 200 OK", 0), 0u) << r;
+    EXPECT_NE(r.find("Set-Cookie: s=ok; HttpOnly; Secure; SameSite=Strict; Path=/\r\n"), std::string::npos) << r;
+    EXPECT_NE(r.find("Cache-Control: no-store"), std::string::npos);
+    EXPECT_EQ(r.substr(r.find("\r\n\r\n") + 4), R"({"role":"admin"})");
+    EXPECT_EQ(api.body, body);
+    EXPECT_EQ(api.method, "POST");
+    EXPECT_EQ(api.steps, 3);
+    EXPECT_EQ(api.interface, eth);  // the TCP connection knows where it came in
+    EXPECT_EQ(api.peer, peer_ip);
+    EXPECT_GT(runtime.stats(0).steps, 0u);
+}
+
+TEST_F(HttpsApi, CrossOriginPostIsRefusedBeforeTheHandler) {
+    const std::string r = run("POST /api/login HTTP/1.1\r\nHost: fcu.local\r\nOrigin: https://evil.example\r\n"
+                              "Content-Length: 2\r\nConnection: close\r\n\r\n{}");
+    EXPECT_EQ(r.rfind("HTTP/1.1 403", 0), 0u) << r;
+    EXPECT_EQ(api.begins, 0);
+}
+
+TEST_F(HttpsApi, ChunkedOrDoubleLengthBodiesAreRefused) {
+    EXPECT_EQ(run("POST /api/login HTTP/1.1\r\nHost: fcu.local\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n")
+                  .rfind("HTTP/1.1 400", 0), 0u);
+    EXPECT_EQ(run("POST /api/login HTTP/1.1\r\nHost: fcu.local\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}")
+                  .rfind("HTTP/1.1 400", 0), 0u);
+    EXPECT_EQ(api.begins, 0);
+}
+
+TEST_F(HttpsApi, OtherMethodsOnTheApiAre405AndPostElsewhereToo) {
+    EXPECT_EQ(run("DELETE /api/session HTTP/1.1\r\nHost: fcu.local\r\nConnection: close\r\n\r\n").rfind("HTTP/1.1 405", 0), 0u);
+    EXPECT_EQ(run("POST /blob HTTP/1.1\r\nHost: fcu.local\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").rfind("HTTP/1.1 405", 0), 0u);
+    EXPECT_EQ(run("GET /api/nothing HTTP/1.1\r\nHost: fcu.local\r\nConnection: close\r\n\r\n").rfind("HTTP/1.1 404", 0), 0u);
+}
+
+TEST_F(HttpsApi, WebSocketUpgradeNeedsTheHandlersConsentAfterTheOriginCheck) {
+    EXPECT_EQ(run(upgrade("Origin: https://fcu.local\r\n")).rfind("HTTP/1.1 401", 0), 0u);
+    EXPECT_EQ(api.cookie, "");
+    EXPECT_EQ(run(upgrade("Origin: https://fcu.local\r\nCookie: s=forged\r\n")).rfind("HTTP/1.1 401", 0), 0u);
+    // a foreign page with a valid cookie: the Origin check comes first
+    EXPECT_EQ(run(upgrade("Origin: https://evil.example\r\nCookie: s=ok\r\n")).rfind("HTTP/1.1 403", 0), 0u);
+    EXPECT_EQ(api.cookie, "s=forged");
 }
 
 }  // namespace

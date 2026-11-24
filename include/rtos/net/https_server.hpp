@@ -26,6 +26,14 @@
 // (cross-site WebSocket hijacking); a resource stored with Content-Encoding br is
 // only served to clients that accept br (406 otherwise).
 //
+// API (optional, set_api()): requests under a path prefix ("/api/") go to the application's
+// ApiHandler - GET and POST with a small body (login, logout, password change). The handler answers
+// at once or returns Pending and finishes in background steps (a PBKDF2 password check costs
+// 100-300 ms: it must not run inline). Its response may set a cookie; API responses are never
+// cached. The same handler can authorize the WebSocket upgrade (a session cookie): refused
+// upgrades get 401, after the Origin check. Cross-origin POSTs are refused like the upgrade
+// (Origin must match Host when present): no login CSRF from another site.
+//
 // No heap: sessions are a fixed table; wolfSSL allocates from the TLS context's
 // static pool.
 #pragma once
@@ -34,6 +42,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <variant>
@@ -83,6 +92,63 @@ public:
         void (*closed)(void* context, SessionId id) noexcept = nullptr;
     };
 
+    using Request = HttpRequestParser<1536>;
+
+    /// An API request: valid during ApiHandler::begin() only (views into the session's buffer).
+    struct ApiRequest {
+        SessionId id = 0;
+        std::string_view method;
+        std::string_view path;   ///< without the query
+        std::string_view query;  ///< after '?', may be empty
+        std::string_view body;
+        const Request* http = nullptr;  ///< headers (Cookie, ...)
+        Ipv4Address peer{};
+        InterfaceId interface = any_interface;  ///< where the connection came in
+        [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const noexcept {
+            return http != nullptr ? http->header(name) : std::nullopt;
+        }
+    };
+
+    /// What the handler answers. Body and cookie are copied into the session.
+    struct ApiResponse {
+        static constexpr std::size_t max_body = 384;
+        static constexpr std::size_t max_cookie = 160;
+        std::string_view status = "200 OK";  ///< static storage (a literal)
+        std::string_view content_type = "application/json";
+        std::uint32_t retry_after_s = 0;  ///< 429/503: Retry-After header
+        void write(std::string_view text) noexcept {
+            const std::size_t n = std::min(text.size(), max_body - body_size);
+            std::copy_n(text.begin(), n, body.begin() + static_cast<std::ptrdiff_t>(body_size));
+            body_size += n;
+        }
+        void set_cookie(std::string_view value) noexcept {
+            cookie_size = std::min(value.size(), max_cookie);
+            std::copy_n(value.begin(), cookie_size, cookie.begin());
+        }
+        void clear() noexcept {
+            *this = ApiResponse{};
+        }
+        std::array<char, max_body> body{};
+        std::size_t body_size = 0;
+        std::array<char, max_cookie> cookie{};
+        std::size_t cookie_size = 0;
+    };
+
+    enum class ApiResult : std::uint8_t { Done, Pending };
+
+    struct ApiHandler {
+        void* context = nullptr;
+        std::string_view prefix = "/api/";
+        /// A request under `prefix`: fill `response` and return Done, or Pending (then step() runs
+        /// as background work until it returns Done).
+        ApiResult (*begin)(void* context, const ApiRequest& request, ApiResponse& response) noexcept = nullptr;
+        ApiResult (*step)(void* context, SessionId id, ApiResponse& response) noexcept = nullptr;
+        /// The connection closed while a request was pending.
+        void (*cancel)(void* context, SessionId id) noexcept = nullptr;
+        /// The WebSocket upgrade (after the Origin check): false answers 401.
+        bool (*authorize_upgrade)(void* context, const ApiRequest& request) noexcept = nullptr;
+    };
+
     HttpsServer(Stack& stack, TlsServerContext& tls, std::span<const HttpResource> resources,
                 std::string_view websocket_path, const WebSocketHandler& websocket,
                 const HttpsServerConfig& config = {}) noexcept
@@ -107,7 +173,20 @@ public:
     [[nodiscard]] bool background_pending() const noexcept { return tcp_.background_pending(); }
     void background_step() noexcept { tcp_.background_step(); }
 
+    /// Route requests under handler.prefix to `handler` (before start()).
+    void set_api(const ApiHandler& handler) noexcept { api_ = handler; }
+
     // ---- WebSocket ---------------------------------------------------------------
+
+    /// Close WebSocket session `id` with status `code` (e.g. 1008 policy violation: its login
+    /// expired). False if it is no open WebSocket.
+    bool close(SessionId id, std::uint16_t code = 1000) noexcept {
+        if (!tcp_.active(id) || !tcp_.session(id).websocket()) {
+            return false;
+        }
+        tcp_.session(id).close_with(code);
+        return true;
+    }
 
     /// Queue a message for WebSocket session `id` (sent as one TLS record). False if
     /// not connected or the queue is full (the caller may retry later).
@@ -153,7 +232,7 @@ public:
     }
 
 private:
-    enum class Phase : std::uint8_t { Free, Handshake, Request, Response, WebSocket };
+    enum class Phase : std::uint8_t { Free, Handshake, Request, Api, Response, WebSocket };
 
     /// A handshake turn became free: let the sessions waiting for one try again.
     /// Every handshake turn is taken and session `except` wants one: the oldest handshake past
@@ -238,6 +317,7 @@ private:
                         ping_sent_ms_ = now;
                         queue_control(ws_opcode::ping, {});
                         break;
+                    case Phase::Api:
                     case Phase::Response:
                     case Phase::Free: break;
                 }
@@ -250,6 +330,7 @@ private:
                 switch (phase_) {
                     case Phase::Handshake: handshake(); break;
                     case Phase::Request: read_request(); break;
+                    case Phase::Api: break;  // background()
                     case Phase::Response: send_response(); break;
                     case Phase::WebSocket: websocket(now); break;
                     case Phase::Free: return;
@@ -268,6 +349,9 @@ private:
             if (phase_ == Phase::WebSocket && owner_->ws_.closed != nullptr) {
                 owner_->ws_.closed(owner_->ws_.context, id_);
             }
+            if (phase_ == Phase::Api && owner_->api_.cancel != nullptr) {
+                owner_->api_.cancel(owner_->api_.context, id_);
+            }
             end_handshake_turn();
             tls_.reset();
             conn_ = nullptr;
@@ -277,7 +361,7 @@ private:
 
         // ---- BackgroundSession -------------------------------------------------------
         [[nodiscard]] bool background() const noexcept {
-            return !finishing_ && (phase_ == Phase::Handshake || (phase_ == Phase::Response && bulk_));
+            return !finishing_ && (phase_ == Phase::Handshake || phase_ == Phase::Api || (phase_ == Phase::Response && bulk_));
         }
 
         bool step(Connection&, std::uint32_t) noexcept {
@@ -286,6 +370,14 @@ private:
                 case Phase::Handshake:
                     if (take_handshake_turn()) {
                         handshake();  // the next flight needs the peer
+                    }
+                    break;
+                case Phase::Api:
+                    if (owner_->api_.step == nullptr ||
+                        owner_->api_.step(owner_->api_.context, id_, api_response_) == ApiResult::Done) {
+                        respond_api();  // interactive again: TcpServer pumps the response out
+                    } else {
+                        more = true;  // another unit of the expensive work
                     }
                     break;
                 case Phase::Response: more = send_response(owner_->config_.bulk_quantum_bytes); break;
@@ -324,6 +416,7 @@ private:
                 case Phase::WebSocket:
                     return ping_outstanding_ ? ping_sent_ms_ + cfg.ws_pong_timeout_ms
                                              : last_rx_ms_ + cfg.ws_ping_interval_ms;
+                case Phase::Api:
                 case Phase::Response:
                 case Phase::Free: return 0;
             }
@@ -336,6 +429,14 @@ private:
             return conn_ != nullptr && phase_ == Phase::Handshake && !handshake_turn_;
         }
         [[nodiscard]] std::uint32_t read_cycle_stamp() const noexcept { return tls_.read_cycle_stamp(); }
+
+        void close_with(std::uint16_t code) noexcept {
+            if (phase_ != Phase::WebSocket || closing_ || finishing_) {
+                return;
+            }
+            const std::array<std::byte, 2> payload{static_cast<std::byte>(code >> 8), static_cast<std::byte>(code)};
+            close_websocket(payload);
+        }
 
         bool send(std::span<const std::byte> message, bool binary) noexcept {
             if (phase_ != Phase::WebSocket || tx_count_ == TxQueue || closing_ || finishing_) {
@@ -433,6 +534,24 @@ private:
             if (const std::size_t q = path.find('?'); q != std::string_view::npos) {
                 path = path.substr(0, q);
             }
+            const ApiHandler& api = owner_->api_;
+            if (api.begin != nullptr && path.starts_with(api.prefix)) {
+                if (r.method() != "GET" && r.method() != "POST") {
+                    respond_error("405 Method Not Allowed");
+                    return;
+                }
+                if (r.method() == "POST" && !same_origin()) {
+                    respond_error("403 Forbidden");  // a form or fetch of another site (CSRF)
+                    return;
+                }
+                api_response_.clear();
+                if (api.begin(api.context, api_request(path), api_response_) == ApiResult::Pending) {
+                    phase_ = Phase::Api;  // background(): step() continues it
+                    return;
+                }
+                respond_api();
+                return;
+            }
             if (r.method() != "GET") {
                 respond_error("405 Method Not Allowed");
                 return;
@@ -482,8 +601,6 @@ private:
             const auto connection = r.header("Connection");
             const auto version = r.header("Sec-WebSocket-Version");
             const auto key = r.header("Sec-WebSocket-Key");
-            const auto host = r.header("Host");
-            const auto origin = r.header("Origin");
             std::array<char, 29> accept{};
             if (!upgrade || !iequals(*upgrade, "websocket") || !connection || !contains_token(*connection, "upgrade") ||
                 !version || *version != "13" || !key || !websocket_accept_key(*key, accept)) {
@@ -491,10 +608,14 @@ private:
                 return;
             }
             // Same origin only: the page must have been loaded from this device.
-            constexpr std::string_view scheme = "https://";
-            if (origin && (!host || origin->size() != scheme.size() + host->size() || !origin->starts_with(scheme) ||
-                           !iequals(origin->substr(scheme.size()), *host))) {
+            if (!same_origin()) {
                 respond_error("403 Forbidden");
+                return;
+            }
+            // Logged in (the application's rule, e.g. a session cookie)
+            if (owner_->api_.authorize_upgrade != nullptr &&
+                !owner_->api_.authorize_upgrade(owner_->api_.context, api_request(owner_->ws_path_))) {
+                respond_error("401 Unauthorized");
                 return;
             }
             header_size_ = header_sent_ = 0;
@@ -506,6 +627,47 @@ private:
             phase_ = Phase::Response;
             keep_alive_ = true;
             upgrade_ = true;
+        }
+
+        /// No Origin header (not a browser's cross-site request), or Origin == https://<Host>.
+        [[nodiscard]] bool same_origin() const noexcept {
+            const auto& r = request();
+            const auto host = r.header("Host");
+            const auto origin = r.header("Origin");
+            constexpr std::string_view scheme = "https://";
+            return !origin || (host && origin->size() == scheme.size() + host->size() && origin->starts_with(scheme) &&
+                               iequals(origin->substr(scheme.size()), *host));
+        }
+
+        ApiRequest api_request(std::string_view path) const noexcept {
+            const auto& r = request();
+            std::string_view query;
+            if (const std::size_t q = r.target().find('?'); q != std::string_view::npos) {
+                query = r.target().substr(q + 1);
+            }
+            return ApiRequest{.id = id_, .method = r.method(), .path = path, .query = query, .body = r.body(),
+                              .http = &r, .peer = conn_->remote_address(), .interface = conn_->arrival_interface()};
+        }
+
+        /// The handler's answer as the response (api_response_ stays until it is sent).
+        void respond_api() noexcept {
+            const ApiResponse& a = api_response_;
+            begin_header(a.status.empty() ? std::string_view("500 Internal Server Error") : a.status);
+            add_header("Content-Type", a.content_type);
+            add_header("Cache-Control", "no-store");
+            if (a.cookie_size != 0) {
+                add_header("Set-Cookie", std::string_view(a.cookie.data(), a.cookie_size));
+            }
+            if (a.retry_after_s != 0) {
+                append("Retry-After: ");
+                add_number(a.retry_after_s);
+                append("\r\n");
+            }
+            add_length(a.body_size);
+            end_header();
+            body_ = std::as_bytes(std::span<const char>(a.body.data(), a.body_size));
+            bulk_ = false;
+            conn_->set_bulk(false);
         }
 
         void respond_error(std::string_view status) noexcept {
@@ -710,17 +872,20 @@ private:
             append(value);
             append("\r\n");
         }
-        void add_length(std::size_t length) noexcept {
+        void add_number(std::size_t value) noexcept {
             std::array<char, 12> digits{};
             std::size_t n = 0;
             do {
-                digits[n++] = static_cast<char>('0' + length % 10);
-                length /= 10;
-            } while (length != 0);
-            append("Content-Length: ");
+                digits[n++] = static_cast<char>('0' + value % 10);
+                value /= 10;
+            } while (value != 0);
             while (n != 0) {
                 append(std::string_view(&digits[--n], 1));
             }
+        }
+        void add_length(std::size_t length) noexcept {
+            append("Content-Length: ");
+            add_number(length);
             append("\r\n");
         }
         void end_header() noexcept {
@@ -748,7 +913,8 @@ private:
         std::uint32_t last_event_ms_ = 0;
         std::uint32_t handshake_start_ms_ = 0;  ///< open(): the handshake's age decides evictable()
         // response
-        std::array<char, 384> header_{};
+        std::array<char, 512> header_{};  // room for an API response's Set-Cookie
+        ApiResponse api_response_{};       // the API answer: body and cookie until sent
         std::size_t header_size_ = 0;
         std::size_t header_sent_ = 0;
         std::span<const std::byte> body_{};
@@ -778,6 +944,7 @@ private:
     std::string_view ws_path_;
     WebSocketHandler ws_;
     HttpsServerConfig config_;
+    ApiHandler api_{};
     std::uint32_t requests_ = 0;
     std::uint32_t handshake_failures_ = 0;
     std::uint32_t timeouts_ = 0;

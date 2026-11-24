@@ -2,7 +2,9 @@
 //
 // HTTP/1.1 request head parser (RFC 9112), zero copy: bytes are appended to a
 // fixed buffer and the request line and headers are string_views into it.
-// Bodies are not supported (the server only needs GET and the WebSocket upgrade).
+// Bodies: Content-Length only, and only as large as the buffer left after the head (small API
+// requests such as a login); Transfer-Encoding is refused (no chunked bodies, and no request
+// smuggling between two length headers), as is a second or non-numeric Content-Length.
 #pragma once
 
 #include <array>
@@ -84,21 +86,36 @@ public:
             }
             return state_;
         }
-        head_size_ = end + 4;
-        state_ = parse(data.substr(0, end + 2)) ? State::Complete : State::Error;
+        if (head_size_ == 0) {
+            head_size_ = end + 4;
+            if (!parse(data.substr(0, end + 2)) || !parse_length()) {
+                state_ = State::Error;
+                return state_;
+            }
+            if (body_size_ > Capacity - head_size_) {
+                state_ = State::TooLarge;
+                return state_;
+            }
+        }
+        if (used_ < head_size_ + body_size_) {
+            return state_;  // the body is still coming
+        }
+        state_ = State::Complete;
         return state_;
     }
 
     /// Prepare for the next request on a persistent connection (keeps pipelined bytes).
     void next() noexcept {
-        const std::size_t rest = used_ - head_size_;
+        const std::size_t consumed = head_size_ + body_size_;
+        const std::size_t rest = used_ - consumed;
         for (std::size_t i = 0; i < rest; ++i) {
-            buffer_[i] = buffer_[head_size_ + i];
+            buffer_[i] = buffer_[consumed + i];
         }
         used_ = rest;
         state_ = State::Incomplete;
         header_count_ = 0;
         head_size_ = 0;
+        body_size_ = 0;
         if (rest != 0) {
             commit(0);
         }
@@ -108,6 +125,10 @@ public:
     [[nodiscard]] std::string_view method() const noexcept { return method_; }
     [[nodiscard]] std::string_view target() const noexcept { return target_; }
     [[nodiscard]] std::string_view version() const noexcept { return version_; }
+    /// The request body (Content-Length bytes after the head; empty without one).
+    [[nodiscard]] std::string_view body() const noexcept {
+        return state_ == State::Complete ? std::string_view(buffer_.data() + head_size_, body_size_) : std::string_view{};
+    }
 
     [[nodiscard]] std::optional<std::string_view> header(std::string_view name) const noexcept {
         for (std::size_t i = 0; i < header_count_; ++i) {
@@ -164,9 +185,36 @@ private:
         return true;
     }
 
+    /// Content-Length: digits only, at most once; Transfer-Encoding: refused.
+    bool parse_length() noexcept {
+        body_size_ = 0;
+        bool seen = false;
+        for (std::size_t i = 0; i < header_count_; ++i) {
+            if (iequals(headers_[i].name, "Transfer-Encoding")) {
+                return false;
+            }
+            if (!iequals(headers_[i].name, "Content-Length")) {
+                continue;
+            }
+            const std::string_view v = headers_[i].value;
+            if (seen || v.empty() || v.size() > 6) {
+                return false;
+            }
+            for (char ch : v) {
+                if (ch < '0' || ch > '9') {
+                    return false;
+                }
+                body_size_ = body_size_ * 10 + static_cast<std::size_t>(ch - '0');
+            }
+            seen = true;
+        }
+        return true;
+    }
+
     std::array<char, Capacity> buffer_{};
     std::size_t used_ = 0;
     std::size_t head_size_ = 0;
+    std::size_t body_size_ = 0;
     State state_ = State::Incomplete;
     std::string_view method_, target_, version_;
     std::array<Header, MaxHeaders> headers_{};

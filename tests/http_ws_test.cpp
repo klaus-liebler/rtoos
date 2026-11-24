@@ -52,6 +52,32 @@ TEST(Http, RejectsMalformedAndOversizedRequests) {
     EXPECT_EQ(feed(small, "GET / HTTP/1.1\r\nX-Long: " + std::string(100, 'a')), HttpRequestParser<64>::State::TooLarge);
 }
 
+TEST(Http, ContentLengthBodyIsWaitedForAndKeptApartFromTheNextRequest) {
+    HttpRequestParser<> p;
+    using S = HttpRequestParser<>::State;
+    EXPECT_EQ(feed(p, "POST /api/login HTTP/1.1\r\nContent-Length: 11\r\n\r\n{\"a\":"), S::Incomplete);
+    EXPECT_EQ(feed(p, "\"xyz\"}GET /b HTTP/1.1\r\n\r\n"), S::Complete);
+    EXPECT_EQ(p.body(), "{\"a\":\"xyz\"}");
+    p.next();
+    EXPECT_EQ(p.state(), S::Complete);
+    EXPECT_EQ(p.target(), "/b");
+    EXPECT_EQ(p.body(), "");
+}
+
+TEST(Http, BodiesThatCouldSmuggleARequestAreRefused) {
+    using S = HttpRequestParser<>::State;
+    for (const char* head : {"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+                             "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n",
+                             "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+                             "POST / HTTP/1.1\r\nContent-Length: 0x10\r\n\r\n",
+                             "POST / HTTP/1.1\r\nContent-Length: \r\n\r\n"}) {
+        HttpRequestParser<> p;
+        EXPECT_EQ(feed(p, head), S::Error) << head;
+    }
+    HttpRequestParser<128> small;
+    EXPECT_EQ(feed(small, "POST / HTTP/1.1\r\nContent-Length: 999999\r\n\r\n"), HttpRequestParser<128>::State::TooLarge);
+}
+
 TEST(Http, PipelinedRequestIsKeptForNext) {
     HttpRequestParser<> p;
     using S = HttpRequestParser<>::State;

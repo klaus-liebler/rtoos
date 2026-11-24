@@ -105,7 +105,7 @@ function(rtos_certificates target)
     target_compile_options(${target} INTERFACE --embed-dir=${C_DIR})
 endfunction()
 
-add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp)
+add_library(rtos_tls STATIC src/net/tls.cpp src/net/tls_memory.cpp src/net/websocket.cpp src/auth/pbkdf2.cpp)
 target_link_libraries(rtos_tls PUBLIC rtos_kernel rtos_wolfssl)
 if(RTOS_SSH)
     target_sources(rtos_tls PRIVATE src/net/ssh.cpp)
