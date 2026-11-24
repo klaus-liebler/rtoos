@@ -61,6 +61,24 @@ curl on Windows needs `--ssl-no-revoke` (Schannel), because the CA publishes no 
 - A handshake older than 2 s (`HttpsServerConfig::handshake_evict_ms`) gives way to a new client - its session when all are taken, its handshake turn when another handshake waits: connections that never finish (slowloris) cannot lock browsers out.
 - WebSocket upgrades from foreign origins are rejected (403).
 
+## Authentication (web, later OPC UA and SSH)
+
+The building blocks live in `include/rtos/auth/` and know nothing of a protocol; the application (the FCU firmware: `src/auth.cpp`) decides the policy.
+
+| Part | File | What it does |
+|---|---|---|
+| PBKDF2-HMAC-SHA256 | [pbkdf2.hpp](../include/rtos/auth/pbkdf2.hpp) | RFC 8018, one 32-byte block, **in steps** (`step(n)`): a check costs 100-300 ms by design and must not run as one call in the network thread. Inner/outer HMAC midstates are hashed once, so an iteration is two SHA-256 compressions (wolfSSL's HMAC would need four). Same output as Python's `hashlib.pbkdf2_hmac` and .NET's `Rfc2898DeriveBytes.Pbkdf2`. |
+| Accounts | [credentials.hpp](../include/rtos/auth/credentials.hpp) | `UserRecord` (name, role, flags, salt, iterations, hash - never a password), `PasswordCheck`/`PasswordSetter` (stepped), password rules, `CredentialStore`: A/B in two flash blocks with sequence number and CRC written last (a power loss keeps the old or the new table) and a provisioning epoch. |
+| Sessions | [session.hpp](../include/rtos/auth/session.hpp) | 256-bit tokens from the RNG (base64url, 43 characters), constant-time lookup, inactivity and absolute timeout, least-recently-used eviction, `SessionHandle {slot, generation}` for long-lived bindings (a WebSocket) that cannot inherit a reused slot. A login always issues a new token (session fixation). |
+| Throttle | [throttle.hpp](../include/rtos/auth/throttle.hpp) | Per address: free failures, then exponential delay, then lockout; global limit against many addresses, which spares the trusted local interface. Never blocks: a refused attempt is answered at once (429), and no PBKDF2 runs for it. |
+| Roles, presence | [access.hpp](../include/rtos/auth/access.hpp) | Observer < Operator < Programmer < Admin; a `Permission` is the least role plus "needs physical presence"; `decide()` also refuses everything but the password change to a login with a one-time password. `PresenceButton`: a press opens a window (one press, one critical action). |
+
+`HttpsServer` ([https_server.hpp](../include/rtos/net/https_server.hpp)) routes requests under an API prefix to an `ApiHandler`: GET and POST with a Content-Length body (the parser refuses `Transfer-Encoding` and duplicate or non-numeric lengths), cross-origin POSTs are refused before the handler (login CSRF), an answer may set a cookie and is never cached (`Cache-Control: no-store`). A handler returns `Pending` for expensive work, which then runs as background steps (service.hpp fairness: one step per pass). `authorize_upgrade` decides the WebSocket upgrade after the Origin check (401). TCP connections know the interface their SYN arrived on (`arrival_interface()`), so "came in over USB" is not judged by addresses.
+
+Login cost (`apps/authbench`, PBKDF2 with the target's SHA-256): **7000 instructions per iteration** in QEMU and Renode (250 MIPS, CPI 1: 28 µs per iteration as an emulator estimate, not a hardware measurement). The FCU uses 6000 iterations: about 42 M instructions, about 170 ms at 250 MIPS. On the hardware, flash wait states make it slower (to be measured with `fcu_authbench` on the board). The firmware runs 32 iterations per background step (about 0.9 ms).
+
+Tests: `tests/auth_test.cpp` (RFC 7914/Python reference values, steps = one call, sessions with timeouts, wrap-around and fixation, throttle, roles and presence, credential store with power loss at every flash operation), `Http.*Body*` in `http_ws_test.cpp`, `HttpsApi.*` in `https_fairness_test.cpp` (background steps, Set-Cookie, CSRF, 405, upgrade consent after the Origin check). End to end and as an attacker: the FCU's `tools/test-auth-renode.py` and the login group of `tools/pentest-renode.py`.
+
 ## OPC UA trust
 
 - Basic256Sha256 Sign or SignAndEncrypt with a client certificate that chains to the trusted CA (name constraints: DNS names under `.local`) and is valid at the current SNTP time: full access.
