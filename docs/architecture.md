@@ -60,9 +60,9 @@ flowchart TB
 | OPC UA | `include/rtos/opcua/`, `src/opcua/` | no |
 | USB | `include/rtos/usb/` | no: the controller satisfies `DeviceController` |
 | Cortex-M core | `port/cortex_m/` | what ARMv7-M and ARMv8-M share: SCS registers, DWT, kernel lock, initial frame, start-up code |
-| CPU ports | `port/cortex_m33/`, `port/cortex_m4/` | the context switch of each core (Cortex-M33 with PSPLIM, Cortex-M4 without) |
+| CPU ports | `port/cortex_m33/`, `port/cortex_m4/`, `port/cortex_m3/`, `port/cortex_m7/` | the context switch of each core (Cortex-M33 with PSPLIM, Cortex-M4 without; the Cortex-M3 and M7 use the M4's ARMv7-M switch) |
 | STM32 drivers | `port/stm32/` | the peripheral IP the STM32H5 and STM32G4 share (GPIO, USART, I2C, timers, FDCAN, ADC, RNG, UCPD, USB device), parameterized by address, clock gate and IRQ |
-| Chips | `port/stm32h563/`, `port/stm32g431/`, `port/stm32h743/` | clocks, RCC, the shared drivers bound to the chip's instances, the chip's own drivers (H5: ETH, SDMMC, GPDMA, SPI, caches; G4: DMA/DMAMUX, SPI; H7: the RCC with PLL1 and the domain prescalers, the LDO supply and voltage scaling), pin database, vectors, linker script |
+| Chips | `port/stm32h563/`, `port/stm32g431/`, `port/stm32h743/`, `port/stm32f103/` | clocks, RCC, the shared drivers bound to the chip's instances, the chip's own drivers (H5: ETH, SDMMC, GPDMA, SPI, caches; G4: DMA/DMAMUX, SPI; H7: the RCC with PLL1 and the domain prescalers, the LDO supply and voltage scaling), pin database, vectors, linker script |
 | Board | `boards/fcu/`, `boards/fcu_rev3/` | the FCU's pins, clock and PHY (revisions 1/2: STM32H563; revision 3: STM32H743); `board/chip.hpp` names the chip's CPU port, Ethernet and RNG for code that runs on every revision |
 
 Everything above the ports is the same code on the host and on the target. The host tests instantiate the kernel with a `MockPort`, connect the IP stack to simulated wires and drive the USB stack from a simulated host. On the target the same templates are instantiated with `Cm33Port`, the ETH driver and (later) the USB controller driver.
