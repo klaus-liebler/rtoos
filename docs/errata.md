@@ -34,6 +34,7 @@ The PDFs are not in the repository (ST's download pages).
 | I2C: events managed before the current byte / wrong data read | F103 (ES096 2.8.1, 2.8.2) | `port/stm32f103/.../i2c.hpp` `receive()` | ST's workaround 2: PRIMASK masks interrupts in the critical windows of the 1-byte (EV6_3), 2-byte (EV6_1, BTF) and N-byte (BTF, N-2, STOP, N-1) closing sequences - a few microseconds |
 | I2C: tSU;STA of a repeated start violated at 88-100 kHz | F103 (ES096 2.8.5) | `port/stm32f103/.../i2c.hpp` | `static_assert`: standard mode at most 88 kHz (write_read uses a repeated start); fast mode is unaffected |
 | Flash read after WFI with prefetch and 2 wait states | F103 (ES096 2.2.1) | `port/stm32f103/.../clocks.hpp` | `configure_clocks()` keeps RCC_AHBENR.FLITFEN set: the kernel's idle thread sleeps with WFI |
+| DMA: disable failure when GIF is cleared in the cycle of a transfer error | F103 (ES096 2.4.1) | `port/stm32f103/.../dma.hpp` | As on the G4: the ISR clears TCIF/HTIF/TEIF only; GIF only with the channel disabled. 2.4.2: only 32-bit register accesses |
 | IWDG RVU/PVU not cleared at low APB clock | F103 (ES096 2.7.1, 2.7.2) | `port/stm32f103/.../iwdg.hpp` | `static_assert`: PCLK1 at least twice the fastest LSI (120 kHz) |
 | Cortex-M4 776924: VDIV/VSQRT with very short ISRs | G431 (ES0431 2.1.2) | `port/cortex_m/.../core.hpp`, `port/cortex_m4` | No lazy FP stacking on the Cortex-M4 (LSPEN = 0): rtoos cannot know that every application ISR has more than two instructions. Cost: 17 words more stacked when an FP thread is interrupted |
 

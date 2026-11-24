@@ -9,7 +9,9 @@
 #include <cstdint>
 
 #include "rtos/port/stm32f1/bxcan.hpp"
+#include "rtos/devices/ws2812.hpp"
 #include "rtos/port/stm32f1/clocks.hpp"
+#include "rtos/port/stm32f1/dma.hpp"
 #include "rtos/port/stm32f1/gpio.hpp"
 #include "rtos/port/stm32f1/i2c.hpp"
 #include "rtos/port/stm32f1/iwdg.hpp"
@@ -62,6 +64,12 @@ static_assert(Can::bit_timing.prescaler == 16 && Can::bit_timing.quanta() == 18)
 using Pwm = f1::Timer<f1::TimerId::Tim4, {.kernel_hz = clocks.timer1_hz(), .update_hz = 1'000, .min_steps = 1000}>;
 using Knob = f1::Timer<f1::TimerId::Tim2, {.kernel_hz = clocks.timer1_hz(), .tick_hz = clocks.timer1_hz()}>;
 using Leds = f1::Timer<f1::TimerId::Tim1, {.kernel_hz = clocks.timer2_hz(), .update_hz = 800'000}>;
+// WS2812 on TIM1_CH1: 800 kHz, the next compare value per update event by DMA (channel 5)
+using LedDma = f1::DmaChannel<{.request = f1::DmaRequest::Tim1Up, .direction = f1::DmaDirection::MemoryToPeripheral,
+                               .memory_bytes = 2, .peripheral_bytes = 2, .priority = 2}>;
+static_assert(LedDma::channel_number == 5 && LedDma::irq == 15);
+using UartRxDma = f1::DmaChannel<{.request = f1::DmaRequest::Usart1Rx, .direction = f1::DmaDirection::PeripheralToMemory}>;
+std::array<std::uint16_t, rtos::devices::ws2812_slots(5)> led_slots{};
 using Watchdog = f1::Iwdg<{.pclk1_hz = clocks.pclk1_hz(), .timeout_ms = 2'000}>;
 static_assert(Watchdog::registers.earliest_ms() >= 2'000 && Watchdog::registers.latest_ms() <= 4'100);
 }  // namespace
@@ -105,6 +113,20 @@ void drivers_check() noexcept {
     (void)Knob::counter();
     Leds::init();
     Leds::configure_pwm<1>();
+    constexpr auto timing = rtos::devices::ws2812_timing(clocks.timer2_hz());
+    static_assert(timing.period_ticks == 90);
+    const std::array<std::uint32_t, 5> colours{0xFF0000, 0x00FF00, 0x0000FF, 0, 0xFFFFFF};
+    rtos::devices::ws2812_encode(colours, led_slots, timing);
+    LedDma::init();
+    Leds::enable_update_dma();
+    (void)LedDma::start(Leds::compare_address<1>(), led_slots.data(), led_slots.size());
+    while (LedDma::busy()) {
+    }
+    (void)LedDma::done();
+    (void)LedDma::failed();
+    LedDma::clear();
+    UartRxDma::init();
+    UartRxDma::stop();
     Watchdog::start();
     Watchdog::kick();
 }

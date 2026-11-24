@@ -11,6 +11,7 @@
 
 #include "rtos/port/stm32f1/bxcan.hpp"
 #include "rtos/port/stm32f1/clocks.hpp"
+#include "rtos/port/stm32f1/dma.hpp"
 #include "rtos/port/stm32f1/gpio.hpp"
 #include "rtos/port/stm32f1/i2c.hpp"
 #include "rtos/port/stm32f1/iwdg.hpp"
@@ -169,6 +170,26 @@ TEST(F1Gpio, RemapIntersectionAcrossPins) {
     };
     constexpr f1::gpio::Plan p = f1::gpio::plan(pins);
     EXPECT_EQ(p.mapr, 3u << 8);
+}
+
+TEST(F1Dma, RequestsSitOnTheirFixedChannel) {
+    // RM0008 table 78
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Adc1), 1u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Tim1Ch1), 2u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Usart1Tx), 4u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Usart1Rx), 5u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Tim1Up), 5u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::I2c1Rx), 7u);
+    EXPECT_EQ(f1::dma_channel(f1::DmaRequest::Tim4Up), 7u);
+}
+
+TEST(F1Dma, ChannelControlRegister) {
+    // DIR (memory -> peripheral), MINC, PSIZE 01, MSIZE 01, PL 10
+    EXPECT_EQ(f1::dma_ccr({.request = f1::DmaRequest::Tim1Up, .direction = f1::DmaDirection::MemoryToPeripheral,
+                           .memory_bytes = 2, .peripheral_bytes = 2, .priority = 2}),
+              (1u << 4) | (1u << 7) | (1u << 8) | (1u << 10) | (2u << 12));
+    EXPECT_EQ(f1::dma_ccr({.request = f1::DmaRequest::Usart1Rx, .direction = f1::DmaDirection::PeripheralToMemory}),
+              1u << 7);
 }
 
 TEST(F1Iwdg, TimeoutNeverEarlierThanAsked) {

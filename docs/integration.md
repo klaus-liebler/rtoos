@@ -139,7 +139,9 @@ pins by signal name from ST's pin database; instead of AF numbers the AFIO_MAPR 
 values are intersected over the pin list at compile time - two signals that need different
 TIM3_REMAP values do not compile; PA15/PB3/PB4 switch JTAG off and keep SWD, PA13/PA14 the whole
 debug port), USART, I2C master (with the silicon errata recovery, see [errata](errata.md)), bxCAN
-(the frame and status types of the FDCAN driver) and IWDG; the timers TIM1-4 are the shared driver
+(the frame and status types of the FDCAN driver), DMA1 (the request names its fixed channel, the
+interface of the G4's DMA driver; WS2812 on TIM1_CH1 with `Tim1Up` as in `apps/stm32f103/drivers_check.cpp`)
+and IWDG; the timers TIM1-4 are the shared driver
 (PWM, time base, encoder interface). The clock tree runs the PLL from the HSI (up to 64 MHz) or an
 HSE crystal/oscillator up to 72 MHz, APB1 up to 36 MHz; `configure_clocks()` returns false when the
 HSE does not start. The Cortex-M3 has no FPU and no stack limit register: size the thread stacks
