@@ -2,6 +2,8 @@ rtos_add_firmware(fcu_demo SOURCES demo/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_selftest SOURCES selftest/main.cpp selftest/fcu/target.cpp LIBRARIES rtos_board_fcu)
 target_include_directories(fcu_selftest PRIVATE selftest selftest/fcu)
 rtos_add_firmware(fcu_bench SOURCES bench/main.cpp LIBRARIES rtos_board_fcu rtos_tls)
+# kernel service latencies (DWT_CYCCNT), run with emulation/run.py --result "KBENCH RESULT"
+rtos_add_firmware(fcu_kbench SOURCES kbench/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_stepper SOURCES stepper/main.cpp LIBRARIES rtos_board_fcu)
 rtos_add_firmware(fcu_sdcard SOURCES sdcard/main.cpp LIBRARIES rtos_board_fcu rtos_filex)
 rtos_add_firmware(fcu_hx711 SOURCES hx711/main.cpp LIBRARIES rtos_board_fcu)
