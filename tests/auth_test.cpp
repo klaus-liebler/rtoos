@@ -361,10 +361,12 @@ TEST(CredentialStore, EmptyFlashThenSaveAndReload) {
     t.users[3] = user("op", Role::Operator, 2);
     ASSERT_TRUE(store.save(t));
     t.users[3].role = Role::Observer;
-    ASSERT_TRUE(store.save(t));
+    ASSERT_TRUE(store.save(t, 0xC0FFEE));
     CredentialStore<Flash, 8> again(flash);
     UserTable<8> loaded{};
-    ASSERT_TRUE(again.load(loaded));
+    std::uint32_t epoch = 0;
+    ASSERT_TRUE(again.load(loaded, epoch));
+    EXPECT_EQ(epoch, 0xC0FFEEu);
     EXPECT_EQ(again.sequence(), 2u);
     EXPECT_EQ(loaded.find("op"), std::optional<std::uint8_t>(3));
     EXPECT_EQ(loaded.users[3].role, Role::Observer);

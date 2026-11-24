@@ -120,6 +120,14 @@ public:
 
     /// The newest valid table into `out`; false if neither block holds one (`out` untouched).
     bool load(Table& out) noexcept {
+        std::uint32_t epoch = 0;
+        return load(out, epoch);
+    }
+
+    /// ... and the provisioning epoch it was saved with (save()): the application compares it with
+    /// the provisioning compiled into the firmware - a newer provisioning (a new label password)
+    /// replaces the stored table.
+    bool load(Table& out, std::uint32_t& epoch) noexcept {
         current_ = -1;
         for (int b = 0; b < 2; ++b) {
             Record r{};
@@ -128,17 +136,19 @@ public:
                 current_ = b;
                 sequence_ = r.sequence;
                 out = r.table;
+                epoch = r.epoch;
             }
         }
         return current_ >= 0;
     }
 
     /// Writes `table` as the new current one (blocks: erases and programs the other block).
-    bool save(const Table& table) noexcept {
+    bool save(const Table& table, std::uint32_t epoch = 0) noexcept {
         const int target = current_ == 0 ? 1 : 0;
         Record r{};
         r.magic = magic;
         r.sequence = current_ < 0 ? 1 : sequence_ + 1;
+        r.epoch = epoch;
         r.table = table;
         r.crc = crc32(std::as_bytes(std::span(&r, 1)).first(offsetof(Record, crc)));
         if (!flash_.erase(static_cast<std::uint32_t>(target))) return false;
@@ -166,8 +176,10 @@ private:
     struct Record {
         std::uint32_t magic;
         std::uint32_t sequence;
+        std::uint32_t epoch;
         Table table;
-        std::array<std::byte, round_up(8 + sizeof(Table) + 4, Flash::program_bytes) - (8 + sizeof(Table) + 4)> pad;
+        // up to the next program unit, never empty (std::array<T, 0> still takes a byte)
+        std::array<std::byte, round_up(12 + sizeof(Table) + 8, Flash::program_bytes) - (12 + sizeof(Table) + 4)> pad;
         std::uint32_t crc;
     };
     static_assert(sizeof(Record) <= Flash::block_bytes);
