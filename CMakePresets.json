@@ -25,6 +25,17 @@
       }
     },
     {
+      "name": "host-coverage",
+      "inherits": "host",
+      "displayName": "Host unit tests with gcov instrumentation (gcovr report in build/coverage)",
+      "binaryDir": "${sourceDir}/build/coverage",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "--coverage -O0 -fprofile-update=atomic",
+        "CMAKE_CXX_FLAGS": "--coverage -O0 -fprofile-update=atomic",
+        "CMAKE_EXE_LINKER_FLAGS": "--coverage"
+      }
+    },
+    {
       "name": "linux",
       "hidden": true,
       "generator": "Ninja",
@@ -143,6 +154,10 @@
       "configurePreset": "host"
     },
     {
+      "name": "host-coverage",
+      "configurePreset": "host-coverage"
+    },
+    {
       "name": "arm",
       "configurePreset": "arm"
     },
@@ -169,6 +184,13 @@
     {
       "name": "linux-asan",
       "configurePreset": "linux-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "host-coverage",
+      "configurePreset": "host-coverage",
       "output": {
         "outputOnFailure": true
       }
