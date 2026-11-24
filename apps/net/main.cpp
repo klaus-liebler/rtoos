@@ -12,6 +12,10 @@
 //          emulation (SNTP port 12300, fallback 192.168.77.2/24 via 192.168.77.1)
 //   HTTPS  https://fcu.local/        web app (brotli, compiled in with #embed)
 //          https://fcu.local/blob    100 KB test blob (throughput)
+//          POST /api/pbkdf2          the API hook and its background steps: the body (a password)
+//                                    through PBKDF2-HMAC-SHA256 (rtos/auth/pbkdf2.hpp, salt
+//                                    "rtoos-net-test", 1000 iterations, 32 per step), answered
+//                                    as {"hash":"<hex>","cycles":n,"steps":n}
 //          wss://fcu.local/ws        binary WebSocket, messages <= 512 bytes:
 //            device -> browser  0x01 status (10 Hz, see send_status()), incl. cycle
 //                               counts of TLS handshake, record crypto and echo
@@ -51,6 +55,7 @@
 
 #include "board/fcu.hpp"
 #include "fcu_net_config.hpp"
+#include "rtos/auth/pbkdf2.hpp"
 #include "rtos/net/dhcp.hpp"
 #include "rtos/net/dns_resolver.hpp"
 #include "rtos/log/log.hpp"
@@ -191,6 +196,67 @@ const Server::WebSocketHandler ws_handler{nullptr, &on_ws_opened, &on_ws_message
 constexpr net::HttpsServerConfig https_config{.ws_ping_interval_ms = fcu_net_config::ws_ping_interval_ms,
                                               .ws_pong_timeout_ms = fcu_net_config::ws_pong_timeout_ms};
 Server server{stack, tls_context, resources, "/ws", ws_handler, https_config};
+
+// ---- API: PBKDF2 as background steps (the hook a login uses, docs/security.md) ------------
+struct PbkdfJob {
+    rtos::auth::Pbkdf2Sha256 kdf;
+    std::uint32_t cycles = 0;
+    std::uint32_t steps = 0;
+};
+std::array<PbkdfJob, max_https_sessions> pbkdf_jobs;
+
+Server::ApiResult api_begin(void*, const Server::ApiRequest& r, Server::ApiResponse& out) noexcept {
+    if (r.path != "/api/pbkdf2" || r.method != "POST") {
+        out.status = "404 Not Found";
+        out.write("{}");
+        return Server::ApiResult::Done;
+    }
+    PbkdfJob& j = pbkdf_jobs[r.id];
+    j.cycles = j.steps = 0;
+    constexpr std::string_view salt = "rtoos-net-test";
+    if (!j.kdf.start(std::as_bytes(std::span(r.body)), std::as_bytes(std::span(salt)), 1000)) {
+        out.status = "400 Bad Request";
+        out.write(R"({"error":"1..64 bytes"})");
+        return Server::ApiResult::Done;
+    }
+    return Server::ApiResult::Pending;
+}
+
+Server::ApiResult api_step(void*, Server::SessionId id, Server::ApiResponse& out) noexcept {
+    PbkdfJob& j = pbkdf_jobs[id];
+    const std::uint32_t t0 = board::CycleCounter::now();
+    const bool more = j.kdf.step(32);
+    j.cycles += board::CycleCounter::now() - t0;
+    ++j.steps;
+    if (more) return Server::ApiResult::Pending;
+    std::array<char, 160> text{};
+    std::size_t n = 0;
+    const auto put = [&](std::string_view s) { for (char c : s) if (n < text.size()) text[n++] = c; };
+    put(R"({"hash":")");
+    for (const std::byte b : j.kdf.result()) {
+        constexpr std::string_view hex = "0123456789abcdef";
+        put({&hex[std::to_integer<unsigned>(b) >> 4], 1});
+        put({&hex[std::to_integer<unsigned>(b) & 15], 1});
+    }
+    const auto num = [&](std::uint32_t v) {
+        std::array<char, 10> d{};
+        std::size_t k = 0;
+        do { d[k++] = static_cast<char>('0' + v % 10); v /= 10; } while (v != 0);
+        while (k != 0) put({&d[--k], 1});
+    };
+    put(R"(","cycles":)");
+    num(j.cycles);
+    put(R"(,"steps":)");
+    num(j.steps);
+    put("}");
+    out.write({text.data(), n});
+    j.kdf.clear();
+    return Server::ApiResult::Done;
+}
+
+const Server::ApiHandler api_handler{.context = nullptr, .prefix = "/api/", .begin = &api_begin, .step = &api_step,
+                                     .cancel = [](void*, Server::SessionId id) noexcept { pbkdf_jobs[id].kdf.clear(); },
+                                     .authorize_upgrade = nullptr};
 
 // ---- log journal, SSH log terminal -------------------------------------------------------
 using Journal = rtos::log::Journal<64, 120, Kernel::Lock>;
@@ -733,6 +799,7 @@ void net_main(void*) {
     mdns.start(net::InterfaceSet::all(), &on_mdns_renamed);
     dhcp.start();
     sntp.start();
+    server.set_api(api_handler);
     server.start(443);  // all interfaces (a list: net::InterfaceSet::of({...}))
     board::print("net: mdns ");
     board::print(mdns.name());

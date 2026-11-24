@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import socket
 import ssl
 import struct
@@ -554,6 +555,32 @@ def main() -> int:
         status, _, _ = http_request(s, "/", {"Accept-Encoding": "gzip"})
         check("406 when brotli is not accepted", status == 406)
         s.close()
+
+        # API hook: POST with a body, answered after PBKDF2 background steps (docs/security.md)
+        password = b"Renode-Login-Probe"
+        s = tls_connect(ca)
+        s.sendall(b"POST /api/pbkdf2 HTTP/1.1\r\nHost: fcu.local\r\nOrigin: https://fcu.local\r\n"
+                  b"Content-Length: " + str(len(password)).encode() + b"\r\n\r\n" + password)
+        buf = b""
+        while b"}" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        head, _, body = buf.partition(b"\r\n\r\n")
+        expected_hash = hashlib.pbkdf2_hmac("sha256", password, b"rtoos-net-test", 1000).hex()
+        m = re.search(rb'"hash":"([0-9a-f]{64})","cycles":(\d+),"steps":(\d+)', body)
+        check("POST /api/pbkdf2: PBKDF2 in background steps = hashlib",
+              head.startswith(b"HTTP/1.1 200") and b"Cache-Control: no-store" in head and m is not None
+              and m.group(1).decode() == expected_hash,
+              f"{int(m.group(2)) // 1000} instructions/iteration in {int(m.group(3))} steps" if m else body[:80].decode(errors="replace"))
+        s = tls_connect(ca)
+        s.sendall(b"POST /api/pbkdf2 HTTP/1.1\r\nHost: fcu.local\r\nOrigin: https://evil.example\r\n"
+                  b"Content-Length: 2\r\n\r\nxx")
+        reply = s.recv(4096)
+        s.close()
+        check("cross-origin POST refused (403)", reply.startswith(b"HTTP/1.1 403"))
 
         # WebSocket
         ws, status = ws_open(ca, "https://fcu.local")
