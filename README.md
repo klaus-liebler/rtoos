@@ -39,9 +39,10 @@ cmake --preset arm   && cmake --build --preset arm   && ctest --preset arm
 cmake --preset board && cmake --build --preset board
 cmake --preset arm-g431 && cmake --build --preset arm-g431 && ctest --preset arm-g431
 cmake --preset arm-h743 && cmake --build --preset arm-h743 && ctest --preset arm-h743
+cmake --preset arm-f103 && cmake --build --preset arm-f103 && ctest --preset arm-f103
 ```
 
-`arm` builds the firmware for the emulators, `board` builds it for the real board, `arm-g431` builds the STM32G431 firmware and runs its self-test in both emulators, `arm-h743` the same for the STM32H743.
+`arm` builds the firmware for the emulators, `board` builds it for the real board, `arm-g431` builds the STM32G431 firmware and runs its self-test in both emulators, `arm-h743` the same for the STM32H743, `arm-f103` for the STM32F103 (Cortex-M3).
 
 ## Documentation
 

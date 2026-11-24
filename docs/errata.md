@@ -11,6 +11,7 @@ sheet gets a new revision.
 | STM32H562/563/573 | ES0565 | Rev 9 (November 2026) |
 | STM32H742/743/750/753 | ES0392 | Rev 16 (October 2026) |
 | STM32G431/441 | ES0431 | Rev 10 |
+| STM32F101/102/103 x8/xB (medium density) | ES096 | Rev 15 (March 2022) |
 
 The PDFs are not in the repository (ST's download pages).
 
@@ -28,9 +29,28 @@ The PDFs are not in the repository (ST's download pages).
 | AXI SRAM read data corruption | H743 rev. Y (2.2.10) | `port/stm32h743/.../chip.hpp` `apply_errata()` | On REV_ID 0x1003: AXI_TARG7_FN_MOD.READ_ISS_OVERRIDE (as ST's SystemInit); called first in `board::init()` |
 | SRAM write error after a reset at a critical instant | G431 (ES0431 2.2.6) | `port/cortex_m/src/startup.cpp`, `port/stm32g431/src/errata.cpp` | The reset vector reads SRAM1, SRAM2 and CCM SRAM before the first write (naked entry, no stack) |
 | DMA: disable failure when GIF is cleared in the cycle of a transfer error | G431 (ES0431 2.3.1) | `port/stm32g431/.../dma.hpp` | The ISR clears TCIF/HTIF/TEIF only; GIF only with the channel disabled |
+| I2C: analog filter locks BUSY, master mode cannot start | F103 (ES096 2.8.7) | `port/stm32f103/.../i2c.hpp` `recover_bus()` | ST's sequence: PE off, SCL/SDA as GPIO open-drain - both high, SDA low, SCL low, SCL high, SDA high, every level read back - alternate function again, SWRST, PE on. Before it up to nine SCL clocks while a slave holds SDA low. Run when a transfer finds BUSY set and after every failed transfer. Host test `F1I2c.*` (timing); the sequence itself runs in Renode only as far as the STM32F1_I2C model goes |
+| I2C: misplaced STOP | F103 (ES096 2.8.4) | `port/stm32f103/.../i2c.hpp` | SB not set within the timeout after START, or BERR while START is set: the transfer fails and the recovery (with SWRST) runs |
+| I2C: events managed before the current byte / wrong data read | F103 (ES096 2.8.1, 2.8.2) | `port/stm32f103/.../i2c.hpp` `receive()` | ST's workaround 2: PRIMASK masks interrupts in the critical windows of the 1-byte (EV6_3), 2-byte (EV6_1, BTF) and N-byte (BTF, N-2, STOP, N-1) closing sequences - a few microseconds |
+| I2C: tSU;STA of a repeated start violated at 88-100 kHz | F103 (ES096 2.8.5) | `port/stm32f103/.../i2c.hpp` | `static_assert`: standard mode at most 88 kHz (write_read uses a repeated start); fast mode is unaffected |
+| Flash read after WFI with prefetch and 2 wait states | F103 (ES096 2.2.1) | `port/stm32f103/.../clocks.hpp` | `configure_clocks()` keeps RCC_AHBENR.FLITFEN set: the kernel's idle thread sleeps with WFI |
+| IWDG RVU/PVU not cleared at low APB clock | F103 (ES096 2.7.1, 2.7.2) | `port/stm32f103/.../iwdg.hpp` | `static_assert`: PCLK1 at least twice the fastest LSI (120 kHz) |
 | Cortex-M4 776924: VDIV/VSQRT with very short ISRs | G431 (ES0431 2.1.2) | `port/cortex_m/.../core.hpp`, `port/cortex_m4` | No lazy FP stacking on the Cortex-M4 (LSPEN = 0): rtoos cannot know that every application ISR has more than two instructions. Cost: 17 words more stacked when an FP thread is interrupted |
 
 ## Checked: not applicable, or covered as the code is
+
+- **STM32F103 (ES096)**: *bxCAN time-triggered mode* (2.11.1): TTCM stays 0. *USART1_RTS with CAN
+  unclocked* (2.3.1), *USART1_TX with TIM1_CH2 PWM* (2.3.10): no RTS, the TIM1 driver does not
+  touch CH2 unless a board configures it - a board with USART1 on PA9 must not enable a TIM1_CH2
+  output without remapping TIM1. *I2C2 SMBA vs. PB12* (2.3.6): only with PB12 as alternate
+  function output while I2C2 is clocked; boards use PB12 as GPIO. *I2C1 with SPI1/TIM3_CH2
+  remapped* (2.3.7, 2.3.8): PB5 as alternate output with I2C1 clocked - no driver combination here.
+  *SMBus NACK*, *NOSTRETCH target mode* (2.8.3, 2.8.6): master mode with clock stretching only.
+  *Timer* errata (2.6.x: break/OCREF_CLR, TRGO, toggle at ARR, overcapture): features not used.
+  *Debug registers read 0 by software* (2.2.2): the port never reads DBGMCU. *Compatibility issue
+  with latest compiler releases* (2.2.9): revisions Z and B (2008) only - newer silicon (Y, X, 1,
+  2, 3) runs GCC 16 code; a board with a Z/B part is not supported. Stop/Standby/WFE, RTC, LSE,
+  ADC injection, USB, SPI/I2S errata: no driver uses those.
 
 - **Cortex-M4 752770, interrupted loads to SP** (G431 2.1.1): only `LDR SP, ...`; the M4 port sets
   SP by `msr psp/msp`, the compiler never emits it.

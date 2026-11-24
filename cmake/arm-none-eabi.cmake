@@ -3,6 +3,7 @@
 #   stm32h563  Cortex-M33 + FPv5-SP (default)
 #   stm32g431  Cortex-M4  + FPv4-SP
 #   stm32h743  Cortex-M7  + FPv5-D16 (double precision)
+#   stm32f103  Cortex-M3, no FPU (soft float)
 # One chip per build tree: every library (wolfSSL, littlefs, ...) is compiled for its CPU.
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -10,15 +11,17 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES RTOS_GCC_ROOT RTOS_CHIP)
 
 set(RTOS_CHIP "stm32h563" CACHE STRING "Chip of this build tree")
-set_property(CACHE RTOS_CHIP PROPERTY STRINGS stm32h563 stm32g431 stm32h743)
+set_property(CACHE RTOS_CHIP PROPERTY STRINGS stm32h563 stm32g431 stm32h743 stm32f103)
 if(RTOS_CHIP STREQUAL "stm32h563")
     set(RTOS_CPU_FLAGS "-mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard")
 elseif(RTOS_CHIP STREQUAL "stm32g431")
     set(RTOS_CPU_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
 elseif(RTOS_CHIP STREQUAL "stm32h743")
     set(RTOS_CPU_FLAGS "-mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard")
+elseif(RTOS_CHIP STREQUAL "stm32f103")
+    set(RTOS_CPU_FLAGS "-mcpu=cortex-m3 -mthumb -mfloat-abi=soft")
 else()
-    message(FATAL_ERROR "RTOS_CHIP must be stm32h563, stm32g431 or stm32h743 (is '${RTOS_CHIP}')")
+    message(FATAL_ERROR "RTOS_CHIP must be stm32h563, stm32g431, stm32h743 or stm32f103 (is '${RTOS_CHIP}')")
 endif()
 
 set(CMAKE_C_COMPILER "${RTOS_GCC_ROOT}/bin/arm-none-eabi-gcc.exe")

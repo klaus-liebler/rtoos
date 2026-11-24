@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Run rtoos firmware in QEMU or Renode: the Factory Control Unit (STM32H563), a bare STM32G431 or STM32H743.
+"""Run rtoos firmware in QEMU or Renode: the Factory Control Unit (STM32H563), a bare STM32G431, STM32H743 or STM32F103.
 
   run.py qemu   build/arm/apps/fcu_selftest.elf            # self-test, exit code = result
   run.py renode build/arm/apps/fcu_selftest.elf --allow-unsupported "stack limit"
   run.py qemu   build/arm/apps/fcu_demo.elf --interactive  # console until Ctrl+C
   run.py renode build/arm-g431/apps/stm32g431/g431_selftest.elf --platform stm32g431
   run.py qemu   build/arm-h743/apps/stm32h743/h743_selftest.elf --platform stm32h743
+  run.py renode build/arm-f103/apps/stm32f103/f103_selftest.elf --platform stm32f103
 
-The console (fcu, stm32h743: USART3; stm32g431: USART1) is streamed to stdout. In test mode the run ends at the line
+The console (fcu, stm32h743: USART3; stm32g431, stm32f103: USART1) is streamed to stdout. In test mode the run ends at the line
 "SELFTEST RESULT: ..." (or at the timeout). The test passes if the result is PASS
 and every UNSUPPORTED test is covered by --allow-unsupported (emulator features
 known to be missing, e.g. Renode does not enforce PSPLIM).
@@ -34,6 +35,7 @@ PLATFORMS = {
     "fcu": ("fcu", "fcu.resc", "usart3"),
     "stm32g431": ("stm32g431", "stm32g431.resc", "usart1"),
     "stm32h743": ("stm32h743", "stm32h743.resc", "usart3"),
+    "stm32f103": ("stm32f103", "stm32f103.resc", "usart1"),
     "fcu_rev3": ("stm32h743", "fcu_rev3.resc", "usart3"),  # Renode only: the FCU revision 3 board
 }
 

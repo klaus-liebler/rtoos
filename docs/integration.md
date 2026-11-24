@@ -127,6 +127,25 @@ A different STM32H5 part with the same peripherals needs only its own linker scr
 
 [port/stm32h743](../port/stm32h743) is the chip package of the FCU revision 3 (STM32H743VIT6, LQFP100); so far it has the clock tree, GPIO with the pin database, USART and the vectors, on the Cortex-M7 port ([port/cortex_m7](../port/cortex_m7): the ARMv7-M context switch of the M4 port plus the L1 caches). Build with `RTOS_CHIP=stm32h743` (preset `arm-h743` for the emulators). The clock tree supplies the core from the LDO (the H743 has no SMPS), selects VOS1 and runs PLL1 from the HSI or an HSE up to 400 MHz CPU, 200 MHz HCLK and 100 MHz on the APBs; 480 MHz (VOS0, silicon revision V) is not supported yet. The RAM is split: `.data`/`.bss` go to the AXI SRAM (512 KB, every bus master), the main stack to the DTCM (CPU only). The data cache is off until the firmware enables it (`cm7::cache::enable_dcache()`); a DMA buffer in cacheable memory then needs `cache::clean()`/`cache::invalidate()` (32-byte lines) or a non-cacheable MPU region. The Cortex-M7 has no stack limit register: size the thread stacks from the deepest call path. [apps/selftest/stm32h743](../apps/selftest/stm32h743) shows the minimal bring-up (caches, clock tree, console pins, USART3); [boards/fcu_rev3](../boards/fcu_rev3) the full one of the FCU revision 3 (MPU, caches, HSE 25 MHz, Ethernet, SD card), on which [apps/net](../apps/net) runs unchanged (`board/chip.hpp`).
 
+### STM32F103 boards
+
+[port/stm32f103](../port/stm32f103) is the chip package of the STM32F103x8/xB (medium density,
+LQFP48: C8T6/CBT6) on the Cortex-M3 ([port/cortex_m3](../port/cortex_m3): the ARMv7-M context
+switch of the M4 port without FP frame). Build with `RTOS_CHIP=stm32f103` (preset `arm-f103` for
+the emulators); the linker script is the xB's (128 KB flash, 20 KB RAM), an x8 board sets
+`RTOS_STM32F103_LINKER_SCRIPT`. The F1 peripherals are the first generation and have their own
+drivers with the interface of the shared ones: GPIO/AFIO ([gpio.hpp](../port/stm32f103/include/rtos/port/stm32f1/gpio.hpp):
+pins by signal name from ST's pin database; instead of AF numbers the AFIO_MAPR remap fields, whose
+values are intersected over the pin list at compile time - two signals that need different
+TIM3_REMAP values do not compile; PA15/PB3/PB4 switch JTAG off and keep SWD, PA13/PA14 the whole
+debug port), USART, I2C master (with the silicon errata recovery, see [errata](errata.md)), bxCAN
+(the frame and status types of the FDCAN driver) and IWDG; the timers TIM1-4 are the shared driver
+(PWM, time base, encoder interface). The clock tree runs the PLL from the HSI (up to 64 MHz) or an
+HSE crystal/oscillator up to 72 MHz, APB1 up to 36 MHz; `configure_clocks()` returns false when the
+HSE does not start. The Cortex-M3 has no FPU and no stack limit register: size the thread stacks
+from the deepest call path - with 20 KB RAM every byte counts. [apps/selftest/stm32f103](../apps/selftest/stm32f103)
+shows the minimal bring-up (clock tree, console pins, USART1).
+
 ### STM32G431 boards
 
 [port/stm32g431](../port/stm32g431) is a chip package without a board: the board package (clock tree with the board's HSE, pins, console) comes with the product. Build with `RTOS_CHIP=stm32g431` (preset `arm-g431` for the emulators) and set `RTOS_STM32G431_PACKAGE`; the pin database then rejects pins and functions the package lacks (the LQFP48 has no PC4, PC6, PC10, PC11; the UFQFPN48 has them). The clock tree runs the PLL from HSI16 or HSE up to 170 MHz (range 1 boost mode above 150 MHz, wait states from ST's table). The G431 has no data cache, so DMA buffers need no special section; its DMA is DMA1/DMA2 behind the DMAMUX (`stm32g4::DmaChannel`, the same interface as the H5's GPDMA driver). The Cortex-M4 has no stack limit register: size the thread stacks from the deepest call path. [apps/selftest/stm32g431](../apps/selftest/stm32g431) shows the minimal bring-up (clock tree, console pins, USART).

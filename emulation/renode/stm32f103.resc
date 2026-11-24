@@ -1,0 +1,16 @@
+:name: STM32F103 (bare chip)
+:description: rtoos firmware on an STM32F103xB, console USART1. Set $bin to the ELF to run.
+
+$name?="stm32f103"
+$bin?=@build/arm-f103/apps/stm32f103/f103_selftest.elf
+
+using sysbus
+mach create $name
+machine LoadPlatformDescription $ORIGIN/stm32f103.repl
+
+macro reset
+"""
+    sysbus LoadELF $bin
+    cpu VectorTableOffset 0x08000000
+"""
+runMacro $reset

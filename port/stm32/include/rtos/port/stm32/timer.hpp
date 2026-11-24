@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 //
-// STM32 general-purpose and advanced timers, the timer IP of the STM32H5, STM32G4 and STM32H7
-// (RM0481/RM0440/RM0433 chapters TIM; the registers the driver uses are the same in the SVDs -
-// H5/G4 v1.8, H7 v2.4 - except TIMx_DCR.DBSS, which only the H5 has: TimerHw::burst_source, and
-// the place of TIMx_DCR/DMAR: 0x3DC/0x3E0 on the H5 and G4, 0x048/0x04C on the H7:
-// TimerHw::dcr_offset).
+// STM32 general-purpose and advanced timers, the timer IP of the STM32H5, STM32G4, STM32H7 and
+// STM32F1 (RM0481/RM0440/RM0433/RM0008 chapters TIM; the registers the driver uses are the same in
+// the SVDs - H5/G4 v1.8, H7 v2.4, F1 RM0008 rev 21 - except TIMx_DCR.DBSS, which only the H5 has:
+// TimerHw::burst_source, the place of TIMx_DCR/DMAR: 0x3DC/0x3E0 on the H5 and G4, 0x048/0x04C on
+// the H7 and F1: TimerHw::dcr_offset, and OCxM[3]/SMS[3], which the F1 lacks - the driver writes
+// them 0, the F1 keeps those bits reserved at 0).
 //
 // The configuration is a template argument; prescaler (PSC) and auto-reload (ARR) are
 // computed and checked at compile time:
@@ -66,6 +67,16 @@ inline constexpr std::uint32_t ocm_toggle = 0b0011;
 }  // namespace timer_detail
 
 /// PSC/ARR for `c` on a counter of `max_arr` (0xFFFF or 0xFFFF'FFFF).
+/// Encoder interface (SMS, RM0481/RM0440/RM0433/RM0008 "Encoder interface mode"): the counter
+/// counts the edges of TI1, of TI2 or of both, up or down by the level of the other input.
+enum class EncoderMode : std::uint8_t { Ti1 = 1, Ti2 = 2, Both = 3 };
+
+/// TIMx_CCMR1 for the encoder interface: CC1S = CC2S = 01 (TI1/TI2 as inputs) with input filter
+/// `filter` (ICxF 0..15) on both.
+[[nodiscard]] constexpr std::uint32_t timer_encoder_ccmr1(unsigned filter) noexcept {
+    return 0b01u | (filter << 4) | (0b01u << 8) | (filter << 12);
+}
+
 [[nodiscard]] constexpr TimerRegisters timer_registers(const TimerConfig& c, std::uint32_t max_arr) noexcept {
     if (c.tick_hz != 0) {
         if (c.kernel_hz % c.tick_hz != 0 || c.kernel_hz / c.tick_hz > 0x10000) {
@@ -174,6 +185,21 @@ public:
     }
     static void enable_update_dma() noexcept { DIER::write(DIER::read() | timer_detail::dier_ude); }
     static void disable_update_dma() noexcept { DIER::write(DIER::read() & ~timer_detail::dier_ude); }
+
+    // ---- encoder interface -------------------------------------------------------------------
+
+    /// Quadrature encoder on channels 1 and 2 (inputs TI1, TI2): the counter follows the
+    /// encoder (configure tick_hz = kernel_hz, i.e. no prescaler, and no update_hz: ARR stays at
+    /// the counter's maximum, read the position with counter()). `invert` reverses the counting
+    /// direction (TI1 polarity, CC1P); `filter` (ICxF 0..15) debounces both inputs.
+    template <EncoderMode M = EncoderMode::Both, unsigned Filter = 0, bool Invert = false>
+    static void configure_encoder() noexcept {
+        static_assert(Hw.channels >= 2, "the encoder interface needs channels 1 and 2");
+        static_assert(Filter <= 15, "input filter ICxF is 0..15");
+        CCMR1::write((CCMR1::read() & ~0xFFFFu) | timer_encoder_ccmr1(Filter));
+        CCER::write((CCER::read() & ~0xFFu) | (Invert ? 1u << 1 : 0u));  // CC1P; CCxE stay 0 (no capture)
+        SMCR::write((SMCR::read() & ~0x7u) | static_cast<std::uint32_t>(M));  // SMS[2:0]; SMS[3] (G4/H5/H7) stays 0
+    }
 
     // ---- PWM -------------------------------------------------------------------------------
 
@@ -299,6 +325,7 @@ public:
 
 private:
     using CR1 = cortex_m::Reg<Hw.base + 0x00>;
+    using SMCR = cortex_m::Reg<Hw.base + 0x08>;
     using DIER = cortex_m::Reg<Hw.base + 0x0C>;
     using SR = cortex_m::Reg<Hw.base + 0x10>;
     using EGR = cortex_m::Reg<Hw.base + 0x14>;

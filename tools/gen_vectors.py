@@ -5,6 +5,7 @@
 Usage: python tools/gen_vectors.py STM32H563.svd > port/stm32h563/src/vectors.cpp
        python tools/gen_vectors.py stm32g431xx.h > port/stm32g431/src/vectors.cpp
        python tools/gen_vectors.py stm32h743xx.h > port/stm32h743/src/vectors.cpp
+       python tools/gen_vectors.py stm32f103xb.h > port/stm32f103/src/vectors.cpp
 
 STM32H563: from ST's SVD (https://github.com/modm-io/cmsis-svd-stm32, stm32h5/STM32H563.svd,
 v1.8). STM32G431: from the IRQn_Type of ST's CMSIS device header
@@ -12,8 +13,10 @@ v1.8). STM32G431: from the IRQn_Type of ST's CMSIS device header
 describes the whole family and lists interrupts the G431 does not have (TIM5, UART5, ...).
 STM32H743: from the IRQn_Type of ST's CMSIS device header as well
 (https://github.com/STMicroelectronics/cmsis_device_h7, Include/stm32h743xx.h).
+STM32F103xB: from the IRQn_Type of ST's CMSIS device header
+(https://github.com/STMicroelectronics/cmsis_device_f1, Include/stm32f103xb.h).
 A header gives the number of interrupt lines too: the highest IRQn + 1 (G431: FMAC_IRQn = 101,
-H743: WAKEUP_PIN_IRQn = 149).
+H743: WAKEUP_PIN_IRQn = 149, F103xB: USBWakeUp_IRQn = 42).
 """
 import re
 import sys
@@ -37,7 +40,7 @@ CORE = [
     "BusFault_Handler", "UsageFault_Handler", "SecureFault_Handler", None, None, None,
     "SVC_Handler", "DebugMon_Handler", None, "PendSV_Handler", "SysTick_Handler",
 ]
-# Cortex-M4/M7: no SecureFault (ARMv7-M exception 7 is reserved).
+# Cortex-M3/M4/M7: no SecureFault (ARMv7-M exception 7 is reserved).
 CORE_M4 = [name if name != "SecureFault_Handler" else None for name in CORE]
 STRONG = {"Reset_Handler", "SVC_Handler", "PendSV_Handler", "SysTick_Handler"}
 

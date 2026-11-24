@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// Freestanding start-up for the Cortex-M chips (STM32H5, STM32G4): Reset_Handler and abort().
+// Freestanding start-up for the Cortex-M chips (STM32H5, STM32G4, STM32H7, STM32F1): Reset_Handler
+// and abort().
 // The vector table is the chip's (generated vectors.cpp). No CMSIS, no newlib start files.
 //
 // Contract violations: the firmware is built with
@@ -52,9 +53,12 @@ int main();
 [[noreturn]] void rtos_reset_body() noexcept {
     board_early_init();
 
-    // Grant full access to the FPU (CP10/CP11) before any FP instruction can run.
+#if defined(__ARM_FP)
+    // Grant full access to the FPU (CP10/CP11) before any FP instruction can run. (A core
+    // without FPU - the Cortex-M3 - has nothing to grant.)
     *reinterpret_cast<volatile std::uint32_t*>(0xE000'ED88) |= 0xFu << 20;
     __asm volatile("dsb \n isb" ::: "memory");
+#endif
 
     for (std::uint32_t *src = &_sidata, *dst = &_sdata; dst < &_edata;) {
         *dst++ = *src++;
