@@ -103,6 +103,26 @@ struct Subject {
     return Decision::Allowed;
 }
 
+/// How an access path (a network interface, a console ...) admits requests: only with a login, or
+/// open - whoever reaches it gets a fixed role without logging in (a trusted cable, a lab network).
+/// Open replaces the login only, never the presence rule: `present` stays what the path proves.
+enum class LoginMode : std::uint8_t { Login, Open };
+
+/// Who asks on an access path: a usable login (one that need not change its password first) as it
+/// is; otherwise, on an open path, `open_role` with no password to change; otherwise the login as
+/// it is (so decide() says PasswordChangeRequired) or nobody.
+[[nodiscard]] constexpr Subject effective_subject(const std::optional<Subject>& login, LoginMode mode, Role open_role,
+                                                  bool present) noexcept {
+    const bool usable = login && login->role != Role::None && !login->must_change_password;
+    if (usable) {
+        return *login;
+    }
+    if (mode == LoginMode::Open) {
+        return {.role = open_role, .must_change_password = false, .present = present};
+    }
+    return login.value_or(Subject{});
+}
+
 /// The button half of the presence rule: a press opens a window of `window_ms`.
 class PresenceButton {
 public:

@@ -285,6 +285,28 @@ TEST(Access, RolesArePerPermission) {
               PasswordChangeRequired);
 }
 
+TEST(Access, OpenPathGivesItsRoleWithoutLoginButNotPresence) {
+    using enum Decision;
+    const std::optional<Subject> none;
+    // login mode: nobody without a login
+    EXPECT_EQ(decide(effective_subject(none, LoginMode::Login, Role::Programmer, true), permission::read), NotAuthenticated);
+    // open: the open role, presence only as the path proves it
+    const Subject open = effective_subject(none, LoginMode::Open, Role::Programmer, false);
+    EXPECT_EQ(open.role, Role::Programmer);
+    EXPECT_FALSE(open.must_change_password);
+    EXPECT_EQ(decide(open, permission::program), Allowed);
+    EXPECT_EQ(decide(open, permission::program_critical), PresenceRequired);
+    EXPECT_EQ(decide(open, permission::admin), RoleTooLow);
+    EXPECT_EQ(decide(effective_subject(none, LoginMode::Open, Role::Programmer, true), permission::program_critical), Allowed);
+    // a usable login wins over the open role (an admin logs in on an open path)
+    const Subject admin{.role = Role::Admin, .present = false};
+    EXPECT_EQ(decide(effective_subject(admin, LoginMode::Open, Role::Programmer, false), permission::admin), Allowed);
+    // a login that must change its password: the open role on an open path, the change elsewhere
+    const Subject fresh{.role = Role::Admin, .must_change_password = true};
+    EXPECT_EQ(effective_subject(fresh, LoginMode::Open, Role::Programmer, false).role, Role::Programmer);
+    EXPECT_EQ(decide(effective_subject(fresh, LoginMode::Login, Role::Programmer, false), permission::read), PasswordChangeRequired);
+}
+
 TEST(Access, CriticalActionsNeedPresence) {
     using enum Decision;
     EXPECT_EQ(decide({.role = Role::Programmer}, permission::program_critical), PresenceRequired);
