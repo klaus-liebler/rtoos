@@ -63,6 +63,9 @@ The PDFs are not in the repository (ST's download pages).
   the flash data area (stm32h7/mpu.hpp R0); `flash_program.hpp` invalidates the D-cache lines of
   every written range and the I-cache afterwards, with DSB/ISB around (`cm7::cache::barrier()`).
   RAM regions are write-back or non-cacheable.
+- **ARM Cortex-M7 837070, a BASEPRI raise takes effect one instruction late** (affects r0p0/r0p1
+  only): the STM32H743 is r1p1 (ST's `stm32h743xx.h`, `__CM7_REV` 0x0101) - the kernel lock needs
+  no `CPSID` around `MSR BASEPRI`, documented in `port/cortex_m7/.../port.hpp`
 - **480 MHz not available / VOS0 on revision Y** (H743 2.2.21): the port clocks the H743 at VOS1,
   400 MHz, on every revision.
 - **I2C: transmission stalled after the first byte** (H743 2.19.9, G431 2.11.5): only with an APB
