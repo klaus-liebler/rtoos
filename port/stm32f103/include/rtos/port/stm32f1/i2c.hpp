@@ -403,12 +403,15 @@ private:
             return wait_stop(d) ? I2cResult::Ok : fail(I2cResult::Timeout);
         }
         if (n == 2) {
-            // EV6_1 (RM0008 26.3.3, two bytes): with ADDR still set (SCL stretched) ACK off and POS
-            // on - the NACK then goes to the second byte - and only then clear ADDR
+            // EV6_1 (RM0008 fig. "master receiver N=2", ST HAL): POS on while ADDR still stretches
+            // SCL, clear ADDR, then ACK off - uninterrupted, before the first byte ends. Clearing ACK
+            // together with POS before ADDR (RM0008 26.3.3 text) NACKs the FIRST byte on the real
+            // chip: the slave lets go of SDA and the second byte reads 0xFF (seen on a PCA9685).
+            CR1::write(CR1::read() | cr1_pos);
             const std::uint32_t m = mask_irq();
-            CR1::write((CR1::read() & ~cr1_ack) | cr1_pos);
             (void)SR1::read();
             (void)SR2::read();
+            CR1::write(CR1::read() & ~cr1_ack);
             restore_irq(m);
             if (const I2cResult r = wait_sr1(d, sr1_btf); r != I2cResult::Ok) {  // data 1 in DR, 2 in shift
                 return r;
