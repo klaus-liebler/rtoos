@@ -204,6 +204,10 @@ public:
         return n;
     }
 
+    /// Free bytes in the transmit ring: a write of at most this much goes in whole (from the
+    /// one writing thread; the ISR only frees more).
+    [[nodiscard]] std::size_t tx_space() const noexcept { return tx_.space(); }
+
     /// Received bytes, up to out.size() (never waits).
     std::size_t read(std::span<std::byte> out) noexcept { return rx_.read(out); }
 
